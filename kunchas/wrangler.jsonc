@@ -1,0 +1,19 @@
+{
+  "name": "kunchas",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-14",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kunchas-db",
+      "database_id": "52c29362-6719-458a-bc82-124899db0c4c"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "kunchas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Kunchas Cloudflare app for membership signups and salon admin.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute kunchas-db --local --file=./schema.sql",
+    "db:remote": "wrangler d1 execute kunchas-db --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
