@@ -439,29 +439,36 @@ async function createDailyClosing(request, env) {
   const closingDate = clean(body.closingDate);
   if (!branchId || !closingDate) return jsonResponse({ error: "Branch and closing date are required." }, 400);
   const expected = await expectedClosingTotals(env, branchId, closingDate);
-  const openingFloatCents = body.openingFloat === undefined ? Number(existing.opening_float_cents || 0) : Math.round(Number(body.openingFloat || 0) * 100);
-  const actualCashCents = body.actualCash === undefined ? Number(existing.actual_cash_cents || 0) : Math.round(Number(body.actualCash || 0) * 100);
-  const actualCardCents = body.actualCard === undefined ? Number(existing.actual_card_cents || 0) : Math.round(Number(body.actualCard || 0) * 100);
-  const cashVarianceCents = actualCashCents - expected.cashCents;
+  const previousCashCents = body.previousCash === undefined ? await previousRemainingCash(env, branchId, closingDate) : Math.round(Number(body.previousCash || 0) * 100);
+  const openingFloatCents = Math.round(Number(body.openingFloat || 0) * 100);
+  const actualCashCents = Math.round(Number(body.actualCash || 0) * 100);
+  const cashTakenCents = Math.round(Number(body.cashTaken || 0) * 100);
+  const remainingCashCents = Math.max(0, actualCashCents - cashTakenCents);
+  const actualCardCents = Math.round(Number(body.actualCard || 0) * 100);
+  const cashVarianceCents = actualCashCents - (previousCashCents + openingFloatCents + expected.cashCents);
   const cardVarianceCents = actualCardCents - expected.cardCents;
   const status = cashVarianceCents || cardVarianceCents ? "Variance" : "Balanced";
   await env.DB.prepare(
     `INSERT INTO daily_closings (
-      id, created_at, branch_id, closing_date, opening_float_cents,
+      id, created_at, branch_id, closing_date, previous_cash_cents, opening_float_cents,
       expected_cash_cents, actual_cash_cents, cash_variance_cents,
+      cash_taken_cents, remaining_cash_cents,
       expected_card_cents, actual_card_cents, card_variance_cents,
       notes, status, closed_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       `closing-${crypto.randomUUID()}`,
       new Date().toISOString(),
       branchId,
       closingDate,
+      previousCashCents,
       openingFloatCents,
       expected.cashCents,
       actualCashCents,
       cashVarianceCents,
+      cashTakenCents,
+      remainingCashCents,
       expected.cardCents,
       actualCardCents,
       cardVarianceCents,
@@ -478,10 +485,13 @@ async function updateDailyClosing(request, env, closingId) {
   const existing = (await all(env, "SELECT * FROM daily_closings WHERE id = ?", [closingId]))[0];
   if (!existing) return jsonResponse({ error: "Daily closing record not found." }, 404);
   const expected = await expectedClosingTotals(env, existing.branch_id, existing.closing_date);
-  const openingFloatCents = Math.round(Number(body.openingFloat || 0) * 100);
-  const actualCashCents = Math.round(Number(body.actualCash || 0) * 100);
-  const actualCardCents = Math.round(Number(body.actualCard || 0) * 100);
-  const cashVarianceCents = actualCashCents - expected.cashCents;
+  const previousCashCents = body.previousCash === undefined ? Number(existing.previous_cash_cents ?? await previousRemainingCash(env, existing.branch_id, existing.closing_date)) : Math.round(Number(body.previousCash || 0) * 100);
+  const openingFloatCents = body.openingFloat === undefined ? Number(existing.opening_float_cents || 0) : Math.round(Number(body.openingFloat || 0) * 100);
+  const actualCashCents = body.actualCash === undefined ? Number(existing.actual_cash_cents || 0) : Math.round(Number(body.actualCash || 0) * 100);
+  const cashTakenCents = body.cashTaken === undefined ? Number(existing.cash_taken_cents || 0) : Math.round(Number(body.cashTaken || 0) * 100);
+  const remainingCashCents = Math.max(0, actualCashCents - cashTakenCents);
+  const actualCardCents = body.actualCard === undefined ? Number(existing.actual_card_cents || 0) : Math.round(Number(body.actualCard || 0) * 100);
+  const cashVarianceCents = actualCashCents - (previousCashCents + openingFloatCents + expected.cashCents);
   const cardVarianceCents = actualCardCents - expected.cardCents;
   const requestedStatus = clean(body.status);
   const status = requestedStatus || (cashVarianceCents || cardVarianceCents ? "Variance" : "Balanced");
@@ -489,10 +499,13 @@ async function updateDailyClosing(request, env, closingId) {
 
   await env.DB.prepare(
     `UPDATE daily_closings SET
+      previous_cash_cents = ?,
       opening_float_cents = ?,
       expected_cash_cents = ?,
       actual_cash_cents = ?,
       cash_variance_cents = ?,
+      cash_taken_cents = ?,
+      remaining_cash_cents = ?,
       expected_card_cents = ?,
       actual_card_cents = ?,
       card_variance_cents = ?,
@@ -503,10 +516,13 @@ async function updateDailyClosing(request, env, closingId) {
      WHERE id = ?`
   )
     .bind(
+      previousCashCents,
       openingFloatCents,
       expected.cashCents,
       actualCashCents,
       cashVarianceCents,
+      cashTakenCents,
+      remainingCashCents,
       expected.cardCents,
       actualCardCents,
       cardVarianceCents,
@@ -709,6 +725,16 @@ async function expectedClosingTotals(env, branchId, closingDate) {
     if (!cash && !card && method.toLowerCase().includes("card")) totals.cardCents += Number(sale.total_cents || 0);
     return totals;
   }, { cashCents: 0, cardCents: 0 });
+}
+
+async function previousRemainingCash(env, branchId, closingDate) {
+  const rows = await all(env, `SELECT remaining_cash_cents, actual_cash_cents
+    FROM daily_closings
+    WHERE branch_id = ? AND closing_date < ?
+    ORDER BY closing_date DESC
+    LIMIT 1`, [branchId, closingDate]);
+  const previous = rows[0];
+  return Number(previous?.remaining_cash_cents ?? previous?.actual_cash_cents ?? 0);
 }
 
 async function all(env, sql, params = []) {
@@ -968,13 +994,13 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
     <section class="tab staff-only" id="closing">
       <div class="split">
-        <form class="panel" id="closingForm"><h2>Daily closing</h2><input name="branchId" type="hidden"><label>Date<input name="closingDate" type="date" required></label><div class="closing-summary" id="closingExpected"></div><div class="grid"><label>Opening cash float $<input name="openingFloat" type="number" min="0" step="0.01"></label><label>Actual cash counted $<input name="actualCash" type="number" min="0" step="0.01"></label></div><label>Actual card terminal total $<input name="actualCard" type="number" min="0" step="0.01"></label><div class="closing-summary" id="closingVariance"></div><label>Closed by<input name="closedBy" placeholder="Staff / manager name"></label><label>Notes<textarea name="notes"></textarea></label><button class="primary full" type="submit">Save daily closing</button></form>
-        <div class="panel"><h2>Closing records</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Cash variance</th><th>Card variance</th><th>Status</th></tr></thead><tbody id="closingTable"></tbody></table></div></div>
+        <form class="panel" id="closingForm"><h2>Daily closing</h2><input name="branchId" type="hidden"><label>Date<input name="closingDate" type="date" required></label><div class="closing-summary" id="closingExpected"></div><div class="grid"><label>Yesterday cash $<input name="previousCash" type="number" min="0" step="0.01" readonly></label><label>Extra opening cash $<input name="openingFloat" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Actual cash counted $<input name="actualCash" type="number" min="0" step="0.01"></label><label>Cash taken $<input name="cashTaken" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Remaining cash $<input name="remainingCash" type="number" min="0" step="0.01" readonly></label><label>Actual card terminal total $<input name="actualCard" type="number" min="0" step="0.01"></label></div><div class="closing-summary" id="closingVariance"></div><label>Closed by<input name="closedBy" placeholder="Staff / manager name"></label><label>Notes<textarea name="notes"></textarea></label><button class="primary full" type="submit">Save daily closing</button></form>
+        <div class="panel"><h2>Closing records</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Cash taken</th><th>Remaining cash</th><th>Status</th></tr></thead><tbody id="closingTable"></tbody></table></div></div>
       </div>
     </section>
     <section class="tab admin-only" id="reports">
       <div class="panel"><h2>Reports</h2><div class="metrics" id="reportMetrics"></div><div class="branch-grid" id="reportCards"></div></div>
-      <div class="panel"><h2>Admin closing review</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Actual cash</th><th>Actual card</th><th>Status</th><th>Approved by</th><th></th></tr></thead><tbody id="adminClosingTable"></tbody></table></div></div>
+      <div class="panel"><h2>Admin closing review</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Actual cash</th><th>Cash taken</th><th>Actual card</th><th>Status</th><th>Approved by</th><th></th></tr></thead><tbody id="adminClosingTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="branches">
       <div class="split">
@@ -1019,7 +1045,9 @@ document.querySelector("#bookingForm").addEventListener("submit", submitBooking)
 document.querySelector("#saleForm").addEventListener("submit", submitSale);
 document.querySelector('select[name="customerMode"]').addEventListener("change", updateCustomerMode);
 document.querySelector('#closingForm input[name="closingDate"]').addEventListener("input", renderClosingPreview);
+document.querySelector('#closingForm input[name="openingFloat"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCash"]').addEventListener("input", renderClosingPreview);
+document.querySelector('#closingForm input[name="cashTaken"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCard"]').addEventListener("input", renderClosingPreview);
 document.querySelector("#staffForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/staff"));
 document.querySelector("#serviceForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/services"));
@@ -1156,8 +1184,8 @@ function renderInventory() {
   document.querySelector("#inventoryTable").innerHTML = (state.inventoryStock || []).map((item) => '<tr><td>' + esc(item.branch_name) + '</td><td>' + esc(item.product_name) + '</td><td>' + esc(item.sku || "") + '</td><td>' + esc(item.quantity) + '</td><td><span class="pill">' + esc(Number(item.quantity) <= Number(item.low_stock_level) ? "Low stock" : "OK") + '</span></td></tr>').join("");
 }
 function renderClosings() {
-  document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '</td><td>' + money(c.cash_variance_cents) + '</td><td>' + money(c.card_variance_cents) + '</td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
-  document.querySelector("#adminClosingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr data-closing-id="' + esc(c.id) + '"><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Expected cash ' + money(c.expected_cash_cents) + ' / card ' + money(c.expected_card_cents) + '</div></td><td><input name="actualCash" type="number" min="0" step="0.01" value="' + dollars(c.actual_cash_cents) + '"><div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><input name="actualCard" type="number" min="0" step="0.01" value="' + dollars(c.actual_card_cents) + '"><div class="hint">Variance ' + money(c.card_variance_cents) + '</div></td><td><select name="status"><option' + selected(c.status, "Balanced") + '>Balanced</option><option' + selected(c.status, "Variance") + '>Variance</option><option' + selected(c.status, "Manager Review") + '>Manager Review</option><option' + selected(c.status, "Approved") + '>Approved</option></select></td><td><input name="approvedBy" value="' + esc(c.approved_by || "") + '" placeholder="Manager"><textarea name="notes" placeholder="Notes">' + esc(c.notes || "") + '</textarea></td><td><button class="secondary save-closing" type="button">Save</button></td></tr>').join("");
+  document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + '</div></td><td>' + money(c.cash_taken_cents || 0) + '</td><td>' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '<div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
+  document.querySelector("#adminClosingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr data-closing-id="' + esc(c.id) + '"><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + ' / sales cash ' + money(c.expected_cash_cents) + ' / card ' + money(c.expected_card_cents) + '</div></td><td><input name="actualCash" type="number" min="0" step="0.01" value="' + dollars(c.actual_cash_cents) + '"><div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><input name="cashTaken" type="number" min="0" step="0.01" value="' + dollars(c.cash_taken_cents || 0) + '"><div class="hint">Remaining ' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '</div></td><td><input name="actualCard" type="number" min="0" step="0.01" value="' + dollars(c.actual_card_cents) + '"><div class="hint">Variance ' + money(c.card_variance_cents) + '</div></td><td><select name="status"><option' + selected(c.status, "Balanced") + '>Balanced</option><option' + selected(c.status, "Variance") + '>Variance</option><option' + selected(c.status, "Manager Review") + '>Manager Review</option><option' + selected(c.status, "Approved") + '>Approved</option></select></td><td><input name="approvedBy" value="' + esc(c.approved_by || "") + '" placeholder="Manager"><textarea name="notes" placeholder="Notes">' + esc(c.notes || "") + '</textarea></td><td><button class="secondary save-closing" type="button">Save</button></td></tr>').join("");
   document.querySelectorAll(".save-closing").forEach((button) => button.addEventListener("click", saveClosingRow));
 }
 function renderReports() {
@@ -1252,7 +1280,7 @@ async function saveBookingRow(event) {
 }
 async function saveClosingRow(event) {
   const row = event.target.closest("tr");
-  await api("/api/daily-closing/" + row.dataset.closingId, { method:"PATCH", body:JSON.stringify({ actualCash:row.querySelector('input[name="actualCash"]').value, actualCard:row.querySelector('input[name="actualCard"]').value, status:row.querySelector('select[name="status"]').value, approvedBy:row.querySelector('input[name="approvedBy"]').value, notes:row.querySelector('textarea[name="notes"]').value }) });
+  await api("/api/daily-closing/" + row.dataset.closingId, { method:"PATCH", body:JSON.stringify({ actualCash:row.querySelector('input[name="actualCash"]').value, cashTaken:row.querySelector('input[name="cashTaken"]').value, actualCard:row.querySelector('input[name="actualCard"]').value, status:row.querySelector('select[name="status"]').value, approvedBy:row.querySelector('input[name="approvedBy"]').value, notes:row.querySelector('textarea[name="notes"]').value }) });
   message.textContent = "Daily closing updated.";
   await loadData();
 }
@@ -1261,13 +1289,28 @@ function renderClosingPreview() {
   const varianceBox = document.querySelector("#closingVariance");
   if (!expectedBox || !varianceBox) return;
   const form = document.querySelector("#closingForm");
-  const totals = expectedClosingPreview(form.querySelector('input[name="closingDate"]').value);
+  const closingDate = form.querySelector('input[name="closingDate"]').value;
+  const totals = expectedClosingPreview(closingDate);
+  const previousCash = previousClosingCashPreview(closingDate);
+  const openingFloat = Math.round(Number(form.querySelector('input[name="openingFloat"]').value || 0) * 100);
   const actualCash = Math.round(Number(form.querySelector('input[name="actualCash"]').value || 0) * 100);
+  const cashTaken = Math.round(Number(form.querySelector('input[name="cashTaken"]').value || 0) * 100);
+  const remainingCash = Math.max(0, actualCash - cashTaken);
   const actualCard = Math.round(Number(form.querySelector('input[name="actualCard"]').value || 0) * 100);
-  expectedBox.innerHTML = '<article><span>Expected cash sales</span><strong>' + money(totals.cashCents) + '</strong></article><article><span>Expected card sales</span><strong>' + money(totals.cardCents) + '</strong></article><article><span>Transactions</span><strong>' + totals.count + '</strong></article>';
-  const cashVariance = actualCash - totals.cashCents;
+  form.querySelector('input[name="previousCash"]').value = dollars(previousCash);
+  form.querySelector('input[name="remainingCash"]').value = dollars(remainingCash);
+  const expectedDrawerCash = previousCash + openingFloat + totals.cashCents;
+  expectedBox.innerHTML = '<article><span>Yesterday cash</span><strong>' + money(previousCash) + '</strong></article><article><span>Cash sales today</span><strong>' + money(totals.cashCents) + '</strong></article><article><span>Expected drawer cash</span><strong>' + money(expectedDrawerCash) + '</strong></article><article><span>Expected card sales</span><strong>' + money(totals.cardCents) + '</strong></article><article><span>Transactions</span><strong>' + totals.count + '</strong></article>';
+  const cashVariance = actualCash - expectedDrawerCash;
   const cardVariance = actualCard - totals.cardCents;
-  varianceBox.innerHTML = '<article><span>Cash variance</span><strong>' + money(cashVariance) + '</strong></article><article><span>Card variance</span><strong>' + money(cardVariance) + '</strong></article><article><span>Status</span><strong>' + (cashVariance || cardVariance ? "Variance" : "Balanced") + '</strong></article>';
+  varianceBox.innerHTML = '<article><span>Cash taken</span><strong>' + money(cashTaken) + '</strong></article><article><span>Remaining cash</span><strong>' + money(remainingCash) + '</strong></article><article><span>Cash variance</span><strong>' + money(cashVariance) + '</strong></article><article><span>Card variance</span><strong>' + money(cardVariance) + '</strong></article><article><span>Status</span><strong>' + (cashVariance || cardVariance ? "Variance" : "Balanced") + '</strong></article>';
+}
+function previousClosingCashPreview(date) {
+  const branchId = selectedPosBranchId || document.querySelector('#closingForm input[name="branchId"]')?.value || "";
+  const previous = (state.dailyClosings || [])
+    .filter((closing) => (!branchId || closing.branch_id === branchId) && (!date || String(closing.closing_date || "") < date))
+    .sort((a, b) => String(b.closing_date || "").localeCompare(String(a.closing_date || "")))[0];
+  return Number(previous?.remaining_cash_cents ?? previous?.actual_cash_cents ?? 0);
 }
 function expectedClosingPreview(date) {
   return state.sales.filter((sale) => !date || String(sale.created_at || "").slice(0, 10) === date).reduce((totals, sale) => {
