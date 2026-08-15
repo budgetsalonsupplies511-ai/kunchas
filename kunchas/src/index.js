@@ -49,7 +49,7 @@ export default {
         const auth = await authorizeSale(request, env);
         if (auth) return auth;
         const response = await createSale(request, env);
-        ctx.waitUntil(logEvent("sale_created"));
+        if (response.ok) ctx.waitUntil(logEvent("sale_created"));
         return response;
       }
 
@@ -581,17 +581,36 @@ async function createSale(request, env) {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   const branchId = clean(body.branchId);
-  const customerId = clean(body.customerId) || await ensureSaleCustomer(env, body, branchId);
+  const bookingId = clean(body.bookingId);
+  let booking = null;
+  let customerId = clean(body.customerId) || await ensureSaleCustomer(env, body, branchId);
   const items = Array.isArray(body.items) ? body.items : [];
 
   if (!branchId || !items.length) {
     return jsonResponse({ error: "Branch and sale items are required." }, 400);
   }
 
+  if (bookingId) {
+    booking = (await all(env, "SELECT * FROM bookings WHERE id = ? AND branch_id = ?", [bookingId, branchId]))[0];
+    if (!booking) return jsonResponse({ error: "Booking was not found for this branch." }, 404);
+    if (booking.sale_id || booking.payment_status === "Paid") {
+      return jsonResponse({ error: "This booking has already been checked out." }, 409);
+    }
+    if (booking.status === "Cancelled" || booking.status === "No show") {
+      return jsonResponse({ error: `A ${booking.status.toLowerCase()} booking cannot be checked out.` }, 409);
+    }
+    customerId = booking.customer_id;
+  }
+
   const serviceIds = items.filter((item) => clean(item.itemType || "service") === "service").map((item) => clean(item.itemId || item.serviceId)).filter(Boolean);
   const productIds = items.filter((item) => clean(item.itemType) === "product").map((item) => clean(item.itemId)).filter(Boolean);
   if (!serviceIds.length && !productIds.length) {
     return jsonResponse({ error: "Select at least one service or product." }, 400);
+  }
+  if (booking) {
+    const bookedServiceIds = parseIdList(booking.service_ids);
+    const missingService = bookedServiceIds.find((serviceId) => !serviceIds.includes(serviceId));
+    if (missingService) return jsonResponse({ error: "All booked services must remain in the checkout sale." }, 400);
   }
 
   const serviceRows = serviceIds.length ? await all(env, `SELECT id, name, price_cents FROM services WHERE id IN (${serviceIds.map(() => "?").join(",")})`, serviceIds) : [];
@@ -627,7 +646,7 @@ async function createSale(request, env) {
   const paymentMethod = paymentLabel(cashCents, cardCents, totalCents, clean(body.paymentMethod));
   const changeCents = Math.max(0, cashCents + cardCents - totalCents);
 
-  await env.DB.prepare(
+  const saleStatements = [env.DB.prepare(
     `INSERT INTO sales (id, created_at, branch_id, customer_id, staff_id, total_cents, payment_method, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   )
@@ -640,16 +659,19 @@ async function createSale(request, env) {
       totalCents,
       paymentMethod,
       "Paid"
-    )
-    .run();
-
-  await env.DB.batch(
-    saleItems.map((item) =>
+    ),
+    ...saleItems.map((item) =>
       env.DB.prepare(
         "INSERT INTO sale_items (id, sale_id, item_name, quantity, price_cents, service_id, staff_ids, staff_allocations) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
       ).bind(crypto.randomUUID(), id, item.name, 1, item.priceCents, item.serviceId, JSON.stringify(item.staffIds), JSON.stringify(item.staffAllocations))
     )
-  );
+  ];
+  if (booking) {
+    saleStatements.push(env.DB.prepare(
+      "UPDATE bookings SET updated_at = ?, status = 'Completed', payment_status = 'Paid', sale_id = ? WHERE id = ? AND sale_id IS NULL"
+    ).bind(now, id, booking.id));
+  }
+  await env.DB.batch(saleStatements);
 
   const productItems = saleItems.filter((item) => item.productId);
   if (productItems.length) {
@@ -667,7 +689,16 @@ async function createSale(request, env) {
   }
 
   const branch = (await all(env, "SELECT name, address, phone FROM branches WHERE id = ?", [branchId]))[0];
-  return jsonResponse({ ok: true, saleId: id, totalCents, receipt: { saleId: id, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod } });
+  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod } });
+}
+
+function parseIdList(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed.map(clean).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }
 
 function normalizeStaffAllocations(allocations) {
@@ -903,6 +934,9 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         <form class="panel" id="saleForm">
           <h2>New POS sale</h2>
           <input name="branchId" type="hidden">
+          <input name="bookingId" type="hidden">
+          <label>Checkout a booking<select id="bookingCheckout"><option value="">New walk-in sale</option></select></label>
+          <p class="hint booking-checkout-hint">Choose an unpaid booking to preload its customer, services, and assigned staff.</p>
           <label>Customer type<select name="customerMode"><option value="walkin">Walking customer</option><option value="existing">Existing customer</option><option value="new">Add new customer</option></select></label>
           <div class="customer-existing hidden">
             <label>Customer search<input name="customerSearch" list="customerList" placeholder="Type name, phone, or email"></label>
@@ -1031,14 +1065,13 @@ const appMode = window.appMode || "admin";
 const token = document.querySelector("#token");
 const message = document.querySelector("#message");
 document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => {
-  document.querySelectorAll(".nav,.tab").forEach((item) => item.classList.remove("active"));
-  button.classList.add("active");
-  document.querySelector("#" + button.dataset.tab).classList.add("active");
+  showTab(button.dataset.tab);
 }));
 document.querySelector("#loadData").addEventListener("click", loadData);
 document.querySelector("#openPos").addEventListener("click", openPos);
 document.querySelector("#switchBranch").addEventListener("click", switchBranch);
 document.querySelector("#addSaleItem").addEventListener("click", () => addSaleItem());
+document.querySelector("#bookingCheckout").addEventListener("change", selectBookingForCheckout);
 document.querySelector("#printReceipt").addEventListener("click", printLastReceipt);
 document.querySelector("#customerForm").addEventListener("submit", submitCustomer);
 document.querySelector("#bookingForm").addEventListener("submit", submitBooking);
@@ -1152,6 +1185,7 @@ function fillSelects() {
   document.querySelector("#customerList").innerHTML = state.customers.map((c) => '<option value="' + esc(customerLabel(c)) + '"></option>').join("");
   document.querySelector("#itemList").innerHTML = saleCatalog().map((item) => '<option value="' + esc(item.label) + '"></option>').join("");
   document.querySelector("#staffList").innerHTML = state.staff.map((s) => '<option value="' + esc(staffLabel(s)) + '"></option>').join("");
+  renderBookingCheckoutOptions();
   document.querySelector("#bookingServices").innerHTML = "<legend>Services</legend>" + state.services.map((service) =>
     '<label class="check"><input type="checkbox" name="serviceIds" value="' + service.id + '">' + esc(service.name) + ' - ' + money(service.price_cents) + '</label>'
   ).join("");
@@ -1172,11 +1206,64 @@ function renderStaff() { document.querySelector("#staffCards").innerHTML = state
 function renderServices() { document.querySelector("#serviceCards").innerHTML = state.services.map((s) => '<article><strong>' + esc(s.name) + '</strong><span>' + esc(s.category) + ' - ' + s.duration_minutes + ' min</span><em>' + money(s.price_cents) + '</em></article>').join(""); }
 function renderProducts() { document.querySelector("#productCards").innerHTML = (state.products || []).map((p) => '<article><strong>' + esc(p.name) + '</strong><span>' + esc(p.category) + ' - SKU ' + esc(p.sku || "") + '</span><em>' + money(p.price_cents) + '</em></article>').join(""); }
 function renderCustomers() { document.querySelector("#customersTable").innerHTML = state.customers.map((c) => '<tr><td><strong>' + esc(c.first_name + " " + c.last_name) + '</strong></td><td>' + esc(c.email) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tags || "") + '</td></tr>').join(""); }
+function showTab(tabId) {
+  document.querySelectorAll(".nav,.tab").forEach((item) => item.classList.remove("active"));
+  document.querySelector('.nav[data-tab="' + cssEsc(tabId) + '"]')?.classList.add("active");
+  document.querySelector("#" + tabId)?.classList.add("active");
+}
+function canCheckoutBooking(booking) {
+  return !booking.sale_id && booking.payment_status !== "Paid" && !["Cancelled", "No show"].includes(booking.status);
+}
+function renderBookingCheckoutOptions() {
+  const select = document.querySelector("#bookingCheckout");
+  const currentValue = select.value;
+  const options = state.bookings.filter(canCheckoutBooking).map((booking) =>
+    '<option value="' + esc(booking.id) + '">' + esc(booking.booking_date + " " + booking.booking_time + " — " + booking.customer_name + " — " + booking.service_names + " — " + money(booking.total_cents)) + '</option>'
+  ).join("");
+  select.innerHTML = '<option value="">New walk-in sale</option>' + options;
+  if ([...select.options].some((option) => option.value === currentValue)) select.value = currentValue;
+}
+function selectBookingForCheckout() {
+  const form = document.querySelector("#saleForm");
+  const booking = state.bookings.find((item) => item.id === document.querySelector("#bookingCheckout").value);
+  form.elements.bookingId.value = booking?.id || "";
+  if (!booking) {
+    document.querySelector(".booking-checkout-hint").textContent = "Choose an unpaid booking to preload its customer, services, and assigned staff.";
+    return;
+  }
+  const customer = state.customers.find((item) => item.id === booking.customer_id);
+  form.elements.customerMode.value = "existing";
+  form.elements.customerSearch.value = customer ? customerLabel(customer) : "";
+  updateCustomerMode();
+  document.querySelector("#saleItems").innerHTML = "";
+  parseClientIdList(booking.service_ids).forEach((serviceId) => {
+    const service = saleCatalog().find((item) => item.type === "service" && item.id === serviceId);
+    if (service) addSaleItem(service, booking.staff_id || "");
+  });
+  if (!document.querySelector("#saleItems").children.length) addSaleItem();
+  form.elements.cashAmount.value = "";
+  form.elements.cardAmount.value = "";
+  document.querySelector(".booking-checkout-hint").textContent = booking.customer_name + " — " + booking.service_names + " — " + money(booking.total_cents);
+  renderCartSummary();
+  message.textContent = "Booking loaded. Enter payment to complete checkout.";
+}
+function checkoutBookingFromRow(event) {
+  const bookingId = event.target.closest("tr").dataset.bookingId;
+  showTab("pos");
+  document.querySelector("#bookingCheckout").value = bookingId;
+  selectBookingForCheckout();
+  document.querySelector("#saleForm").scrollIntoView({ behavior:"smooth", block:"start" });
+}
+function parseClientIdList(value) {
+  try { const parsed = JSON.parse(value || "[]"); return Array.isArray(parsed) ? parsed : []; }
+  catch { return []; }
+}
 function renderBookings() {
   document.querySelector("#bookingsTable").innerHTML = state.bookings.map((b) =>
-    '<tr data-booking-id="' + esc(b.id) + '"><td><input name="bookingDate" type="date" value="' + esc(b.booking_date) + '"><input name="bookingTime" type="time" value="' + esc(b.booking_time) + '"></td><td><strong>' + esc(b.customer_name) + '</strong><div class="hint">' + esc(b.notes || "") + '</div></td><td><select name="staffId">' + staffSelectOptions(b.staff_id) + '</select></td><td>' + esc(b.service_names) + '</td><td><select name="status"><option' + selected(b.status, "Booked") + '>Booked</option><option' + selected(b.status, "Confirmed") + '>Confirmed</option><option' + selected(b.status, "Completed") + '>Completed</option><option' + selected(b.status, "Cancelled") + '>Cancelled</option><option' + selected(b.status, "No show") + '>No show</option></select></td><td><button class="secondary save-booking" type="button">Save</button></td></tr>'
+    '<tr data-booking-id="' + esc(b.id) + '"><td><input name="bookingDate" type="date" value="' + esc(b.booking_date) + '"><input name="bookingTime" type="time" value="' + esc(b.booking_time) + '"></td><td><strong>' + esc(b.customer_name) + '</strong><div class="hint">' + esc(b.notes || "") + '</div></td><td><select name="staffId">' + staffSelectOptions(b.staff_id) + '</select></td><td>' + esc(b.service_names) + '<div class="hint">' + esc(b.payment_status) + '</div></td><td><select name="status"><option' + selected(b.status, "Booked") + '>Booked</option><option' + selected(b.status, "Confirmed") + '>Confirmed</option><option' + selected(b.status, "Completed") + '>Completed</option><option' + selected(b.status, "Cancelled") + '>Cancelled</option><option' + selected(b.status, "No show") + '>No show</option></select></td><td><button class="secondary save-booking" type="button">Save</button>' + (canCheckoutBooking(b) ? '<button class="primary checkout-booking" type="button">Checkout in POS</button>' : '') + '</td></tr>'
   ).join("");
   document.querySelectorAll(".save-booking").forEach((button) => button.addEventListener("click", saveBookingRow));
+  document.querySelectorAll(".checkout-booking").forEach((button) => button.addEventListener("click", checkoutBookingFromRow));
 }
 function renderSales() { document.querySelector("#salesTable").innerHTML = state.sales.map((s) => '<tr><td>' + esc(s.branch_name) + '</td><td>' + money(s.total_cents) + '</td><td>' + esc(s.payment_method) + '</td><td><span class="pill">' + esc(s.status) + '</span></td></tr>').join(""); }
 function renderDiscounts() { document.querySelector("#discountCards").innerHTML = (state.discounts || []).map((d) => '<article><strong>' + esc(d.name) + '</strong><span>' + esc(d.type) + ' ' + esc(d.amount) + '</span><em>' + esc(d.status) + '</em></article>').join(""); }
@@ -1199,14 +1286,22 @@ function renderReports() {
     return '<article><strong>' + esc(branch.name) + '</strong><span>' + branchSales.length + ' transactions</span><em>' + money(branchRevenue) + ' / Closing ' + esc(closing?.status || "Open") + '</em></article>';
   }).join("");
 }
-function addSaleItem() {
+function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
   row.className = "sale-item";
   row.innerHTML = '<label>Service / product search<input name="saleItemSearch" list="itemList" required placeholder="Type service or product"></label><div class="line-meta"></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint">Add all staff who worked on this service. Staff can be from any branch.</p></div>';
   document.querySelector("#saleItems").append(row);
   row.querySelector(".add-staff").addEventListener("click", () => addStaffToSaleItem(row));
   row.querySelector('input[name="saleItemSearch"]').addEventListener("input", () => updateSaleItemRow(row));
+  if (selectedItem) row.querySelector('input[name="saleItemSearch"]').value = selectedItem.label;
   updateSaleItemRow(row);
+  if (selectedStaffId && selectedItem?.type === "service") {
+    const staff = state.staff.find((item) => item.id === selectedStaffId);
+    if (staff) {
+      row.querySelector('input[name="saleStaffSearch"]').value = staffLabel(staff);
+      addStaffToSaleItem(row);
+    }
+  }
 }
 async function submitCustomer(event) { event.preventDefault(); await submitJson("/api/customers", Object.fromEntries(new FormData(event.target)), event.target); }
 async function submitBooking(event) {
@@ -1244,6 +1339,7 @@ async function submitSale(event) {
   }).filter(Boolean);
   await submitJson("/api/sales", {
     branchId:data.get("branchId"),
+    bookingId:data.get("bookingId"),
     customerMode,
     customerId,
     customerCategory:data.get("customerCategory"),
@@ -1262,7 +1358,7 @@ async function submitJson(path, payload, form) {
       document.querySelector("#printReceipt").classList.remove("hidden");
     }
     form.reset();
-    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; addSaleItem(); updateCustomerMode(); }
+    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; addSaleItem(); updateCustomerMode(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
   } catch (error) { message.textContent = error.message; }
@@ -1463,6 +1559,7 @@ table { width:100%; min-width:760px; border-collapse:collapse; }
 th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
 th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
+.checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:640px){ .metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary{grid-template-columns:1fr}.token{min-width:0} }
 `;
