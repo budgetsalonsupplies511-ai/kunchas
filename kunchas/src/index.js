@@ -71,6 +71,8 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/services") return createService(request, env);
       if (request.method === "POST" && url.pathname === "/api/products") return createProduct(request, env);
       if (request.method === "POST" && url.pathname === "/api/staff") return createStaff(request, env);
+      if (request.method === "POST" && url.pathname === "/api/branches") return createBranch(request, env);
+      if (request.method === "DELETE" && url.pathname.startsWith("/api/branches/")) return deleteBranch(request, env, clean(url.pathname.replace("/api/branches/", "")));
       if (request.method === "POST" && url.pathname === "/api/stock-movements") return createStockMovement(request, env);
       if (request.method === "POST" && url.pathname === "/api/branch-hours") return saveBranchHours(request, env);
       if (request.method === "POST" && url.pathname === "/api/closed-dates") return createClosedDate(request, env);
@@ -414,11 +416,52 @@ async function createStaff(request, env) {
   const body = await request.json();
   const branchId = clean(body.branchId);
   const name = clean(body.name);
-  if (!branchId || !name) return jsonResponse({ error: "Branch and staff name are required." }, 400);
+  if (!name) return jsonResponse({ error: "Staff name is required." }, 400);
   await env.DB.prepare("INSERT INTO staff (id, branch_id, name, role, email, phone, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
     .bind(`staff-${crypto.randomUUID()}`, branchId, name, clean(body.role) || "Stylist", clean(body.email), clean(body.phone), clean(body.status) || "Active")
     .run();
   return jsonResponse({ ok: true });
+}
+
+async function createBranch(request, env) {
+  const body = await request.json();
+  const name = clean(body.name);
+  const address = clean(body.address);
+  const phone = clean(body.phone);
+  const postCode = clean(body.postCode);
+  if (!name || !address || !phone) return jsonResponse({ error: "Branch name, address, and phone are required." }, 400);
+  const id = `branch-${crypto.randomUUID()}`;
+  await env.DB.prepare("INSERT INTO branches (id, name, address, phone, post_code, pin_code, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, name, address, phone, postCode, postCode, clean(body.status) || "Open")
+    .run();
+  return jsonResponse({ ok: true, id }, 201);
+}
+
+async function deleteBranch(request, env, branchId) {
+  if (!branchId) return jsonResponse({ error: "Branch is required." }, 400);
+  const branch = (await all(env, "SELECT id FROM branches WHERE id = ?", [branchId]))[0];
+  if (!branch) return jsonResponse({ error: "Branch not found." }, 404);
+  const dependencies = await Promise.all([
+    countBranchRows(env, "customers", branchId),
+    countBranchRows(env, "bookings", branchId),
+    countBranchRows(env, "sales", branchId),
+    countBranchRows(env, "stock_movements", branchId),
+    countBranchRows(env, "daily_closings", branchId)
+  ]);
+  if (dependencies.some(Boolean)) return jsonResponse({ error: "This branch has business records and cannot be deleted. Set it to closed instead." }, 409);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM inventory_stock WHERE branch_id = ?").bind(branchId),
+    env.DB.prepare("DELETE FROM branch_hours WHERE branch_id = ?").bind(branchId),
+    env.DB.prepare("DELETE FROM branch_closed_dates WHERE branch_id = ?").bind(branchId),
+    env.DB.prepare("UPDATE staff SET branch_id = '' WHERE branch_id = ?").bind(branchId),
+    env.DB.prepare("DELETE FROM branches WHERE id = ?").bind(branchId)
+  ]);
+  return jsonResponse({ ok: true });
+}
+
+async function countBranchRows(env, table, branchId) {
+  const result = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE branch_id = ?`).bind(branchId).first();
+  return Number(result?.count || 0);
 }
 
 async function createStockMovement(request, env) {
@@ -880,7 +923,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <button class="nav" data-tab="products">Products</button>
       <button class="nav" data-tab="inventory">Inventory</button>
       <button class="nav" data-tab="reports">Reports</button>
-      <button class="nav" data-tab="branches">Timetable</button>
+      <button class="nav" data-tab="branches">Branches</button>
       <button class="nav" data-tab="discounts">Discounts</button>` : `
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">POS</button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">Bookings</button>
@@ -1004,7 +1047,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
 
     <section class="tab admin-only" id="staff">
       <div class="split">
-        <form class="panel" id="staffForm"><h2>Add staff</h2><label>Branch<select name="branchId" required></select></label><div class="grid"><label>Name<input name="name" required></label><label>Role<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><button class="primary full" type="submit">Save staff</button></form>
+        <form class="panel" id="staffForm"><h2>Add staff</h2><label>Branch (optional)<select name="branchId" data-optional-branch></select></label><p class="hint">Leave unassigned for staff who work across branches or are not attached to a location.</p><div class="grid"><label>Name<input name="name" required></label><label>Role<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><button class="primary full" type="submit">Save staff</button></form>
         <div class="panel"><h2>Staff</h2><div class="cards" id="staffCards"></div></div>
       </div>
     </section>
@@ -1023,7 +1066,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     <section class="tab admin-only" id="inventory">
       <div class="split">
         <form class="panel" id="stockForm"><h2>Stock movement</h2><label>Branch<select name="branchId" required></select></label><label>Product<select name="productId" required></select></label><div class="grid"><label>Type<select name="movementType"><option>Receive</option><option>Adjustment in</option><option>Adjustment out</option><option>Transfer in</option><option>Transfer out</option></select></label><label>Quantity<input name="quantity" type="number" min="1" required></label></div><div class="grid"><label>Reference<input name="reference" placeholder="Invoice / transfer"></label><label>Reason<input name="reason" placeholder="Supplier delivery"></label></div><button class="primary full" type="submit">Save movement</button></form>
-        <div class="panel"><h2>Stock on hand</h2><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Product</th><th>SKU</th><th>Qty</th><th>Status</th></tr></thead><tbody id="inventoryTable"></tbody></table></div></div>
+        <div class="panel"><h2>All product inventory by branch</h2><div class="table-wrap"><table><thead id="inventoryHead"></thead><tbody id="inventoryTable"></tbody></table></div></div>
       </div>
     </section>
     <section class="tab staff-only" id="closing">
@@ -1034,14 +1077,19 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
     <section class="tab admin-only" id="reports">
       <div class="panel"><h2>Reports</h2><div class="metrics" id="reportMetrics"></div><div class="branch-grid" id="reportCards"></div></div>
+      <div class="panel"><h2>Inventory report by branch</h2><div class="table-wrap"><table><thead id="reportInventoryHead"></thead><tbody id="reportInventoryTable"></tbody></table></div></div>
       <div class="panel"><h2>Admin closing review</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Actual cash</th><th>Cash taken</th><th>Actual card</th><th>Status</th><th>Approved by</th><th></th></tr></thead><tbody id="adminClosingTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="branches">
       <div class="split">
+        <form class="panel" id="branchForm"><h2>Create branch</h2><label>Name<input name="name" required></label><label>Address<input name="address" required></label><div class="grid"><label>Phone<input name="phone" required></label><label>Postcode / PIN<input name="postCode" inputmode="numeric"></label></div><button class="primary full" type="submit">Create branch</button></form>
+        <div class="panel"><h2>Branch details</h2><label>Choose branch<select id="branchDetailSelect"></select></label><div id="branchDetail"></div></div>
+      </div>
+      <div class="split">
         <form class="panel" id="hoursForm"><h2>Branch timetable</h2><label>Branch<select name="branchId" required></select></label><label>Day<select name="dayOfWeek"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></label><div class="grid"><label>Open<input name="openTime" type="time" value="09:00"></label><label>Close<input name="closeTime" type="time" value="17:30"></label></div><label class="check"><input name="isClosed" type="checkbox">Closed every week on this day</label><button class="primary full" type="submit">Save timetable</button></form>
         <form class="panel" id="closedDateForm"><h2>Closed date</h2><label>Branch<select name="branchId" required></select></label><label>Date<input name="closedDate" type="date" required></label><label>Reason<input name="reason" placeholder="Public holiday"></label><button class="primary full" type="submit">Add closed date</button></form>
       </div>
-      <div class="panel"><h2>5 branches</h2><div class="cards" id="branchCards"></div></div>
+      <div class="panel"><h2>All branches</h2><div class="cards" id="branchCards"></div></div>
     </section>
     <section class="tab admin-only" id="discounts">
       <div class="split">
@@ -1083,6 +1131,8 @@ document.querySelector('#closingForm input[name="actualCash"]').addEventListener
 document.querySelector('#closingForm input[name="cashTaken"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCard"]').addEventListener("input", renderClosingPreview);
 document.querySelector("#staffForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/staff"));
+document.querySelector("#branchForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branches"));
+document.querySelector("#branchDetailSelect").addEventListener("change", renderBranchDetail);
 document.querySelector("#serviceForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/services"));
 document.querySelector("#productForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/products"));
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
@@ -1176,6 +1226,7 @@ function fillSelects() {
   const customerOptions = '<option value="">Walk-in</option>' + state.customers.map((c) => '<option value="' + c.id + '">' + esc(c.first_name + " " + c.last_name) + '</option>').join("");
   const productOptions = '<option value="">Select product</option>' + (state.products || []).map((p) => '<option value="' + p.id + '">' + esc(p.name) + ' - ' + money(p.price_cents) + '</option>').join("");
   document.querySelectorAll('select[name="branchId"]').forEach((select) => select.innerHTML = branchOptions);
+  document.querySelectorAll('select[data-optional-branch]').forEach((select) => select.innerHTML = '<option value="">Unassigned / all branches</option>' + branchOptions);
   if (window.initialBranchId) {
     document.querySelectorAll('select[name="branchId"]').forEach((select) => select.value = window.initialBranchId);
   }
@@ -1201,7 +1252,36 @@ function renderMetrics() {
     return '<article><strong>' + esc(branch.name) + '</strong><span>' + branchSales.length + ' sales</span><em>' + money(branchRevenue) + '</em></article>';
   }).join("");
 }
-function renderBranches() { document.querySelector("#branchCards").innerHTML = state.branches.map((b) => '<article><strong>' + esc(b.name) + '</strong><span>' + esc(b.address) + '</span><em>' + esc(b.phone) + '</em><a class="branch-pos" href="/pos/' + esc(b.id) + '">Open branch POS</a></article>').join(""); }
+function renderBranches() {
+  document.querySelector("#branchCards").innerHTML = state.branches.map((b) => '<article><strong>' + esc(b.name) + '</strong><span>' + esc(b.address) + '</span><span>' + esc(b.phone) + ' · ' + esc(b.post_code || "No postcode") + '</span><em>' + esc(b.status) + '</em><a class="branch-pos" href="/pos/' + esc(b.id) + '">Open branch POS</a><button class="danger delete-branch" data-branch-id="' + esc(b.id) + '" type="button">Delete branch</button></article>').join("");
+  document.querySelectorAll(".delete-branch").forEach((button) => button.addEventListener("click", deleteBranch));
+  const detailSelect = document.querySelector("#branchDetailSelect");
+  const current = detailSelect.value;
+  detailSelect.innerHTML = state.branches.map((b) => '<option value="' + esc(b.id) + '">' + esc(b.name) + '</option>').join("");
+  if (state.branches.some((b) => b.id === current)) detailSelect.value = current;
+  renderBranchDetail();
+}
+function renderBranchDetail() {
+  const branchId = document.querySelector("#branchDetailSelect").value;
+  const branch = state.branches.find((item) => item.id === branchId);
+  const box = document.querySelector("#branchDetail");
+  if (!branch) { box.innerHTML = '<p class="hint">Create or select a branch.</p>'; return; }
+  const hours = (state.branchHours || []).filter((item) => item.branch_id === branchId).sort((a, b) => Number(a.day_of_week) - Number(b.day_of_week));
+  const bookings = state.bookings.filter((item) => item.branch_id === branchId);
+  const stock = inventoryRows().filter((item) => item.branch_id === branchId);
+  box.innerHTML = '<div class="branch-detail-heading"><strong>' + esc(branch.name) + '</strong><span>' + esc(branch.address) + '</span><span>' + esc(branch.phone) + ' · PIN ' + esc(branch.post_code || "Not set") + '</span></div>' +
+    '<h3>Timetable</h3><div class="table-wrap"><table><thead><tr><th>Day</th><th>Hours</th></tr></thead><tbody>' + (hours.length ? hours.map((item) => '<tr><td>' + dayName(item.day_of_week) + '</td><td>' + (item.is_closed ? 'Closed' : esc(item.open_time + '–' + item.close_time)) + '</td></tr>').join('') : '<tr><td colspan="2">No timetable saved</td></tr>') + '</tbody></table></div>' +
+    '<h3>Bookings</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Service</th><th>Status</th></tr></thead><tbody>' + (bookings.length ? bookings.map((item) => '<tr><td>' + esc(item.booking_date + ' ' + item.booking_time) + '</td><td>' + esc(item.customer_name) + '</td><td>' + esc(item.service_names) + '</td><td>' + esc(item.status) + '</td></tr>').join('') : '<tr><td colspan="4">No bookings</td></tr>') + '</tbody></table></div>' +
+    '<h3>Inventory</h3><div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU</th><th>Qty</th></tr></thead><tbody>' + stock.map((item) => '<tr><td>' + esc(item.product_name) + '</td><td>' + esc(item.sku || '') + '</td><td>' + item.quantity + '</td></tr>').join('') + '</tbody></table></div>';
+}
+async function deleteBranch(event) {
+  const branchId = event.currentTarget.dataset.branchId;
+  const branch = state.branches.find((item) => item.id === branchId);
+  if (!branch || !confirm('Delete ' + branch.name + '? Only branches without business records can be deleted.')) return;
+  try { await api('/api/branches/' + encodeURIComponent(branchId), { method:'DELETE' }); message.textContent = 'Branch deleted.'; await loadData(); }
+  catch (error) { message.textContent = error.message; }
+}
+function dayName(day) { return ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][Number(day)] || ''; }
 function renderStaff() { document.querySelector("#staffCards").innerHTML = state.staff.map((s) => '<article><strong>' + esc(s.name) + '</strong><span>' + esc(s.role) + '</span><em>' + esc(branchName(s.branch_id)) + '</em></article>').join(""); }
 function renderServices() { document.querySelector("#serviceCards").innerHTML = state.services.map((s) => '<article><strong>' + esc(s.name) + '</strong><span>' + esc(s.category) + ' - ' + s.duration_minutes + ' min</span><em>' + money(s.price_cents) + '</em></article>').join(""); }
 function renderProducts() { document.querySelector("#productCards").innerHTML = (state.products || []).map((p) => '<article><strong>' + esc(p.name) + '</strong><span>' + esc(p.category) + ' - SKU ' + esc(p.sku || "") + '</span><em>' + money(p.price_cents) + '</em></article>').join(""); }
@@ -1267,8 +1347,24 @@ function renderBookings() {
 }
 function renderSales() { document.querySelector("#salesTable").innerHTML = state.sales.map((s) => '<tr><td>' + esc(s.branch_name) + '</td><td>' + money(s.total_cents) + '</td><td>' + esc(s.payment_method) + '</td><td><span class="pill">' + esc(s.status) + '</span></td></tr>').join(""); }
 function renderDiscounts() { document.querySelector("#discountCards").innerHTML = (state.discounts || []).map((d) => '<article><strong>' + esc(d.name) + '</strong><span>' + esc(d.type) + ' ' + esc(d.amount) + '</span><em>' + esc(d.status) + '</em></article>').join(""); }
+function inventoryRows() {
+  return state.branches.flatMap((branch) => (state.products || []).map((product) => {
+    const stock = (state.inventoryStock || []).find((item) => item.branch_id === branch.id && item.product_id === product.id);
+    return { branch_id:branch.id, branch_name:branch.name, product_id:product.id, product_name:product.name, sku:product.sku, quantity:Number(stock?.quantity || 0), low_stock_level:Number(stock?.low_stock_level || 3) };
+  }));
+}
+function inventoryMatrixMarkup() {
+  const head = '<tr><th>Product</th><th>SKU</th>' + state.branches.map((branch) => '<th>' + esc(branch.name) + '</th>').join('') + '<th>Total</th></tr>';
+  const body = (state.products || []).map((product) => {
+    const quantities = state.branches.map((branch) => inventoryRows().find((row) => row.branch_id === branch.id && row.product_id === product.id)?.quantity || 0);
+    return '<tr><td><strong>' + esc(product.name) + '</strong></td><td>' + esc(product.sku || '') + '</td>' + quantities.map((qty) => '<td>' + qty + '</td>').join('') + '<td><strong>' + quantities.reduce((sum, qty) => sum + qty, 0) + '</strong></td></tr>';
+  }).join('');
+  return { head, body };
+}
 function renderInventory() {
-  document.querySelector("#inventoryTable").innerHTML = (state.inventoryStock || []).map((item) => '<tr><td>' + esc(item.branch_name) + '</td><td>' + esc(item.product_name) + '</td><td>' + esc(item.sku || "") + '</td><td>' + esc(item.quantity) + '</td><td><span class="pill">' + esc(Number(item.quantity) <= Number(item.low_stock_level) ? "Low stock" : "OK") + '</span></td></tr>').join("");
+  const matrix = inventoryMatrixMarkup();
+  document.querySelector("#inventoryHead").innerHTML = matrix.head;
+  document.querySelector("#inventoryTable").innerHTML = matrix.body;
 }
 function renderClosings() {
   document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + '</div></td><td>' + money(c.cash_taken_cents || 0) + '</td><td>' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '<div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
@@ -1285,6 +1381,9 @@ function renderReports() {
     const closing = (state.dailyClosings || []).find((item) => item.branch_id === branch.id);
     return '<article><strong>' + esc(branch.name) + '</strong><span>' + branchSales.length + ' transactions</span><em>' + money(branchRevenue) + ' / Closing ' + esc(closing?.status || "Open") + '</em></article>';
   }).join("");
+  const matrix = inventoryMatrixMarkup();
+  document.querySelector("#reportInventoryHead").innerHTML = matrix.head;
+  document.querySelector("#reportInventoryTable").innerHTML = matrix.body;
 }
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
@@ -1500,6 +1599,7 @@ textarea { min-height:90px; padding-top:12px; resize:vertical; }
 button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-radius:8px; font:inherit; font-weight:800; cursor:pointer; }
 .primary { color:#fff; background:var(--brand); }
 .secondary { color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; }
+.danger { width:100%; margin-top:12px; color:#9b3444; background:#fff; border:1px solid #d8aeb4; }
 .full { width:100%; }
 .hidden { display:none; }
 .admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
@@ -1527,6 +1627,9 @@ legend { grid-column:1/-1; }
 .cards span,.branch-grid span { display:block; color:var(--muted); }
 .cards em,.branch-grid em { display:block; margin-top:8px; color:#9b3444; font-style:normal; font-weight:800; }
 .branch-pos { display:inline-flex; margin-top:12px; color:#9b3444; font-weight:800; }
+.branch-detail-heading { display:grid; gap:3px; margin:16px 0; padding:14px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
+.branch-detail-heading strong { font-size:20px; }
+.branch-detail-heading span { color:var(--muted); }
 .sale-item { padding:14px; margin-bottom:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .line-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin:-4px 0 10px; }
 .line-meta strong { font-size:18px; }
