@@ -59,17 +59,11 @@ Deploy:
 npm run deploy
 ```
 
-## Required admin protection
+## Admin access
 
-Set an admin token:
-
-```bash
-npx wrangler secret put ADMIN_TOKEN
-```
-
-After that, the `/admin` page will require the token before it can load members.
-
-The admin member list will not load unless `ADMIN_TOKEN` is configured.
+The `/admin` dashboard does not require an application token. Before exposing the
+Worker publicly, protect the admin routes with an access control layer such as
+Cloudflare Access.
 
 ## Shopify note
 

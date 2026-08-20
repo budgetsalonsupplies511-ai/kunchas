@@ -191,11 +191,11 @@ INSERT OR IGNORE INTO branches (id, name, address, phone, post_code, pin_code, s
   ('branch-hurstville', 'Kunchas Hurstville', 'Hurstville branch', '02 9000 1005', '2220', '2220', 'Open');
 
 INSERT OR IGNORE INTO staff (id, branch_id, name, role, email, phone, status) VALUES
-  ('staff-mia', 'branch-city', 'Mia Chen', 'Branch manager', 'mia@kunchas.com.au', '0400 100 001', 'Active'),
-  ('staff-ava', 'branch-parramatta', 'Ava Singh', 'Senior stylist', 'ava@kunchas.com.au', '0400 100 002', 'Active'),
-  ('staff-noah', 'branch-liverpool', 'Noah Taylor', 'Colour specialist', 'noah@kunchas.com.au', '0400 100 003', 'Active'),
-  ('staff-ella', 'branch-blacktown', 'Ella Martin', 'Beauty therapist', 'ella@kunchas.com.au', '0400 100 004', 'Active'),
-  ('staff-lina', 'branch-hurstville', 'Lina Patel', 'Salon coordinator', 'lina@kunchas.com.au', '0400 100 005', 'Active');
+  ('staff-mia', '', 'Mia Chen', 'Branch manager', 'mia@kunchas.com.au', '0400 100 001', 'Active'),
+  ('staff-ava', '', 'Ava Singh', 'Senior stylist', 'ava@kunchas.com.au', '0400 100 002', 'Active'),
+  ('staff-noah', '', 'Noah Taylor', 'Colour specialist', 'noah@kunchas.com.au', '0400 100 003', 'Active'),
+  ('staff-ella', '', 'Ella Martin', 'Beauty therapist', 'ella@kunchas.com.au', '0400 100 004', 'Active'),
+  ('staff-lina', '', 'Lina Patel', 'Salon coordinator', 'lina@kunchas.com.au', '0400 100 005', 'Active');
 
 INSERT OR IGNORE INTO services (id, name, category, duration_minutes, price_cents, status) VALUES
   ('service-haircut', 'Haircut', 'Hair', 30, 4500, 'Active'),
