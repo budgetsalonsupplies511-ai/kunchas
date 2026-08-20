@@ -215,7 +215,8 @@ INSERT OR IGNORE INTO customers (id, created_at, updated_at, first_name, last_na
   ('sample-customer-jack', datetime('now'), datetime('now'), 'Jack', 'Wilson', 'jack.sample@kunchas.local', '0400 555 102', 'branch-parramatta', 'Sample booking', 'Sample data for POS checkout testing'),
   ('sample-customer-sophia', datetime('now'), datetime('now'), 'Sophia', 'Nguyen', 'sophia.sample@kunchas.local', '0400 555 103', 'branch-liverpool', 'Sample booking', 'Sample data for POS checkout testing'),
   ('sample-customer-liam', datetime('now'), datetime('now'), 'Liam', 'Davis', 'liam.sample@kunchas.local', '0400 555 104', 'branch-blacktown', 'Sample booking', 'Sample data for POS checkout testing'),
-  ('sample-customer-zara', datetime('now'), datetime('now'), 'Zara', 'Khan', 'zara.sample@kunchas.local', '0400 555 105', 'branch-hurstville', 'Sample booking', 'Sample data for POS checkout testing');
+  ('sample-customer-zara', datetime('now'), datetime('now'), 'Zara', 'Khan', 'zara.sample@kunchas.local', '0400 555 105', 'branch-hurstville', 'Sample booking', 'Sample data for POS checkout testing'),
+  ('sample-customer-amelia', datetime('now'), datetime('now'), 'Amelia', 'Patel', 'amelia.sample@kunchas.local', '0400 555 106', 'branch-city', 'Sample POS customer', 'Sample customer for POS checkout testing');
 
 INSERT OR IGNORE INTO bookings (id, created_at, updated_at, customer_id, branch_id, staff_id, service_ids, service_names, booking_date, booking_time, duration_minutes, total_cents, status, payment_status, sale_id, notes) VALUES
   ('sample-booking-city', datetime('now'), datetime('now'), 'sample-customer-olivia', 'branch-city', 'staff-mia', '["service-haircut","service-treatment"]', 'Haircut, Hair treatment', date('now', '+1 day'), '10:00', 75, 11500, 'Confirmed', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),

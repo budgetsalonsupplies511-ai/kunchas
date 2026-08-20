@@ -1,0 +1,2 @@
+INSERT OR IGNORE INTO customers (id, created_at, updated_at, first_name, last_name, email, phone, branch_id, tags, notes) VALUES
+  ('sample-customer-amelia', datetime('now'), datetime('now'), 'Amelia', 'Patel', 'amelia.sample@kunchas.local', '0400 555 106', 'branch-city', 'Sample POS customer', 'Sample customer for POS checkout testing');
