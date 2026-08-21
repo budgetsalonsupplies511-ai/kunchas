@@ -1,3 +1,5 @@
+import readXlsxFile from "read-excel-file/universal";
+
 export default {
   async fetch(request, env, ctx) {
     try {
@@ -67,6 +69,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/services") return createService(request, env);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/services/")) return updateService(request, env, clean(url.pathname.replace("/api/services/", "")));
       if (request.method === "POST" && url.pathname === "/api/products") return createProduct(request, env);
+      if (request.method === "POST" && url.pathname === "/api/products-import") return importProducts(request, env);
       if (request.method === "POST" && url.pathname === "/api/staff") return createStaff(request, env);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/staff/")) return updateStaff(request, env, clean(url.pathname.replace("/api/staff/", "")));
       if (request.method === "POST" && url.pathname === "/api/staff-roster") return saveStaffRoster(request, env);
@@ -457,6 +460,76 @@ async function createStaff(request, env) {
     .bind(`staff-${crypto.randomUUID()}`, "", name, clean(body.role) || "Stylist", clean(body.email), clean(body.phone), clean(body.status) || "Active")
     .run();
   return jsonResponse({ ok: true });
+}
+
+async function importProducts(request, env) {
+  const fileName = clean(request.headers.get("x-file-name")).toLowerCase();
+  const bytes = await request.arrayBuffer();
+  if (!bytes.byteLength || bytes.byteLength > 5 * 1024 * 1024) return jsonResponse({ error: "Choose a spreadsheet up to 5 MB." }, 400);
+  let rows;
+  try {
+    rows = fileName.endsWith(".csv") ? parseCsv(new TextDecoder().decode(bytes)) : await readXlsxFile(bytes);
+  } catch {
+    return jsonResponse({ error: "Could not read this spreadsheet. Upload a valid .xlsx or .csv file." }, 400);
+  }
+  if (!Array.isArray(rows) || rows.length < 2) return jsonResponse({ error: "The spreadsheet has no product rows." }, 400);
+  if (rows.length > 1001) return jsonResponse({ error: "Import up to 1,000 products at a time." }, 400);
+  const headers = rows[0].map((value) => clean(value).toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const column = (names) => names.map((name) => headers.indexOf(name)).find((index) => index >= 0) ?? -1;
+  const columns = {
+    name:column(["name","productname"]), brand:column(["brand"]), category:column(["category"]), sku:column(["sku"]),
+    barcode:column(["barcode"]), cost:column(["cost","costprice"]), price:column(["price","retail","retailprice"]), status:column(["status"])
+  };
+  if (columns.name < 0 || columns.price < 0) return jsonResponse({ error: "The spreadsheet must include Name and Price columns." }, 400);
+  const existing = await all(env, "SELECT * FROM products");
+  const bySku = new Map(existing.filter((item) => item.sku).map((item) => [clean(item.sku).toLowerCase(), item]));
+  const byBarcode = new Map(existing.filter((item) => item.barcode).map((item) => [clean(item.barcode).toLowerCase(), item]));
+  const statements = [];
+  const errors = [];
+  let added = 0, updated = 0;
+  for (let index = 1; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (!Array.isArray(row) || row.every((value) => !clean(value))) continue;
+    const value = (key) => columns[key] >= 0 ? clean(row[columns[key]]) : "";
+    const name = value("name"), sku = value("sku"), barcode = value("barcode");
+    const priceCents = Math.round(Number(value("price")) * 100);
+    const costCents = Math.round(Number(value("cost") || 0) * 100);
+    if (!name || !Number.isFinite(priceCents) || priceCents < 0 || !Number.isFinite(costCents) || costCents < 0) {
+      errors.push(`Row ${index + 1}: Name and a valid non-negative Price are required.`);
+      continue;
+    }
+    const status = value("status").toLowerCase() === "inactive" ? "Inactive" : "Active";
+    const match = (sku && bySku.get(sku.toLowerCase())) || (barcode && byBarcode.get(barcode.toLowerCase()));
+    if (match) {
+      statements.push(env.DB.prepare("UPDATE products SET name = ?, brand = ?, category = ?, sku = ?, barcode = ?, cost_cents = ?, price_cents = ?, status = ? WHERE id = ?")
+        .bind(name, value("brand"), value("category") || "Retail", sku, barcode, costCents, priceCents, status, match.id));
+      updated += 1;
+    } else {
+      const product = { id:`product-${crypto.randomUUID()}`, sku, barcode };
+      statements.push(env.DB.prepare("INSERT INTO products (id, name, brand, category, sku, barcode, cost_cents, price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(product.id, name, value("brand"), value("category") || "Retail", sku, barcode, costCents, priceCents, status));
+      if (sku) bySku.set(sku.toLowerCase(), product);
+      if (barcode) byBarcode.set(barcode.toLowerCase(), product);
+      added += 1;
+    }
+  }
+  if (!statements.length) return jsonResponse({ error: errors[0] || "No valid product rows were found.", errors:errors.slice(0, 20) }, 400);
+  for (let index = 0; index < statements.length; index += 50) await env.DB.batch(statements.slice(index, index + 50));
+  return jsonResponse({ ok:true, added, updated, skipped:errors.length, errors:errors.slice(0, 20) });
+}
+
+function parseCsv(text) {
+  const rows = []; let row = [], value = "", quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted && char === '"' && text[index + 1] === '"') { value += '"'; index += 1; }
+    else if (char === '"') quoted = !quoted;
+    else if (char === "," && !quoted) { row.push(value); value = ""; }
+    else if ((char === "\n" || char === "\r") && !quoted) { if (char === "\r" && text[index + 1] === "\n") index += 1; row.push(value); rows.push(row); row = []; value = ""; }
+    else value += char;
+  }
+  if (value || row.length) { row.push(value); rows.push(row); }
+  return rows;
 }
 
 async function updateStaff(request, env, staffId) {
@@ -1149,6 +1222,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         <form class="panel" id="productForm"><h2>Add product</h2><div class="grid"><label>Name<input name="name" required></label><label>Brand<input name="brand"></label></div><div class="grid"><label>Category<input name="category" placeholder="Haircare"></label><label>SKU<input name="sku"></label></div><label>Barcode<input name="barcode"></label><div class="grid"><label>Cost $<input name="cost" type="number" min="0" step="0.01"></label><label>Retail $<input name="price" type="number" min="0" step="0.01" required></label></div><button class="primary full" type="submit">Save product</button></form>
         <div class="panel"><h2>Products</h2><div class="cards" id="productCards"></div></div>
       </div>
+      <div class="panel product-import-panel"><div class="profile-heading"><div><h2>Import products from Excel</h2><p class="hint">Upload an .xlsx or .csv file to add many products at once. Matching SKU or barcode rows update existing products.</p></div><button class="secondary" id="downloadProductTemplate" type="button">Download template</button></div><form id="productImportForm"><label>Excel or CSV file<input id="productImportFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" required></label><p class="hint">Columns: Name, Brand, Category, SKU, Barcode, Cost, Price, Status. Name and Price are required.</p><button class="primary" type="submit">Import products</button></form><div class="import-result" id="productImportResult"></div></div>
     </section>
     <section class="tab admin-only" id="inventory">
       <div class="split">
@@ -1236,6 +1310,8 @@ document.querySelector("#branchDetailSelect").addEventListener("change", renderB
 document.querySelector("#serviceForm").addEventListener("submit", submitServiceForm);
 document.querySelector("#cancelServiceEdit").addEventListener("click", resetServiceForm);
 document.querySelector("#productForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/products"));
+document.querySelector("#productImportForm").addEventListener("submit", importProductSpreadsheet);
+document.querySelector("#downloadProductTemplate").addEventListener("click", downloadProductTemplate);
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
 document.querySelector("#closingForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/daily-closing"));
 document.querySelector("#hoursForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branch-hours"));
@@ -1828,6 +1904,32 @@ async function submitBooking(event) {
   await submitJson("/api/branch-bookings", { customer:{ firstName:data.get("firstName"), lastName:data.get("lastName"), email:data.get("email"), phone:data.get("phone") }, branchId:data.get("branchId"), staffId:data.get("staffId"), bookingDate:data.get("bookingDate"), bookingTime:data.get("bookingTime"), serviceIds:data.getAll("serviceIds"), notes:data.get("notes") }, event.target);
 }
 async function submitAdminForm(event, path) { event.preventDefault(); await submitJson(path, Object.fromEntries(new FormData(event.target)), event.target); }
+function downloadProductTemplate() {
+  const csv = "Name,Brand,Category,SKU,Barcode,Cost,Price,Status\\r\\nShampoo Example,Kunchas,Haircare,SHAMPOO-001,930000000001,8.50,19.95,Active\\r\\n";
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type:"text/csv;charset=utf-8" }));
+  link.download = "kunchas-product-import-template.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+async function importProductSpreadsheet(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const file = document.querySelector("#productImportFile").files[0];
+  if (!file) return;
+  const resultBox = document.querySelector("#productImportResult");
+  try {
+    message.textContent = "Importing products...";
+    resultBox.textContent = "Reading " + file.name + "...";
+    const response = await fetch("/api/products-import", { method:"POST", headers:{ "content-type":file.type || "application/octet-stream", "x-file-name":encodeURIComponent(file.name) }, body:file });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Product import failed.");
+    resultBox.innerHTML = '<strong>' + result.added + ' added · ' + result.updated + ' updated · ' + result.skipped + ' skipped</strong>' + (result.errors.length ? '<ul>' + result.errors.map((error) => '<li>' + esc(error) + '</li>').join("") + '</ul>' : '');
+    form.reset();
+    await loadData();
+    message.textContent = "Product spreadsheet imported.";
+  } catch (error) { resultBox.textContent = error.message; message.textContent = error.message; }
+}
 async function submitSale(event) {
   event.preventDefault();
   const data = new FormData(event.target);
@@ -2078,6 +2180,10 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .metrics strong { display:block; margin-top:8px; font-size:28px; }
 .panel { padding:22px; }
 .customer-profile,.staff-profile,.roster-day-panel { margin-top:20px; }
+.product-import-panel { margin-top:20px; }
+.product-import-panel form { max-width:680px; margin-top:16px; }
+.import-result { margin-top:14px; color:var(--muted); }
+.import-result strong { color:#9b3444; }
 .profile-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
 .profile-heading h2 { margin-bottom:4px; }
 .customer-row,.staff-row { cursor:pointer; }
