@@ -287,6 +287,10 @@ async function createBooking(request, env) {
   if (!customerId || !branchId || !bookingDate || !bookingTime || !serviceIds.length) {
     return jsonResponse({ error: "Customer, branch, date, time, and at least one service are required." }, 400);
   }
+  const timeMatch = bookingTime.match(/^(\d{2}):(\d{2})$/);
+  if (!timeMatch || Number(timeMatch[2]) % 15 !== 0) {
+    return jsonResponse({ error: "Booking time must use a 15-minute interval." }, 400);
+  }
 
   const placeholders = serviceIds.map(() => "?").join(",");
   const serviceRows = await all(env, `SELECT id, name, duration_minutes, price_cents FROM services WHERE id IN (${placeholders})`, serviceIds);
@@ -1121,7 +1125,8 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">POS</button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">Bookings</button>
       <button class="nav" data-tab="closing">Daily Closing</button>`}
-      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">Recent Sales</button>`}
+      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">Recent Sales</button>
+      <button class="nav" data-tab="employee">Employee</button>`}
     </nav>
   </aside>
 
@@ -1165,7 +1170,6 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         </div>
         <button class="secondary" id="switchBranch" type="button">Switch branch</button>
       </div>
-      <div class="panel time-clock-panel"><div><h2>Staff time clock</h2><p class="hint">Breaks up to 15 minutes are paid. Longer breaks are deducted from worked hours.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" data-time-action="clock-in" type="button">Clock in</button><button class="secondary" data-time-action="start-break" type="button">Start break</button><button class="secondary" data-time-action="end-break" type="button">End break</button><button class="danger" data-time-action="clock-out" type="button">Clock out</button></div><div id="timeClockStatus"></div></div>
       <div class="split">
         <form class="panel" id="saleForm">
           <h2>New POS sale</h2>
@@ -1207,6 +1211,12 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <form class="panel hidden" id="invoiceEditForm"><h2>Edit invoice</h2><input name="saleId" type="hidden"><div id="invoiceItems"></div><div class="grid"><label>Total $<input name="total" type="number" min="0" step="0.01" required></label><label>Payment method<input name="paymentMethod" required></label></div><label>Status<select name="status"><option>Paid</option><option>Refunded</option><option>Voided</option></select></label><div class="grid"><label>Manager<select name="managerId" required></select></label><label>Manager PIN<input name="managerPin" type="password" inputmode="numeric" required></label></div><label>Reason for invoice change<textarea name="reason" required minlength="3"></textarea></label><div class="form-actions"><button class="primary" type="submit">Authorize and save</button><button class="secondary" id="cancelInvoiceEdit" type="button">Cancel</button></div></form>
     </section>
 
+    <section class="tab staff-only" id="employee">
+      <div class="pos-workspace hidden" id="employeeWorkspace">
+        <div class="panel time-clock-panel"><div><h2>Staff time clock</h2><p class="hint">Breaks up to 15 minutes are paid. Longer breaks are deducted from worked hours.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" data-time-action="clock-in" type="button">Clock in</button><button class="secondary" data-time-action="start-break" type="button">Start break</button><button class="secondary" data-time-action="end-break" type="button">End break</button><button class="danger" data-time-action="clock-out" type="button">Clock out</button></div><div id="timeClockStatus"></div></div>
+      </div>
+    </section>
+
     <section class="tab staff-only ${initialTab === "bookings" ? "active" : ""}" id="bookings">
       <div class="split">
         <form class="panel" id="bookingForm">
@@ -1216,8 +1226,8 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
           <div class="booking-customer-existing"><label>Customer search<input name="bookingCustomerSearch" list="customerList" placeholder="Search name, phone, or email"></label></div>
           <div class="booking-customer-new hidden"><div class="grid"><label>First name<input name="firstName"></label><label>Last name<input name="lastName"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div></div>
           <label>Staff<select name="staffId"></select></label>
-          <div class="grid"><label>Date<input name="bookingDate" type="date" required></label><label>Time<input name="bookingTime" type="time" required></label></div>
-          <div class="booking-service-picker"><span class="field-label">Services</span><div class="staff-add-row"><input id="bookingServiceSearch" list="bookingServiceList" placeholder="Type service name, category, or price"><button class="secondary" id="addBookingService" type="button">Add</button></div><datalist id="bookingServiceList"></datalist><div class="selected-booking-services" id="bookingSelectedServices"></div><div class="booking-service-total"><span>Total</span><strong id="bookingServiceTotal">$0.00</strong></div></div>
+          <div class="grid"><label>Date<input name="bookingDate" type="date" required></label><label>Time<input name="bookingTime" type="time" step="900" required></label></div>
+          <div class="booking-service-picker"><span class="field-label">Services</span><input id="bookingServiceSearch" type="text" placeholder="Click to choose a category" readonly role="combobox" aria-expanded="false" aria-controls="bookingServiceMenu"><div class="booking-service-menu hidden" id="bookingServiceMenu"><div class="booking-service-categories" id="bookingServiceCategories"></div><div class="booking-category-services hidden" id="bookingCategoryServices"></div></div><div class="selected-booking-services" id="bookingSelectedServices"></div><div class="booking-service-total"><span>Total</span><strong id="bookingServiceTotal">$0.00</strong></div></div>
           <label>Notes<textarea name="notes" rows="3"></textarea></label>
           <button class="primary full" type="submit">Save booking</button>
         </form>
@@ -1337,8 +1347,8 @@ document.querySelector("#customerForm").addEventListener("submit", submitCustome
 document.querySelector("#customerProfileForm").addEventListener("submit", submitCustomerProfile);
 document.querySelector("#closeCustomerProfile").addEventListener("click", closeCustomerProfile);
 document.querySelector("#bookingForm").addEventListener("submit", submitBooking);
-document.querySelector("#addBookingService").addEventListener("click", addBookingService);
-document.querySelector("#bookingServiceSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); addBookingService(); } });
+document.querySelector("#bookingServiceSearch").addEventListener("click", toggleBookingServiceMenu);
+document.querySelector("#bookingServiceSearch").addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleBookingServiceMenu(); } });
 document.querySelector("#saleForm").addEventListener("submit", submitSale);
 document.querySelectorAll("[data-time-action]").forEach((button) => button.addEventListener("click", recordTimeAction));
 document.querySelector("#invoiceEditForm").addEventListener("submit", submitInvoiceEdit);
@@ -1429,12 +1439,14 @@ async function openPos() {
   renderClosingPreview();
   document.querySelector("#posLogin").classList.add("hidden");
   document.querySelector("#posWorkspace").classList.remove("hidden");
+  document.querySelector("#employeeWorkspace").classList.remove("hidden");
 }
 function switchBranch() {
   selectedPosBranchId = "";
   selectedPosPin = "";
   state = normalizeState();
   document.querySelector("#posWorkspace").classList.add("hidden");
+  document.querySelector("#employeeWorkspace").classList.add("hidden");
   document.querySelector("#posLogin").classList.remove("hidden");
   document.querySelector("#posPin").value = "";
 }
@@ -1485,7 +1497,7 @@ function fillSelects() {
   reportBranch.innerHTML = '<option value="">All locations</option>' + branchOptions;
   reportBranch.value = reportCurrent;
   renderBookingCheckoutOptions();
-  document.querySelector("#bookingServiceList").innerHTML = state.services.filter((service) => service.status !== "Inactive").map((service) => '<option value="' + esc(bookingServiceLabel(service)) + '"></option>').join("");
+  renderBookingServiceCategories();
   document.querySelectorAll(".staff-checks").forEach((box) => box.innerHTML = staffCheckboxes());
   renderCartSummary();
 }
@@ -1992,18 +2004,43 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
     }
   }
 }
-function bookingServiceLabel(service) { return service.name + " | " + service.category + " | " + money(service.price_cents); }
-function addBookingService() {
-  const input = document.querySelector("#bookingServiceSearch");
-  const service = state.services.find((item) => bookingServiceLabel(item) === input.value);
-  if (!service) { message.textContent = "Select a service from the search list."; return; }
-  if (document.querySelector('#bookingSelectedServices input[value="' + cssEsc(service.id) + '"]')) { input.value = ""; return; }
+function toggleBookingServiceMenu() {
+  const menu = document.querySelector("#bookingServiceMenu");
+  const opening = menu.classList.contains("hidden");
+  menu.classList.toggle("hidden", !opening);
+  document.querySelector("#bookingServiceSearch").setAttribute("aria-expanded", String(opening));
+  if (opening) renderBookingServiceCategories();
+}
+function renderBookingServiceCategories() {
+  const categories = [...new Set(state.services.filter((service) => service.status !== "Inactive").map((service) => service.category || "General"))].sort();
+  document.querySelector("#bookingServiceCategories").innerHTML = '<p class="booking-picker-title">Choose a category</p>' + categories.map((category) => '<button class="booking-category-option" type="button" data-category="' + esc(category) + '">' + esc(category) + '</button>').join("");
+  document.querySelector("#bookingCategoryServices").classList.add("hidden");
+  document.querySelectorAll(".booking-category-option").forEach((button) => button.addEventListener("click", () => renderBookingCategoryServices(button.dataset.category)));
+}
+function renderBookingCategoryServices(category) {
+  const services = state.services.filter((service) => service.status !== "Inactive" && (service.category || "General") === category);
+  const box = document.querySelector("#bookingCategoryServices");
+  box.innerHTML = '<div class="booking-picker-heading"><button class="secondary booking-category-back" type="button">← Categories</button><strong>' + esc(category) + '</strong></div>' + services.map((service) => {
+    const selected = Boolean(document.querySelector('#bookingSelectedServices input[value="' + cssEsc(service.id) + '"]'));
+    return '<button class="booking-service-option' + (selected ? ' selected' : '') + '" type="button" data-service-id="' + esc(service.id) + '"' + (selected ? ' disabled' : '') + '><span><strong>' + esc(service.name) + '</strong><em>' + esc(service.duration_minutes + ' min') + '</em></span><b>' + money(service.price_cents) + '</b></button>';
+  }).join("");
+  box.classList.remove("hidden");
+  box.querySelector(".booking-category-back").addEventListener("click", renderBookingServiceCategories);
+  box.querySelectorAll(".booking-service-option:not(:disabled)").forEach((button) => button.addEventListener("click", () => { addBookingService(button.dataset.serviceId); renderBookingCategoryServices(category); }));
+}
+function addBookingService(serviceId) {
+  const service = state.services.find((item) => item.id === serviceId);
+  if (!service) return;
+  if (document.querySelector('#bookingSelectedServices input[value="' + cssEsc(service.id) + '"]')) return;
   const row = document.createElement("div");
   row.className = "booking-service-row";
   row.innerHTML = '<input type="hidden" name="serviceIds" value="' + esc(service.id) + '"><span><strong>' + esc(service.name) + '</strong><em>' + esc(service.category) + '</em></span><b>' + money(service.price_cents) + '</b><button type="button" aria-label="Remove ' + esc(service.name) + '">×</button>';
-  row.querySelector("button").addEventListener("click", () => { row.remove(); renderBookingServiceTotal(); });
+  row.querySelector("button").addEventListener("click", () => {
+    row.remove();
+    renderBookingServiceTotal();
+    if (!document.querySelector("#bookingCategoryServices").classList.contains("hidden")) renderBookingCategoryServices(service.category || "General");
+  });
   document.querySelector("#bookingSelectedServices").append(row);
-  input.value = "";
   renderBookingServiceTotal();
 }
 function renderBookingServiceTotal() {
@@ -2032,7 +2069,13 @@ async function submitBooking(event) {
   const customerId = existing ? findCustomerId(data.get("bookingCustomerSearch")) : "";
   if (existing && !customerId) { message.textContent = "Select an existing customer from the search list."; return; }
   if (!existing && (!data.get("firstName") || !data.get("lastName") || (!data.get("email") && !data.get("phone")))) { message.textContent = "New customer needs a name and phone or email."; return; }
-  await submitJson("/api/branch-bookings", { customerId, customer:{ firstName:data.get("firstName"), lastName:data.get("lastName"), email:data.get("email"), phone:data.get("phone") }, branchId:data.get("branchId"), staffId:data.get("staffId"), bookingDate:data.get("bookingDate"), bookingTime:data.get("bookingTime"), serviceIds:data.getAll("serviceIds"), notes:data.get("notes") }, event.target);
+  const bookingDate = data.get("bookingDate");
+  const result = await submitJson("/api/branch-bookings", { customerId, customer:{ firstName:data.get("firstName"), lastName:data.get("lastName"), email:data.get("email"), phone:data.get("phone") }, branchId:data.get("branchId"), staffId:data.get("staffId"), bookingDate, bookingTime:data.get("bookingTime"), serviceIds:data.getAll("serviceIds"), notes:data.get("notes") }, event.target);
+  if (result) {
+    document.querySelector("#bookingDisplayDate").value = bookingDate;
+    renderBookings();
+    message.textContent = "Booking saved and added to the diary.";
+  }
 }
 function updateBookingCustomerMode() {
   const existing = document.querySelector('select[name="bookingCustomerMode"]').value === "existing";
@@ -2113,7 +2156,8 @@ async function submitJson(path, payload, form) {
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); updateBookingCustomerMode(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
-  } catch (error) { message.textContent = error.message; }
+    return result;
+  } catch (error) { message.textContent = error.message; return null; }
 }
 function updateCustomerMode() {
   const mode = document.querySelector('select[name="customerMode"]').value;
@@ -2417,6 +2461,19 @@ legend { grid-column:1/-1; }
 .staff-add-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:start; }
 .staff-add-row input { margin-top:0; }
 .booking-service-picker { margin-bottom:14px; }
+.booking-service-picker > input[readonly] { cursor:pointer; background:#fff; }
+.booking-service-menu { margin-top:8px; padding:12px; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 24px rgba(34,42,48,.12); }
+.booking-picker-title { margin:0 0 8px; color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; }
+.booking-service-categories { display:flex; flex-wrap:wrap; gap:8px; }
+.booking-service-categories .booking-picker-title { flex-basis:100%; }
+.booking-category-option { width:auto; min-height:40px; padding:8px 14px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; }
+.booking-picker-heading { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+.booking-picker-heading button { width:auto; min-height:36px; padding:7px 10px; }
+.booking-category-services { display:grid; gap:8px; }
+.booking-service-option { display:flex; justify-content:space-between; align-items:center; width:100%; padding:11px 12px; text-align:left; color:var(--ink); background:#f8fbfc; border:1px solid var(--line); }
+.booking-service-option span strong,.booking-service-option span em { display:block; }
+.booking-service-option span em { margin-top:3px; color:var(--muted); font-size:12px; font-style:normal; }
+.booking-service-option.selected { opacity:.55; }
 .selected-booking-services { display:grid; gap:8px; margin:8px 0; }
 .booking-service-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:12px; padding:11px 12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .booking-service-row strong,.booking-service-row em { display:block; }
