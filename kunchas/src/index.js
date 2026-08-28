@@ -1178,7 +1178,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
 </head>
 <body class="${isAdmin ? "admin-mode" : "staff-mode"}">
   <aside class="sidebar">
-    <div class="brand"><span>K</span><strong>Kunchas</strong></div>
+    <div class="brand"><strong>Kunchas</strong></div>
     <nav>
       ${isAdmin ? `
       <button class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">Dashboard</button>
@@ -1191,19 +1191,21 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <button class="nav" data-tab="reports">Reports</button>
       <button class="nav" data-tab="branches">Branches</button>
       <button class="nav" data-tab="discounts">Discounts</button>` : `
+      <a class="nav nav-link" href="/admin" data-icon="dashboard">Dashboard</a>
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">POS</button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">Bookings</button>
       <button class="nav" data-tab="closing">Daily Closing</button>`}
-      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">Recent Sales</button>`}
+      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">Recent Sales</button><button class="nav" data-tab="employee">Employee</button>`}
     </nav>
+    <div class="sidebar-footer"><span>ⓘ</span> Help &amp; Support</div>
   </aside>
 
   <main class="app">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Cloud software for SMBs</p>
-        <h1>${isAdmin ? "Kunchas admin dashboard" : "Kunchas staff workspace"}</h1>
+        <h1 id="pageTitle">${isAdmin ? "Dashboard" : initialTab === "bookings" ? "Bookings" : "New POS sale"}</h1>
       </div>
+      <div class="topbar-tools"><label class="location-picker"><span>▣</span><select id="headerBranch"><option>Kunchas</option></select></label><button class="notification" type="button" aria-label="Notifications">♧<b>3</b></button><div class="profile-badge">KM</div><strong class="profile-name">Manager⌄</strong></div>
     </header>
 
     <div class="load-row admin-only">
@@ -1212,11 +1214,11 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     <p class="message" id="message">${isAdmin ? "Loading admin data." : "Open your branch with the postcode PIN."}</p>
 
     <section class="tab admin-only ${initialTab === "overview" ? "active" : ""}" id="overview">
+      <div class="dashboard-toolbar"><label><span>▣</span><select id="dashboardBranch"><option value="">All Kunchas locations</option></select></label><div class="period-tabs"><button class="active" type="button">Today</button><button type="button">This Week</button><button type="button">This Month</button><button type="button">Last Month</button></div></div>
       <div class="metrics" id="metrics"></div>
-      <div class="panel">
-        <h2>Branch summary</h2>
-        <div class="branch-grid" id="branchSummary"></div>
-      </div>
+      <div class="panel chart-panel"><div class="panel-heading"><h2>Bookings by hour</h2><span><i></i> Bookings</span></div><div class="booking-chart" id="bookingChart"></div></div>
+      <div class="dashboard-lower"><div class="panel"><div class="panel-heading"><h2>Coming up next</h2><span>View all</span></div><div id="upcomingBookings"></div></div><div class="panel"><div class="panel-heading"><h2>Staff on shift</h2><span>View all</span></div><div id="staffOnShift"></div></div><div class="panel"><div class="panel-heading"><h2>Branch summary</h2><span>View all</span></div><div class="branch-grid" id="branchSummary"></div></div></div>
+      <button class="floating-action" type="button" data-open-tab="bookings">＋ New booking</button>
     </section>
 
     <div class="panel pos-login staff-only" id="posLogin">
@@ -1238,7 +1240,6 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         </div>
         <button class="secondary" id="switchBranch" type="button">Switch branch</button>
       </div>
-      <div class="panel time-clock-panel"><div><h2>Staff time clock</h2><p class="hint">Breaks up to 15 minutes are paid. Longer breaks are deducted from worked hours.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" data-time-action="clock-in" type="button">Clock in</button><button class="secondary" data-time-action="start-break" type="button">Start break</button><button class="secondary" data-time-action="end-break" type="button">End break</button><button class="danger" data-time-action="clock-out" type="button">Clock out</button></div><div id="timeClockStatus"></div></div>
       <div class="split">
         <form class="panel" id="saleForm">
           <h2>New POS sale</h2>
@@ -1273,6 +1274,10 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         <div class="panel cart-panel"><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total</span><strong id="cartTotal">$0.00</strong></div></div>
       </div>
       </div>
+    </section>
+
+    <section class="tab staff-only" id="employee">
+      <div class="employee-shell panel"><h2>Employee time clock</h2><p class="hint">ⓘ &nbsp; Breaks up to 15 minutes are paid. Longer breaks are deducted from worked hours.</p><label class="employee-select">Select staff<select id="timeClockStaff" data-staff-select></select></label><div class="employee-grid"><div class="clock-card"><div class="employee-identity"><div class="large-avatar" id="clockAvatar">KS</div><div><h2 id="clockName">Select a staff member</h2><span class="status-chip">Clock status</span></div></div><div class="clock-display" id="clockDisplay">00:00:00</div><p class="clock-caption">Ready for today's shift</p><div class="time-clock-actions"><button class="primary" data-time-action="clock-in" type="button">Clock in</button><button class="break-button" data-time-action="start-break" type="button">☕ Start break</button><button class="secondary" data-time-action="end-break" type="button">End break</button><button class="danger" data-time-action="clock-out" type="button">⇥ Clock out</button></div></div><div class="current-status-card"><h3>Current staff status</h3><div id="timeClockStatus"></div></div></div><div class="clock-stats"><article><span>◷</span><div>Worked today<strong id="workedToday">0h 00m</strong></div></article><article><span>☕</span><div>Paid break<strong id="paidBreak">0m</strong></div></article><article><span>⊖</span><div>Deducted break<strong id="deductedBreak">0m</strong></div></article><article><span>▣</span><div>Expected finish<strong>5:30 pm</strong></div></article></div></div>
     </section>
 
     <section class="tab staff-only" id="recent-sales">
@@ -1401,6 +1406,7 @@ const message = document.querySelector("#message");
 document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => {
   showTab(button.dataset.tab);
 }));
+document.querySelectorAll("[data-open-tab]").forEach((button) => button.addEventListener("click", () => showTab(button.dataset.openTab)));
 document.querySelector("#loadData").addEventListener("click", loadData);
 document.querySelector("#openPos").addEventListener("click", openPos);
 document.querySelector("#switchBranch").addEventListener("click", switchBranch);
@@ -1415,6 +1421,7 @@ document.querySelector("#addBookingService").addEventListener("click", addBookin
 document.querySelector("#bookingServiceSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); addBookingService(); } });
 document.querySelector("#saleForm").addEventListener("submit", submitSale);
 document.querySelectorAll("[data-time-action]").forEach((button) => button.addEventListener("click", recordTimeAction));
+document.querySelector("#timeClockStaff")?.addEventListener("change", renderTimeClock);
 document.querySelector("#invoiceEditForm").addEventListener("submit", submitInvoiceEdit);
 document.querySelector("#cancelInvoiceEdit").addEventListener("click", () => document.querySelector("#invoiceEditForm").classList.add("hidden"));
 document.querySelector('select[name="customerMode"]').addEventListener("change", updateCustomerMode);
@@ -1539,6 +1546,11 @@ function normalizeState(data = {}) {
 function renderAll() { fillSelects(); renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderTimeClock(); renderDiscounts(); renderInventory(); renderClosings(); renderReports(); renderTimeReport(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderRegularDayChecks(); renderClosingPreview(); }
 function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
+  [document.querySelector("#headerBranch"), document.querySelector("#dashboardBranch")].filter(Boolean).forEach((select) => {
+    const current = select.value;
+    select.innerHTML = (select.id === "dashboardBranch" ? '<option value="">All Kunchas locations</option>' : '') + branchOptions;
+    if ([...select.options].some((option) => option.value === current)) select.value = current;
+  });
   const staffSelectOptions = '<option value="">Unassigned</option>' + state.staff.map((s) => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join("");
   const customerOptions = '<option value="">Walk-in</option>' + state.customers.map((c) => '<option value="' + c.id + '">' + esc(c.first_name + " " + c.last_name) + '</option>').join("");
   const productOptions = '<option value="">Select product</option>' + (state.products || []).map((p) => '<option value="' + p.id + '">' + esc(p.name) + ' - ' + money(p.price_cents) + '</option>').join("");
@@ -1567,12 +1579,23 @@ function fillSelects() {
 }
 function renderMetrics() {
   const revenue = state.sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
-  document.querySelector("#metrics").innerHTML = [["Branches", state.branches.length], ["Staff", state.staff.length], ["Customers", state.customers.length], ["Bookings", state.bookings.length], ["Revenue", money(revenue)]].map(([label, value]) => '<article><span>' + label + '</span><strong>' + value + '</strong></article>').join("");
+  const today = new Date().toISOString().slice(0, 10);
+  const todaysBookings = state.bookings.filter((booking) => booking.booking_date === today);
+  const todaysSales = state.sales.filter((sale) => String(sale.created_at || "").slice(0, 10) === today);
+  const todaysRevenue = todaysSales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
+  const paymentTotal = (needle) => todaysSales.filter((sale) => String(sale.payment_method || "").toLowerCase().includes(needle)).reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
+  const cards = [["▣","Total Bookings",todaysBookings.length,"purple"],["$","Confirmed Revenue",money(todaysRevenue),"green"],["↗","Projected Revenue",money(todaysBookings.reduce((sum, booking) => sum + Number(booking.total_cents || 0), 0)),"orange"],["▤","Total Revenue",money(revenue),"purple"],["▣","Cash",money(paymentTotal("cash")),"green"],["▤","Card",money(paymentTotal("card")),"blue"],["▥","Bank Transfer",money(paymentTotal("bank")),"teal"],["⌁","Voucher",money(paymentTotal("voucher")),"pink"]];
+  document.querySelector("#metrics").innerHTML = cards.map(([icon,label,value,tone]) => '<article><span class="metric-icon ' + tone + '">' + icon + '</span><div><span>' + label + '</span><strong>' + value + '</strong></div></article>').join("");
   document.querySelector("#branchSummary").innerHTML = state.branches.map((branch) => {
     const branchSales = state.sales.filter((sale) => sale.branch_id === branch.id);
     const branchRevenue = branchSales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
     return '<article><strong>' + esc(branch.name) + '</strong><span>' + branchSales.length + ' sales</span><em>' + money(branchRevenue) + '</em></article>';
   }).join("");
+  const hourCounts = Array.from({ length:14 }, (_, index) => { const hour=index+7; return todaysBookings.filter((booking) => Number(String(booking.booking_time || "").slice(0,2)) === hour).length; });
+  const maxCount = Math.max(1, ...hourCounts);
+  document.querySelector("#bookingChart").innerHTML = hourCounts.map((count,index) => '<div class="chart-column"><span style="height:' + Math.max(4, Math.round(count / maxCount * 88)) + '%"></span><b>' + (((index+7)%12)||12) + ((index+7)<12?'am':'pm') + '</b></div>').join("");
+  document.querySelector("#upcomingBookings").innerHTML = todaysBookings.slice(0,5).map((booking) => '<div class="dashboard-row"><time>' + esc(String(booking.booking_time || "").slice(0,5)) + '</time><span>' + esc(booking.service_names || "Booking") + '</span><i></i></div>').join("") || '<p class="hint">No upcoming bookings today.</p>';
+  document.querySelector("#staffOnShift").innerHTML = state.staff.filter((staff) => staff.status !== "Inactive").slice(0,5).map((staff) => '<div class="dashboard-row staff-shift"><b>' + esc(initials(staff.name)) + '</b><span><strong>' + esc(staff.name) + '</strong><small>' + esc(staff.role || "Team member") + '</small></span><i></i></div>').join("");
 }
 function renderBranches() {
   document.querySelector("#branchCards").innerHTML = state.branches.map((b) => '<article><strong>' + esc(b.name) + '</strong><span>' + esc(b.address) + '</span><span>' + esc(b.phone) + ' · ' + esc(b.post_code || "No postcode") + '</span><em>' + esc(b.status) + '</em><a class="branch-pos" href="/pos/' + esc(b.id) + '">Open branch POS</a><button class="danger delete-branch" data-branch-id="' + esc(b.id) + '" type="button">Delete branch</button></article>').join("");
@@ -1888,6 +1911,9 @@ function showTab(tabId) {
   document.querySelectorAll(".nav,.tab").forEach((item) => item.classList.remove("active"));
   document.querySelector('.nav[data-tab="' + cssEsc(tabId) + '"]')?.classList.add("active");
   document.querySelector("#" + tabId)?.classList.add("active");
+  const titles = { overview:"Dashboard", pos:"New POS sale", bookings:"Bookings", closing:"Daily Closing", "recent-sales":"Recent Sales", employee:"Employee time clock", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", discounts:"Discounts" };
+  const heading = document.querySelector("#pageTitle");
+  if (heading) heading.textContent = titles[tabId] || "Kunchas";
 }
 function canCheckoutBooking(booking) {
   return !booking.sale_id && booking.payment_status !== "Paid" && !["Cancelled", "No show"].includes(booking.status);
@@ -1975,7 +2001,18 @@ function openInvoiceEdit(saleId) {
 function renderTimeClock() {
   const box = document.querySelector("#timeClockStatus");
   const active = state.staffTimeEntries.filter((entry) => !entry.clock_out);
-  box.innerHTML = active.length ? '<div class="time-active-list">' + active.map((entry) => '<article><strong>' + esc(entry.staff_name || "Staff") + '</strong><span>' + esc(entry.status) + ' since ' + esc(localTime(entry.status === "On break" ? entry.break_started_at : entry.clock_in)) + '</span></article>').join('') + '</div>' : '<p class="hint">No staff currently clocked in.</p>';
+  box.innerHTML = active.length ? '<div class="time-active-list">' + active.map((entry) => '<article><b>' + esc(initials(entry.staff_name || "Staff")) + '</b><span><strong>' + esc(entry.staff_name || "Staff") + '</strong><small>' + esc(entry.status) + ' · since ' + esc(localTime(entry.status === "On break" ? entry.break_started_at : entry.clock_in)) + '</small></span></article>').join('') + '</div>' : '<p class="hint">No staff currently clocked in.</p>';
+  const selectedId = document.querySelector("#timeClockStaff")?.value;
+  const staff = state.staff.find((item) => item.id === selectedId);
+  const entry = active.find((item) => item.staff_id === selectedId);
+  if (document.querySelector("#clockName")) document.querySelector("#clockName").textContent = staff?.name || "Select a staff member";
+  if (document.querySelector("#clockAvatar")) document.querySelector("#clockAvatar").textContent = initials(staff?.name || "Kunchas Staff");
+  if (entry && document.querySelector("#clockDisplay")) {
+    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(entry.clock_in)) / 60000));
+    document.querySelector("#clockDisplay").textContent = String(Math.floor(minutes / 60)).padStart(2,"0") + ":" + String(minutes % 60).padStart(2,"0") + ":00";
+    document.querySelector("#workedToday").textContent = Math.floor(minutes / 60) + "h " + (minutes % 60) + "m";
+    document.querySelector(".clock-caption").textContent = entry.status + " since " + localTime(entry.status === "On break" ? entry.break_started_at : entry.clock_in);
+  }
 }
 async function recordTimeAction(event) {
   const staffId = document.querySelector("#timeClockStaff").value;
@@ -2364,6 +2401,7 @@ function printLastReceipt() {
   receipt.print();
 }
 function branchName(id) { return state.branches.find((branch) => branch.id === id)?.name || "No branch"; }
+function initials(name) { return String(name || "KS").split(/\\s+/).filter(Boolean).slice(0,2).map((part) => part[0]).join("").toUpperCase(); }
 function money(cents) { return new Intl.NumberFormat("en-AU", { style:"currency", currency:"AUD" }).format(Number(cents || 0) / 100); }
 function dollars(cents) { return (Number(cents || 0) / 100).toFixed(2); }
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }`;
@@ -2371,41 +2409,54 @@ function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "
 
 function styles() {
   return `
-:root { --ink:#18212f; --muted:#617083; --line:#dfe7eb; --soft:#f4f8fa; --brand:#b84e5c; --gold:#d59b48; --surface:#fff; }
+:root { --ink:#171421; --muted:#706b7a; --line:#e5e0e9; --soft:#fbf9fc; --brand:#5b1c78; --brand-dark:#30113f; --lavender:#f1e7fb; --surface:#fff; --green:#00975f; }
 * { box-sizing:border-box; }
-body { margin:0; display:grid; grid-template-columns:260px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Arial,sans-serif; line-height:1.5; }
-.sidebar { position:sticky; top:0; height:100vh; padding:24px 18px; background:#17202d; color:#fff; }
-.brand { display:flex; align-items:center; gap:10px; margin-bottom:30px; font-size:22px; }
-.brand span { display:grid; place-items:center; width:38px; height:38px; border-radius:8px; background:linear-gradient(135deg,var(--brand),var(--gold)); font-weight:800; }
-nav { display:grid; gap:8px; }
-.nav { min-height:42px; padding:0 14px; color:#cbd6df; background:transparent; border:0; border-radius:8px; text-align:left; font:inherit; font-weight:800; cursor:pointer; }
-.nav.active,.nav:hover { color:#fff; background:rgba(255,255,255,.12); }
-.app { min-width:0; padding:28px clamp(18px,4vw,46px) 46px; }
-.topbar { display:flex; justify-content:space-between; gap:22px; align-items:flex-start; margin-bottom:18px; }
-.eyebrow { margin:0 0 8px; color:#9b3444; font-size:12px; font-weight:800; text-transform:uppercase; }
-h1 { margin:0; font-size:clamp(32px,4vw,58px); line-height:1; }
-h2 { margin:0 0 16px; font-size:24px; }
-input,select,textarea { width:100%; min-height:44px; margin:6px 0 14px; padding:0 12px; border:1px solid #ccd7dd; border-radius:8px; font:inherit; background:#fff; }
+body { margin:0; display:grid; grid-template-columns:214px minmax(0,1fr); min-height:100vh; color:var(--ink); background:linear-gradient(135deg,#f5effc 0,#fff 18%,#fff 82%,#f5effc 100%); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.45; }
+.sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; padding:28px 12px 18px; background:linear-gradient(155deg,#351345 0%,#4b1a5f 46%,#2c103a 100%); color:#fff; }
+.brand { display:flex; align-items:center; margin:0 14px 28px; font-size:29px; letter-spacing:-1px; }
+.brand strong { font-weight:800; }
+nav { display:grid; gap:6px; }
+.nav { position:relative; min-height:48px; padding:0 14px 0 46px; color:#fff; background:transparent; border:0; border-radius:9px; text-align:left; text-decoration:none; font:inherit; font-weight:650; cursor:pointer; }
+.nav::before { position:absolute; left:16px; top:13px; width:22px; font-size:18px; text-align:center; opacity:.95; }
+.nav[data-tab="overview"]::before,.nav[data-icon="dashboard"]::before{content:"⌂"}.nav[data-tab="pos"]::before{content:"▣"}.nav[data-tab="bookings"]::before{content:"▦"}.nav[data-tab="closing"]::before{content:"▢"}.nav[data-tab="recent-sales"]::before{content:"▥"}.nav[data-tab="employee"]::before,.nav[data-tab="staff"]::before{content:"♙"}.nav[data-tab="customers"]::before{content:"♙"}.nav[data-tab="roster"]::before{content:"▦"}.nav[data-tab="services"]::before{content:"✦"}.nav[data-tab="products"]::before{content:"◇"}.nav[data-tab="inventory"]::before{content:"▤"}.nav[data-tab="reports"]::before{content:"↗"}.nav[data-tab="branches"]::before{content:"⌂"}.nav[data-tab="discounts"]::before{content:"%"}
+.nav.active,.nav:hover { color:#fff; background:rgba(255,255,255,.13); box-shadow:inset 0 0 0 1px rgba(255,255,255,.05); }
+.sidebar-footer { margin-top:auto; padding:14px; font-size:13px; font-weight:650; }
+.sidebar-footer span { margin-right:9px; }
+.app { min-width:0; padding:0 26px 46px; }
+.topbar { display:flex; justify-content:space-between; gap:22px; align-items:center; min-height:76px; margin:0 -26px 10px; padding:0 28px; background:rgba(255,255,255,.92); border-bottom:1px solid var(--line); }
+.topbar-tools { display:flex; align-items:center; gap:13px; }
+.location-picker { display:flex; align-items:center; gap:8px; min-width:260px; height:43px; padding:0 10px; border:1px solid #d8d2dd; border-radius:7px; font-weight:500; }
+.location-picker select { min-height:38px; margin:0; padding:0; border:0; }
+.notification { position:relative; min-width:38px; padding:0; color:var(--ink); background:transparent; font-size:22px; }
+.notification b { position:absolute; top:4px; right:0; display:grid; place-items:center; width:17px; height:17px; color:#fff; background:#5b1c78; border-radius:50%; font-size:10px; }
+.profile-badge,.large-avatar { display:grid; place-items:center; border-radius:50%; color:#4f1c71; background:#e8dcfa; font-weight:800; }
+.profile-badge { width:40px; height:40px; }
+.profile-name { font-size:14px; }
+.eyebrow { margin:0 0 8px; color:var(--brand); font-size:12px; font-weight:800; text-transform:uppercase; }
+h1 { margin:0; font-size:24px; line-height:1.2; letter-spacing:-.35px; }
+h2 { margin:0 0 16px; font-size:20px; letter-spacing:-.2px; }
+input,select,textarea { width:100%; min-height:44px; margin:6px 0 14px; padding:0 12px; border:1px solid #d7d1dc; border-radius:7px; color:var(--ink); font:inherit; background:#fff; }
 select[multiple] { min-height:92px; padding:8px 12px; }
 textarea { min-height:90px; padding-top:12px; resize:vertical; }
-button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-radius:8px; font:inherit; font-weight:800; cursor:pointer; }
-.primary { color:#fff; background:var(--brand); }
-.secondary { color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; }
-.danger { width:100%; margin-top:12px; color:#9b3444; background:#fff; border:1px solid #d8aeb4; }
+button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-radius:7px; font:inherit; font-weight:750; cursor:pointer; }
+.primary { color:#fff; background:linear-gradient(135deg,#622183,#4a155f); }
+.secondary { color:var(--brand); background:#f7f1fb; border:1px solid #d7c1e6; }
+.danger { width:100%; margin-top:12px; color:#db1522; background:#fff; border:1px solid #f0202d; }
 .full { width:100%; }
 .hidden { display:none; }
 .admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
 .hint { margin:8px 0 0; color:var(--muted); font-size:13px; }
 .load-row { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
-.message { min-height:28px; color:#9b3444; font-weight:800; }
+.message { min-height:22px; margin:4px 0; color:var(--brand); font-size:12px; font-weight:700; }
 .tab { display:none; margin-top:22px; }
 .tab.active { display:block; }
-.metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:14px; margin-bottom:18px; }
-.metrics article,.panel,.cards article,.branch-grid article { background:#fff; border:1px solid var(--line); border-radius:8px; box-shadow:0 14px 36px rgba(24,33,47,.07); }
-.metrics article { padding:20px; }
+.metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:10px; }
+.metrics article,.panel,.cards article,.branch-grid article { background:rgba(255,255,255,.95); border:1px solid var(--line); border-radius:9px; box-shadow:0 4px 16px rgba(48,17,63,.035); }
+.metrics article { display:flex; align-items:center; gap:13px; min-height:100px; padding:16px; }
 .metrics span { display:block; color:var(--muted); font-weight:800; }
-.metrics strong { display:block; margin-top:8px; font-size:28px; }
-.panel { padding:22px; }
+.metrics strong { display:block; margin-top:3px; color:var(--ink); font-size:23px; }
+.metric-icon { display:grid!important; place-items:center; flex:0 0 42px; width:42px; height:42px; border-radius:50%; font-size:20px; }.metric-icon.purple{color:#68268a;background:#eadcff}.metric-icon.green{color:#008748;background:#dff4cd}.metric-icon.orange{color:#d76813;background:#ffedd6}.metric-icon.blue{color:#2363cd;background:#dfeaff}.metric-icon.teal{color:#087b78;background:#d9f0ee}.metric-icon.pink{color:#d52d71;background:#fde2ec}
+.panel { padding:18px; }
 .customer-profile,.staff-profile,.roster-day-panel { margin-top:20px; }
 .product-import-panel { margin-top:20px; }
 .product-import-panel form { max-width:680px; margin-top:16px; }
@@ -2543,7 +2594,13 @@ th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left;
 th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
-@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split,.time-clock-panel{grid-template-columns:1fr;display:grid}.metrics,.cards,.branch-grid,.roster-branch-board,.booking-diary{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:640px){ .metrics,.cards,.branch-grid,.roster-branch-board,.booking-diary,.booking-detail-grid,.grid,fieldset,.staff-checks,.closing-summary{grid-template-columns:1fr}.booking-date-heading{display:grid}.time-clock-actions{display:grid;grid-template-columns:1fr 1fr} }
+.dashboard-toolbar { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:4px 0 12px; }.dashboard-toolbar label{display:flex;align-items:center;gap:8px;width:260px;height:44px;padding:0 10px;border:1px solid var(--line);border-radius:7px}.dashboard-toolbar select{margin:0;border:0}.period-tabs{display:flex}.period-tabs button{min-height:42px;border:1px solid var(--line);border-radius:0;background:#fff;font-size:12px}.period-tabs button:first-child{border-radius:7px 0 0 7px}.period-tabs button:last-child{border-radius:0 7px 7px 0}.period-tabs button.active{color:#fff;background:var(--brand)}
+.panel-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }.panel-heading h2{margin:0}.panel-heading span{color:var(--brand);font-size:12px;font-weight:700}.panel-heading i{display:inline-block;width:8px;height:8px;margin-right:6px;background:var(--brand);border-radius:50%}
+.chart-panel{margin-bottom:10px}.booking-chart{position:relative;display:flex;align-items:flex-end;gap:9px;height:180px;margin-top:20px;padding:15px 8px 26px;border-bottom:1px solid #dcd4e1;background:repeating-linear-gradient(to bottom,#fff 0,#fff 34px,#eee8f1 35px)}.chart-column{display:flex;flex:1;align-items:center;justify-content:flex-end;flex-direction:column;height:100%}.chart-column span{width:8px;min-height:4px;background:linear-gradient(#7a3a99,#55166f);border-radius:8px 8px 2px 2px;box-shadow:0 0 0 3px #eee2f8}.chart-column b{position:absolute;bottom:3px;color:var(--muted);font-size:10px;font-weight:500}
+.dashboard-lower{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.dashboard-row{display:grid;grid-template-columns:58px 1fr 10px;align-items:center;gap:8px;min-height:43px;border-bottom:1px solid #eee9f0;font-size:12px}.dashboard-row time{padding:5px;color:var(--brand);background:#f2e8fa;border-radius:5px;text-align:center;font-weight:700}.dashboard-row i{width:7px;height:7px;background:#68268a;border-radius:50%}.staff-shift{grid-template-columns:34px 1fr 10px}.staff-shift>b{display:grid;place-items:center;width:29px;height:29px;color:#6b6571;background:#f0edf2;border-radius:50%;font-size:10px}.staff-shift span strong,.staff-shift span small{display:block}.staff-shift span small{color:var(--muted)}.staff-shift i{background:#00a36b}.branch-grid{grid-template-columns:1fr!important}.branch-grid article{padding:9px 0;border:0;border-bottom:1px solid #eee9f0;border-radius:0;box-shadow:none}.branch-grid em{margin:2px 0 0;color:var(--brand)}.floating-action{float:right;margin-top:16px;color:#fff;background:linear-gradient(135deg,#713093,#54186d)}
+.pos-branch-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}.staff-mode #pos .split{grid-template-columns:minmax(520px,1.7fr) minmax(310px,.8fr);gap:12px}.staff-mode #saleForm,.staff-mode .cart-panel{box-shadow:none}.staff-mode #saleForm>h2{display:none}.sale-item{background:#fff;border-color:#ddd6e2}.cart-panel{background:#fcfbfd}.cart-total strong{color:var(--brand)}.staff-mode #saleForm>.full.primary{background:#00a36b}.staff-mode #saleForm label{font-size:13px}
+.employee-shell{padding:28px}.employee-select{display:block;max-width:520px;margin-top:20px}.employee-grid{display:grid;grid-template-columns:minmax(560px,1fr) minmax(290px,.48fr);gap:24px;margin-top:2px}.clock-card,.current-status-card{padding:24px;border:1px solid var(--line);border-radius:10px;background:#fff}.employee-identity{display:flex;align-items:center;gap:20px}.large-avatar{width:82px;height:82px;font-size:30px}.status-chip{display:inline-flex;padding:5px 11px;color:#087a4e;background:#daf1e3;border-radius:6px;font-size:13px;font-weight:700}.clock-display{margin:24px 0 4px;font-size:68px;font-weight:800;letter-spacing:1px;line-height:1}.clock-caption{color:var(--muted);font-size:17px}.employee-shell .time-clock-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:20px}.employee-shell .time-clock-actions button{min-height:50px}.break-button{color:#5b3b00;background:#ffd27d}.current-status-card h3{margin:0 -24px 10px;padding:0 24px 18px;border-bottom:1px solid var(--line)}.employee-shell .time-active-list article{display:grid;grid-template-columns:48px 1fr;align-items:center;padding:14px 0;background:#fff;border:0;border-bottom:1px solid var(--line)}.employee-shell .time-active-list article>b{display:grid;place-items:center;width:44px;height:44px;color:#552075;background:#eadffc;border-radius:50%}.employee-shell .time-active-list small,.employee-shell .time-active-list strong{display:block}.employee-shell .time-active-list small{color:#087a4e}.clock-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:15px}.clock-stats article{display:flex;align-items:center;gap:14px;padding:15px;border:1px solid var(--line);border-radius:9px}.clock-stats article>span{display:grid;place-items:center;width:45px;height:45px;color:var(--brand);background:#f0e5fb;border-radius:50%;font-size:22px}.clock-stats div{font-size:13px}.clock-stats strong{display:block;font-size:22px}
+@media (max-width:1100px){ body{grid-template-columns:190px minmax(0,1fr)}.employee-grid{grid-template-columns:1fr}.staff-mode #pos .split{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-lower{grid-template-columns:1fr 1fr}.profile-name{display:none} }
+@media (max-width:760px){ body{display:block}.sidebar{position:static;height:auto}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-footer{display:none}.topbar{margin:0 -18px;padding:12px 18px;align-items:flex-start}.topbar-tools{gap:6px}.location-picker{min-width:0;width:180px}.app{padding:0 18px 36px}.dashboard-toolbar{align-items:stretch;flex-direction:column}.period-tabs{overflow-x:auto}.metrics,.dashboard-lower,.cards,.branch-grid,.roster-branch-board,.booking-diary,.booking-detail-grid,.grid,fieldset,.staff-checks,.closing-summary,.clock-stats{grid-template-columns:1fr}.employee-shell{padding:18px}.employee-grid{grid-template-columns:1fr}.clock-display{font-size:48px}.employee-shell .time-clock-actions{grid-template-columns:1fr 1fr}.booking-date-heading{display:grid}.split,.time-clock-panel{grid-template-columns:1fr;display:grid} }
 `;
 }
