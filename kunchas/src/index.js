@@ -1166,6 +1166,11 @@ function jsonResponse(payload, status = 200) {
   return Response.json(payload, { status, headers: { "x-content-type-options": "nosniff" } });
 }
 
+function uiIcon(name, className = "ui-icon") {
+  const icons = { dashboard:"house", pos:"shopping-bag-open", bookings:"calendar-dots", closing:"briefcase", sales:"chart-bar", employee:"user", customers:"users", services:"sparkle", products:"package", inventory:"list-checks", reports:"chart-line-up", branches:"buildings", discount:"percent", store:"storefront", bell:"bell", chevron:"caret-right", help:"question" };
+  return '<i class="ph ph-' + (icons[name] || "circle") + ' ' + className + '" aria-hidden="true"></i>';
+}
+
 function renderApp(initialBranchId, initialTab, mode = "admin") {
   const isAdmin = mode === "admin";
   return `<!doctype html>
@@ -1174,6 +1179,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kunchas Cloud Software</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.2/src/regular/style.css">
   <style>${styles()}</style>
 </head>
 <body class="${isAdmin ? "admin-mode" : "staff-mode"}">
@@ -1181,23 +1187,19 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     <div class="brand"><strong>Kunchas</strong></div>
     <nav>
       ${isAdmin ? `
-      <button class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">Dashboard</button>
-      <button class="nav" data-tab="customers">Customers</button>
-      <button class="nav" data-tab="staff">Staff</button>
-      <button class="nav" data-tab="roster">Roster</button>
-      <button class="nav" data-tab="services">Services</button>
-      <button class="nav" data-tab="products">Products</button>
-      <button class="nav" data-tab="inventory">Inventory</button>
-      <button class="nav" data-tab="reports">Reports</button>
-      <button class="nav" data-tab="branches">Branches</button>
-      <button class="nav" data-tab="discounts">Discounts</button>` : `
-      <a class="nav nav-link" href="/admin" data-icon="dashboard">Dashboard</a>
-      <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">POS</button>
-      <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">Bookings</button>
-      <button class="nav" data-tab="closing">Daily Closing</button>`}
-      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">Recent Sales</button><button class="nav" data-tab="employee">Employee</button>`}
+      <button class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">${uiIcon("dashboard")}<span>Dashboard</span></button>
+      <a class="nav nav-link" href="/pos">${uiIcon("pos")}<span>POS</span></a>
+      <a class="nav nav-link" href="/bookings">${uiIcon("bookings")}<span>Bookings</span></a>
+      <a class="nav nav-link" href="/pos">${uiIcon("closing")}<span>Daily Closing</span></a>
+      <a class="nav nav-link" href="/pos">${uiIcon("sales")}<span>Recent Sales</span></a>
+      <a class="nav nav-link" href="/pos">${uiIcon("employee")}<span>Employee</span></a>` : `
+      <a class="nav nav-link" href="/admin">${uiIcon("dashboard")}<span>Dashboard</span></a>
+      <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">${uiIcon("pos")}<span>POS</span></button>
+      <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">${uiIcon("bookings")}<span>Bookings</span></button>
+      <button class="nav" data-tab="closing">${uiIcon("closing")}<span>Daily Closing</span></button>`}
+      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">${uiIcon("sales")}<span>Recent Sales</span></button><button class="nav" data-tab="employee">${uiIcon("employee")}<span>Employee</span></button>`}
     </nav>
-    <div class="sidebar-footer"><span>ⓘ</span> Help &amp; Support</div>
+    <div class="sidebar-footer">${uiIcon("help")}<span>Help &amp; Support</span>${uiIcon("chevron","ui-icon chevron")}</div>
   </aside>
 
   <main class="app">
@@ -1205,7 +1207,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div>
         <h1 id="pageTitle">${isAdmin ? "Dashboard" : initialTab === "bookings" ? "Bookings" : "New POS sale"}</h1>
       </div>
-      <div class="topbar-tools"><label class="location-picker"><span>▣</span><select id="headerBranch"><option>Kunchas</option></select></label><button class="notification" type="button" aria-label="Notifications">♧<b>3</b></button><div class="profile-badge">KM</div><strong class="profile-name">Manager⌄</strong></div>
+      <div class="topbar-tools"><label class="location-picker">${uiIcon("store")}<select id="headerBranch"><option>Kunchas</option></select></label><button class="notification" type="button" aria-label="Notifications">${uiIcon("bell")}<b>3</b></button>${isAdmin ? `<details class="profile-menu"><summary><span class="profile-badge">KM</span><strong class="profile-name">Manager</strong><i class="ph ph-caret-down"></i></summary><div class="profile-popover"><p>Management</p><button data-menu-tab="customers" type="button">${uiIcon("customers")} Customers</button><button data-menu-tab="staff" type="button">${uiIcon("employee")} Staff</button><button data-menu-tab="roster" type="button">${uiIcon("bookings")} Roster</button><button data-menu-tab="services" type="button">${uiIcon("services")} Services</button><button data-menu-tab="products" type="button">${uiIcon("products")} Products</button><button data-menu-tab="inventory" type="button">${uiIcon("inventory")} Inventory</button><button data-menu-tab="reports" type="button">${uiIcon("reports")} Reports</button><button data-menu-tab="branches" type="button">${uiIcon("branches")} Branches</button><button data-menu-tab="discounts" type="button">${uiIcon("discount")} Discounts</button></div></details>` : `<div class="profile-badge">KM</div><strong class="profile-name">Manager</strong><span class="profile-caret">⌄</span>`}</div>
     </header>
 
     <div class="load-row admin-only">
@@ -1214,10 +1216,10 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     <p class="message" id="message">${isAdmin ? "Loading admin data." : "Open your branch with the postcode PIN."}</p>
 
     <section class="tab admin-only ${initialTab === "overview" ? "active" : ""}" id="overview">
-      <div class="dashboard-toolbar"><label><span>▣</span><select id="dashboardBranch"><option value="">All Kunchas locations</option></select></label><div class="period-tabs"><button class="active" type="button">Today</button><button type="button">This Week</button><button type="button">This Month</button><button type="button">Last Month</button></div></div>
+      <div class="dashboard-toolbar"><label>${uiIcon("store")}<select id="dashboardBranch"><option value="">All Kunchas locations</option></select></label><div class="period-tabs"><button class="active" type="button">Today</button><button type="button">This Week</button><button type="button">This Month</button><button type="button">Last Month</button></div></div>
       <div class="metrics" id="metrics"></div>
       <div class="panel chart-panel"><div class="panel-heading"><h2>Bookings by hour</h2><span><i></i> Bookings</span></div><div class="booking-chart" id="bookingChart"></div></div>
-      <div class="dashboard-lower"><div class="panel"><div class="panel-heading"><h2>Coming up next</h2><span>View all</span></div><div id="upcomingBookings"></div></div><div class="panel"><div class="panel-heading"><h2>Staff on shift</h2><span>View all</span></div><div id="staffOnShift"></div></div><div class="panel"><div class="panel-heading"><h2>Branch summary</h2><span>View all</span></div><div class="branch-grid" id="branchSummary"></div></div></div>
+      <div class="dashboard-lower"><div class="panel"><div class="panel-heading"><h2>Coming up next</h2><span>View all</span></div><div id="upcomingBookings"></div></div><div class="panel"><div class="panel-heading"><h2>Staff on shift</h2><span>View all</span></div><div id="staffOnShift"></div></div><div class="panel"><div class="panel-heading"><h2>Activity feed</h2><span>View all</span></div><div class="branch-grid" id="branchSummary"></div></div></div>
       <button class="floating-action" type="button" data-open-tab="bookings">＋ New booking</button>
     </section>
 
@@ -1260,8 +1262,12 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
           <datalist id="customerList"></datalist>
           <datalist id="itemList"></datalist>
           <datalist id="staffList"></datalist>
+          <div class="pos-catalog-search"><i class="ph ph-magnifying-glass"></i><input id="posCatalogSearch" placeholder="Search services, products or barcode"><i class="ph ph-barcode"></i></div>
+          <div class="pos-category-tabs" id="posCategoryTabs"></div>
+          <div class="pos-catalog" id="posCatalog"></div>
+          <h3 class="selected-items-title">Selected items</h3>
           <div id="saleItems"></div>
-          <button class="secondary" id="addSaleItem" type="button">Add item</button>
+          <button class="secondary add-custom-item" id="addSaleItem" type="button">Add custom item</button>
           <div class="grid">
             <label>Cash amount $<input name="cashAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
             <label>Card amount $<input name="cardAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
@@ -1401,16 +1407,19 @@ let selectedPosBranchId = "";
 let selectedPosPin = "";
 let draggedServiceId = "";
 let draggedStaffId = "";
+let selectedPosCategory = "All";
 const appMode = window.appMode || "admin";
 const message = document.querySelector("#message");
-document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => {
+document.querySelectorAll(".nav[data-tab]").forEach((button) => button.addEventListener("click", () => {
   showTab(button.dataset.tab);
 }));
+document.querySelectorAll("[data-menu-tab]").forEach((button) => button.addEventListener("click", () => { showTab(button.dataset.menuTab); button.closest("details").open = false; }));
 document.querySelectorAll("[data-open-tab]").forEach((button) => button.addEventListener("click", () => showTab(button.dataset.openTab)));
 document.querySelector("#loadData").addEventListener("click", loadData);
 document.querySelector("#openPos").addEventListener("click", openPos);
 document.querySelector("#switchBranch").addEventListener("click", switchBranch);
 document.querySelector("#addSaleItem").addEventListener("click", () => addSaleItem());
+document.querySelector("#posCatalogSearch").addEventListener("input", renderPosCatalog);
 document.querySelector("#bookingCheckout").addEventListener("change", selectBookingForCheckout);
 document.querySelector("#printReceipt").addEventListener("click", printLastReceipt);
 document.querySelector("#customerForm").addEventListener("submit", submitCustomer);
@@ -1455,7 +1464,6 @@ document.querySelector("#closingForm").addEventListener("submit", (event) => sub
 document.querySelector("#hoursForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branch-hours"));
 document.querySelector("#closedDateForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/closed-dates"));
 document.querySelector("#discountForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/discounts"));
-addSaleItem();
 updateCustomerMode();
 updateBookingCustomerMode();
 loadPublicBranches();
@@ -1543,7 +1551,7 @@ function normalizeState(data = {}) {
   arrayKeys.forEach((key) => { if (!Array.isArray(normalized[key])) normalized[key] = []; });
   return normalized;
 }
-function renderAll() { fillSelects(); renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderTimeClock(); renderDiscounts(); renderInventory(); renderClosings(); renderReports(); renderTimeReport(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderRegularDayChecks(); renderClosingPreview(); }
+function renderAll() { fillSelects(); renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderTimeClock(); renderDiscounts(); renderInventory(); renderClosings(); renderReports(); renderTimeReport(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderRegularDayChecks(); renderClosingPreview(); renderPosCatalog(); }
 function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
   [document.querySelector("#headerBranch"), document.querySelector("#dashboardBranch")].filter(Boolean).forEach((select) => {
@@ -1584,12 +1592,12 @@ function renderMetrics() {
   const todaysSales = state.sales.filter((sale) => String(sale.created_at || "").slice(0, 10) === today);
   const todaysRevenue = todaysSales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
   const paymentTotal = (needle) => todaysSales.filter((sale) => String(sale.payment_method || "").toLowerCase().includes(needle)).reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
-  const cards = [["▣","Total Bookings",todaysBookings.length,"purple"],["$","Confirmed Revenue",money(todaysRevenue),"green"],["↗","Projected Revenue",money(todaysBookings.reduce((sum, booking) => sum + Number(booking.total_cents || 0), 0)),"orange"],["▤","Total Revenue",money(revenue),"purple"],["▣","Cash",money(paymentTotal("cash")),"green"],["▤","Card",money(paymentTotal("card")),"blue"],["▥","Bank Transfer",money(paymentTotal("bank")),"teal"],["⌁","Voucher",money(paymentTotal("voucher")),"pink"]];
-  document.querySelector("#metrics").innerHTML = cards.map(([icon,label,value,tone]) => '<article><span class="metric-icon ' + tone + '">' + icon + '</span><div><span>' + label + '</span><strong>' + value + '</strong></div></article>').join("");
+  const cards = [["calendar","Total Bookings",todaysBookings.length,"purple"],["dollar","Confirmed Revenue",money(todaysRevenue),"green"],["trend","Projected Revenue",money(todaysBookings.reduce((sum, booking) => sum + Number(booking.total_cents || 0), 0)),"orange"],["wallet","Total Revenue",money(revenue),"purple"],["cash","Cash",money(paymentTotal("cash")),"green"],["card","Card",money(paymentTotal("card")),"blue"],["bank","Bank Transfer",money(paymentTotal("bank")),"teal"],["ticket","Voucher",money(paymentTotal("voucher")),"pink"]];
+  document.querySelector("#metrics").innerHTML = cards.map(([icon,label,value,tone]) => '<article><span class="metric-icon ' + tone + '">' + metricIcon(icon) + '</span><div><span>' + label + '</span><strong>' + value + '</strong></div></article>').join("");
   document.querySelector("#branchSummary").innerHTML = state.branches.map((branch) => {
     const branchSales = state.sales.filter((sale) => sale.branch_id === branch.id);
     const branchRevenue = branchSales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
-    return '<article><strong>' + esc(branch.name) + '</strong><span>' + branchSales.length + ' sales</span><em>' + money(branchRevenue) + '</em></article>';
+    return '<article class="activity-row"><span class="activity-icon"><i class="ph ph-currency-dollar"></i></span><span><strong>' + esc(branch.name) + '</strong><small>' + branchSales.length + ' sales · ' + money(branchRevenue) + '</small></span><time>Today</time></article>';
   }).join("");
   const hourCounts = Array.from({ length:14 }, (_, index) => { const hour=index+7; return todaysBookings.filter((booking) => Number(String(booking.booking_time || "").slice(0,2)) === hour).length; });
   const maxCount = Math.max(1, ...hourCounts);
@@ -2079,6 +2087,19 @@ function renderReports() {
   document.querySelector("#reportInventoryHead").innerHTML = matrix.head;
   document.querySelector("#reportInventoryTable").innerHTML = matrix.body;
 }
+function renderPosCatalog() {
+  const tabs = document.querySelector("#posCategoryTabs");
+  const list = document.querySelector("#posCatalog");
+  if (!tabs || !list) return;
+  const catalog = saleCatalog();
+  const categories = ["All", ...new Set(catalog.map((item) => item.category).filter(Boolean))];
+  tabs.innerHTML = categories.map((category) => '<button class="' + (category === selectedPosCategory ? 'active' : '') + '" data-pos-category="' + esc(category) + '" type="button">' + esc(category) + '</button>').join('');
+  tabs.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => { selectedPosCategory = button.dataset.posCategory; renderPosCatalog(); }));
+  const query = document.querySelector("#posCatalogSearch").value.trim().toLowerCase();
+  const rows = catalog.filter((item) => (selectedPosCategory === "All" || item.category === selectedPosCategory) && (!query || (item.name + " " + item.category + " " + (item.sku || "") + " " + (item.barcode || "")).toLowerCase().includes(query)));
+  list.innerHTML = rows.length ? rows.map((item) => '<article><span><strong>' + esc(item.name) + '</strong><small>' + esc(item.category || item.typeLabel) + '</small></span><b>' + money(item.priceCents) + '</b><button class="catalog-add" data-item-label="' + esc(item.label) + '" type="button" aria-label="Add ' + esc(item.name) + '"><i class="ph ph-plus"></i></button></article>').join('') : '<p class="hint">No matching services or products.</p>';
+  list.querySelectorAll(".catalog-add").forEach((button) => button.addEventListener("click", () => { const item = findSaleItem(button.dataset.itemLabel); if (item) addSaleItem(item); }));
+}
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
   row.className = "sale-item";
@@ -2402,6 +2423,10 @@ function printLastReceipt() {
 }
 function branchName(id) { return state.branches.find((branch) => branch.id === id)?.name || "No branch"; }
 function initials(name) { return String(name || "KS").split(/\\s+/).filter(Boolean).slice(0,2).map((part) => part[0]).join("").toUpperCase(); }
+function metricIcon(name) {
+  const icons = { calendar:"calendar-blank", dollar:"currency-dollar", trend:"trend-up", wallet:"wallet", cash:"money", card:"credit-card", bank:"bank", ticket:"ticket" };
+  return '<i class="ph ph-' + icons[name] + '" aria-hidden="true"></i>';
+}
 function money(cents) { return new Intl.NumberFormat("en-AU", { style:"currency", currency:"AUD" }).format(Number(cents || 0) / 100); }
 function dollars(cents) { return (Number(cents || 0) / 100).toFixed(2); }
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }`;
@@ -2413,25 +2438,24 @@ function styles() {
 * { box-sizing:border-box; }
 body { margin:0; display:grid; grid-template-columns:214px minmax(0,1fr); min-height:100vh; color:var(--ink); background:linear-gradient(135deg,#f5effc 0,#fff 18%,#fff 82%,#f5effc 100%); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.45; }
 .sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; padding:28px 12px 18px; background:linear-gradient(155deg,#351345 0%,#4b1a5f 46%,#2c103a 100%); color:#fff; }
-.brand { display:flex; align-items:center; margin:0 14px 28px; font-size:29px; letter-spacing:-1px; }
+.brand { display:flex; align-items:center; margin:0 14px 28px; font-size:25px; letter-spacing:-.7px; }
 .brand strong { font-weight:800; }
 nav { display:grid; gap:6px; }
-.nav { position:relative; min-height:48px; padding:0 14px 0 46px; color:#fff; background:transparent; border:0; border-radius:9px; text-align:left; text-decoration:none; font:inherit; font-weight:650; cursor:pointer; }
-.nav::before { position:absolute; left:16px; top:13px; width:22px; font-size:18px; text-align:center; opacity:.95; }
-.nav[data-tab="overview"]::before,.nav[data-icon="dashboard"]::before{content:"⌂"}.nav[data-tab="pos"]::before{content:"▣"}.nav[data-tab="bookings"]::before{content:"▦"}.nav[data-tab="closing"]::before{content:"▢"}.nav[data-tab="recent-sales"]::before{content:"▥"}.nav[data-tab="employee"]::before,.nav[data-tab="staff"]::before{content:"♙"}.nav[data-tab="customers"]::before{content:"♙"}.nav[data-tab="roster"]::before{content:"▦"}.nav[data-tab="services"]::before{content:"✦"}.nav[data-tab="products"]::before{content:"◇"}.nav[data-tab="inventory"]::before{content:"▤"}.nav[data-tab="reports"]::before{content:"↗"}.nav[data-tab="branches"]::before{content:"⌂"}.nav[data-tab="discounts"]::before{content:"%"}
+.nav { display:flex; align-items:center; gap:13px; min-height:46px; padding:0 14px; color:#fff; background:transparent; border:0; border-radius:9px; text-align:left; text-decoration:none; font:inherit; font-size:13px; font-weight:650; cursor:pointer; }
+.ui-icon { display:inline-flex; flex:0 0 22px; width:22px; height:22px; align-items:center; justify-content:center; font-size:21px; line-height:1; }
 .nav.active,.nav:hover { color:#fff; background:rgba(255,255,255,.13); box-shadow:inset 0 0 0 1px rgba(255,255,255,.05); }
-.sidebar-footer { margin-top:auto; padding:14px; font-size:13px; font-weight:650; }
-.sidebar-footer span { margin-right:9px; }
+.sidebar-footer { display:flex; align-items:center; gap:10px; margin-top:auto; padding:14px; font-size:13px; font-weight:650; }.sidebar-footer .chevron{width:16px;margin-left:auto;font-size:16px}
 .app { min-width:0; padding:0 26px 46px; }
 .topbar { display:flex; justify-content:space-between; gap:22px; align-items:center; min-height:76px; margin:0 -26px 10px; padding:0 28px; background:rgba(255,255,255,.92); border-bottom:1px solid var(--line); }
 .topbar-tools { display:flex; align-items:center; gap:13px; }
 .location-picker { display:flex; align-items:center; gap:8px; min-width:260px; height:43px; padding:0 10px; border:1px solid #d8d2dd; border-radius:7px; font-weight:500; }
 .location-picker select { min-height:38px; margin:0; padding:0; border:0; }
-.notification { position:relative; min-width:38px; padding:0; color:var(--ink); background:transparent; font-size:22px; }
+.notification { position:relative; display:grid; place-items:center; min-width:38px; padding:0; color:var(--ink); background:transparent; }.notification .ui-icon{font-size:24px}
 .notification b { position:absolute; top:4px; right:0; display:grid; place-items:center; width:17px; height:17px; color:#fff; background:#5b1c78; border-radius:50%; font-size:10px; }
 .profile-badge,.large-avatar { display:grid; place-items:center; border-radius:50%; color:#4f1c71; background:#e8dcfa; font-weight:800; }
 .profile-badge { width:40px; height:40px; }
 .profile-name { font-size:14px; }
+.profile-menu{position:relative}.profile-menu summary{display:flex;align-items:center;gap:10px;list-style:none;cursor:pointer}.profile-menu summary::-webkit-details-marker{display:none}.profile-menu summary>i{font-size:14px}.profile-popover{position:absolute;z-index:20;top:50px;right:0;display:grid;width:220px;padding:10px;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 50px rgba(48,17,63,.18)}.profile-popover p{margin:4px 8px 8px;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase}.profile-popover button{display:flex;align-items:center;gap:10px;min-height:40px;padding:0 10px;color:var(--ink);background:#fff;text-align:left;font-size:13px}.profile-popover button:hover{color:var(--brand);background:#f6effa}.profile-popover .ui-icon{font-size:18px}
 .eyebrow { margin:0 0 8px; color:var(--brand); font-size:12px; font-weight:800; text-transform:uppercase; }
 h1 { margin:0; font-size:24px; line-height:1.2; letter-spacing:-.35px; }
 h2 { margin:0 0 16px; font-size:20px; letter-spacing:-.2px; }
@@ -2447,15 +2471,16 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
 .hint { margin:8px 0 0; color:var(--muted); font-size:13px; }
 .load-row { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
-.message { min-height:22px; margin:4px 0; color:var(--brand); font-size:12px; font-weight:700; }
+.message { min-height:22px; margin:4px 0; color:var(--brand); font-size:12px; font-weight:700; }.admin-mode .load-row{display:none!important}.admin-mode #message{display:none}
 .tab { display:none; margin-top:22px; }
 .tab.active { display:block; }
+#overview.tab{margin-top:10px}
 .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:10px; }
 .metrics article,.panel,.cards article,.branch-grid article { background:rgba(255,255,255,.95); border:1px solid var(--line); border-radius:9px; box-shadow:0 4px 16px rgba(48,17,63,.035); }
-.metrics article { display:flex; align-items:center; gap:13px; min-height:100px; padding:16px; }
-.metrics span { display:block; color:var(--muted); font-weight:800; }
-.metrics strong { display:block; margin-top:3px; color:var(--ink); font-size:23px; }
-.metric-icon { display:grid!important; place-items:center; flex:0 0 42px; width:42px; height:42px; border-radius:50%; font-size:20px; }.metric-icon.purple{color:#68268a;background:#eadcff}.metric-icon.green{color:#008748;background:#dff4cd}.metric-icon.orange{color:#d76813;background:#ffedd6}.metric-icon.blue{color:#2363cd;background:#dfeaff}.metric-icon.teal{color:#087b78;background:#d9f0ee}.metric-icon.pink{color:#d52d71;background:#fde2ec}
+.metrics article { display:flex; align-items:center; gap:12px; min-height:88px; padding:14px; }
+.metrics span { display:block; color:var(--ink); font-size:12px; font-weight:650; }
+.metrics strong { display:block; margin-top:3px; color:var(--ink); font-size:21px; }
+.metric-icon { display:grid!important; place-items:center; flex:0 0 42px; width:42px; height:42px; border-radius:50%; font-size:23px; }.metric-icon i{line-height:1}.metric-icon.purple{color:#68268a;background:#eadcff}.metric-icon.green{color:#008748;background:#dff4cd}.metric-icon.orange{color:#d76813;background:#ffedd6}.metric-icon.blue{color:#2363cd;background:#dfeaff}.metric-icon.teal{color:#087b78;background:#d9f0ee}.metric-icon.pink{color:#d52d71;background:#fde2ec}
 .panel { padding:18px; }
 .customer-profile,.staff-profile,.roster-day-panel { margin-top:20px; }
 .product-import-panel { margin-top:20px; }
@@ -2597,10 +2622,12 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .dashboard-toolbar { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:4px 0 12px; }.dashboard-toolbar label{display:flex;align-items:center;gap:8px;width:260px;height:44px;padding:0 10px;border:1px solid var(--line);border-radius:7px}.dashboard-toolbar select{margin:0;border:0}.period-tabs{display:flex}.period-tabs button{min-height:42px;border:1px solid var(--line);border-radius:0;background:#fff;font-size:12px}.period-tabs button:first-child{border-radius:7px 0 0 7px}.period-tabs button:last-child{border-radius:0 7px 7px 0}.period-tabs button.active{color:#fff;background:var(--brand)}
 .panel-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }.panel-heading h2{margin:0}.panel-heading span{color:var(--brand);font-size:12px;font-weight:700}.panel-heading i{display:inline-block;width:8px;height:8px;margin-right:6px;background:var(--brand);border-radius:50%}
 .chart-panel{margin-bottom:10px}.booking-chart{position:relative;display:flex;align-items:flex-end;gap:9px;height:180px;margin-top:20px;padding:15px 8px 26px;border-bottom:1px solid #dcd4e1;background:repeating-linear-gradient(to bottom,#fff 0,#fff 34px,#eee8f1 35px)}.chart-column{display:flex;flex:1;align-items:center;justify-content:flex-end;flex-direction:column;height:100%}.chart-column span{width:8px;min-height:4px;background:linear-gradient(#7a3a99,#55166f);border-radius:8px 8px 2px 2px;box-shadow:0 0 0 3px #eee2f8}.chart-column b{position:absolute;bottom:3px;color:var(--muted);font-size:10px;font-weight:500}
-.dashboard-lower{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.dashboard-row{display:grid;grid-template-columns:58px 1fr 10px;align-items:center;gap:8px;min-height:43px;border-bottom:1px solid #eee9f0;font-size:12px}.dashboard-row time{padding:5px;color:var(--brand);background:#f2e8fa;border-radius:5px;text-align:center;font-weight:700}.dashboard-row i{width:7px;height:7px;background:#68268a;border-radius:50%}.staff-shift{grid-template-columns:34px 1fr 10px}.staff-shift>b{display:grid;place-items:center;width:29px;height:29px;color:#6b6571;background:#f0edf2;border-radius:50%;font-size:10px}.staff-shift span strong,.staff-shift span small{display:block}.staff-shift span small{color:var(--muted)}.staff-shift i{background:#00a36b}.branch-grid{grid-template-columns:1fr!important}.branch-grid article{padding:9px 0;border:0;border-bottom:1px solid #eee9f0;border-radius:0;box-shadow:none}.branch-grid em{margin:2px 0 0;color:var(--brand)}.floating-action{float:right;margin-top:16px;color:#fff;background:linear-gradient(135deg,#713093,#54186d)}
+.dashboard-lower{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.dashboard-row{display:grid;grid-template-columns:58px 1fr 10px;align-items:center;gap:8px;min-height:43px;border-bottom:1px solid #eee9f0;font-size:12px}.dashboard-row time{padding:5px;color:var(--brand);background:#f2e8fa;border-radius:5px;text-align:center;font-weight:700}.dashboard-row i{width:7px;height:7px;background:#68268a;border-radius:50%}.staff-shift{grid-template-columns:34px 1fr 10px}.staff-shift>b{display:grid;place-items:center;width:29px;height:29px;color:#6b6571;background:#f0edf2;border-radius:50%;font-size:10px}.staff-shift span strong,.staff-shift span small{display:block}.staff-shift span small{color:var(--muted)}.staff-shift i{background:#00a36b}.branch-grid{grid-template-columns:1fr!important}.branch-grid article{padding:9px 0;border:0;border-bottom:1px solid #eee9f0;border-radius:0;box-shadow:none}.branch-grid em{margin:2px 0 0;color:var(--brand)}.activity-row{display:grid!important;grid-template-columns:30px 1fr auto;align-items:center;gap:8px}.activity-icon{display:grid!important;place-items:center;width:27px;height:27px;color:#fff!important;background:#6a248b;border-radius:50%}.activity-row span strong,.activity-row span small{display:block}.activity-row span small,.activity-row time{color:var(--muted);font-size:10px}.floating-action{float:right;margin-top:16px;color:#fff;background:linear-gradient(135deg,#713093,#54186d)}
 .pos-branch-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}.staff-mode #pos .split{grid-template-columns:minmax(520px,1.7fr) minmax(310px,.8fr);gap:12px}.staff-mode #saleForm,.staff-mode .cart-panel{box-shadow:none}.staff-mode #saleForm>h2{display:none}.sale-item{background:#fff;border-color:#ddd6e2}.cart-panel{background:#fcfbfd}.cart-total strong{color:var(--brand)}.staff-mode #saleForm>.full.primary{background:#00a36b}.staff-mode #saleForm label{font-size:13px}
+.pos-catalog-search{display:grid;grid-template-columns:24px 1fr 24px;align-items:center;gap:6px;height:44px;margin:8px 0;border:1px solid #7b3b98;border-radius:7px;padding:0 10px;color:var(--brand)}.pos-catalog-search input{min-height:40px;margin:0;padding:0;border:0;outline:0}.pos-catalog-search i{font-size:19px}.pos-category-tabs{display:flex;gap:7px;margin:10px 0;overflow-x:auto}.pos-category-tabs button{min-height:34px;padding:0 13px;border:1px solid #d9d2de;background:#fff;font-size:11px;white-space:nowrap}.pos-category-tabs button.active{color:#fff;background:var(--brand);border-color:var(--brand)}.pos-catalog{display:grid;gap:5px;max-height:360px;overflow:auto}.pos-catalog article{display:grid;grid-template-columns:1fr auto 34px;align-items:center;gap:10px;min-height:52px;padding:7px 8px 7px 12px;border:1px solid var(--line);border-radius:7px;background:#fff}.pos-catalog span strong,.pos-catalog span small{display:block}.pos-catalog span strong{font-size:12px}.pos-catalog span small{color:var(--muted);font-size:10px}.pos-catalog article>b{font-size:12px}.catalog-add{display:grid;place-items:center;width:30px;min-height:30px;padding:0;color:#fff;background:var(--brand);border-radius:5px}.selected-items-title{margin:16px 0 8px;font-size:13px}.add-custom-item{min-height:36px;font-size:11px}
 .employee-shell{padding:28px}.employee-select{display:block;max-width:520px;margin-top:20px}.employee-grid{display:grid;grid-template-columns:minmax(560px,1fr) minmax(290px,.48fr);gap:24px;margin-top:2px}.clock-card,.current-status-card{padding:24px;border:1px solid var(--line);border-radius:10px;background:#fff}.employee-identity{display:flex;align-items:center;gap:20px}.large-avatar{width:82px;height:82px;font-size:30px}.status-chip{display:inline-flex;padding:5px 11px;color:#087a4e;background:#daf1e3;border-radius:6px;font-size:13px;font-weight:700}.clock-display{margin:24px 0 4px;font-size:68px;font-weight:800;letter-spacing:1px;line-height:1}.clock-caption{color:var(--muted);font-size:17px}.employee-shell .time-clock-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:20px}.employee-shell .time-clock-actions button{min-height:50px}.break-button{color:#5b3b00;background:#ffd27d}.current-status-card h3{margin:0 -24px 10px;padding:0 24px 18px;border-bottom:1px solid var(--line)}.employee-shell .time-active-list article{display:grid;grid-template-columns:48px 1fr;align-items:center;padding:14px 0;background:#fff;border:0;border-bottom:1px solid var(--line)}.employee-shell .time-active-list article>b{display:grid;place-items:center;width:44px;height:44px;color:#552075;background:#eadffc;border-radius:50%}.employee-shell .time-active-list small,.employee-shell .time-active-list strong{display:block}.employee-shell .time-active-list small{color:#087a4e}.clock-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:15px}.clock-stats article{display:flex;align-items:center;gap:14px;padding:15px;border:1px solid var(--line);border-radius:9px}.clock-stats article>span{display:grid;place-items:center;width:45px;height:45px;color:var(--brand);background:#f0e5fb;border-radius:50%;font-size:22px}.clock-stats div{font-size:13px}.clock-stats strong{display:block;font-size:22px}
-@media (max-width:1100px){ body{grid-template-columns:190px minmax(0,1fr)}.employee-grid{grid-template-columns:1fr}.staff-mode #pos .split{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-lower{grid-template-columns:1fr 1fr}.profile-name{display:none} }
-@media (max-width:760px){ body{display:block}.sidebar{position:static;height:auto}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-footer{display:none}.topbar{margin:0 -18px;padding:12px 18px;align-items:flex-start}.topbar-tools{gap:6px}.location-picker{min-width:0;width:180px}.app{padding:0 18px 36px}.dashboard-toolbar{align-items:stretch;flex-direction:column}.period-tabs{overflow-x:auto}.metrics,.dashboard-lower,.cards,.branch-grid,.roster-branch-board,.booking-diary,.booking-detail-grid,.grid,fieldset,.staff-checks,.closing-summary,.clock-stats{grid-template-columns:1fr}.employee-shell{padding:18px}.employee-grid{grid-template-columns:1fr}.clock-display{font-size:48px}.employee-shell .time-clock-actions{grid-template-columns:1fr 1fr}.booking-date-heading{display:grid}.split,.time-clock-panel{grid-template-columns:1fr;display:grid} }
+@media (max-width:1100px){ body{grid-template-columns:165px minmax(0,1fr)}.employee-grid{grid-template-columns:1fr}.staff-mode #pos .split{grid-template-columns:minmax(0,1.45fr) minmax(230px,.75fr)}.profile-name{display:none}.nav{padding:0 12px}.app{padding-left:22px;padding-right:8px}.topbar{margin-left:-22px;margin-right:-8px;padding-left:22px;padding-right:8px}.location-picker{min-width:220px}.metrics{gap:8px}.metrics article{min-height:76px;padding:9px 10px}.metric-icon{flex-basis:36px;width:36px;height:36px;font-size:20px}.dashboard-lower{gap:8px}.panel{padding:14px}#overview h2{font-size:14px}.booking-chart{height:140px;margin-top:12px}.chart-panel{padding-bottom:10px}.dashboard-row{min-height:38px}.dashboard-lower .panel{min-height:272px}.dashboard-lower h2{font-size:14px}.dashboard-lower .panel-heading span{font-size:10px} }
+@media (max-width:700px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-lower{grid-template-columns:1fr 1fr}}
+@media (max-width:760px){ body{display:block}.sidebar{position:static;height:auto}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-footer{display:none}.topbar{margin:0 -18px;padding:12px 18px;align-items:flex-start}.topbar-tools{gap:6px}.location-picker{min-width:0;width:180px}.app{padding:0 18px 36px}.dashboard-toolbar{align-items:stretch;flex-direction:column}.period-tabs{overflow-x:auto}.metrics,.dashboard-lower,.cards,.branch-grid,.roster-branch-board,.booking-diary,.booking-detail-grid,.grid,fieldset,.staff-checks,.closing-summary,.clock-stats{grid-template-columns:1fr}.employee-shell{padding:18px}.employee-grid{grid-template-columns:1fr}.clock-display{font-size:48px}.employee-shell .time-clock-actions{grid-template-columns:1fr 1fr}.booking-date-heading{display:grid}.split,.staff-mode #pos .split,.time-clock-panel{grid-template-columns:1fr;display:grid} }
 `;
 }
