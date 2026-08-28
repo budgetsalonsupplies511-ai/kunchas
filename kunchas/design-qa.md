@@ -55,3 +55,15 @@ The final side-by-side comparison uses the source dashboard half and the impleme
 - Dynamic branch, staff, revenue, and service values differ from the illustrative values in the source image.
 
 final result: passed
+
+## Multi-workspace architecture QA — 28 August 2026
+
+- `/admin` now renders a dedicated backend with Dashboard, Customers, Staff, Roster, Services, Products, Inventory, Reports, Branches & access, and Discounts in the primary navigation.
+- `/manager` renders a distinct Manager Dashboard sign-in. A local permission test granted only Dashboard, Customers, and Roster; after authentication, exactly those three pages were visible.
+- `/pos` now renders only POS, Bookings, and Employee. Admin and manager modules are absent from its navigation.
+- POS catalog test: 126 add controls rendered; adding one service created one checkout line; the new Phosphor close control was visible and removed the line, returning the cart to zero items.
+- Checkout retained the reference two-column composition, searchable category catalog, item editor, allocation controls, payment inputs, and sale summary.
+- Desktop visual review at 1265px showed consistent sidebar width, top bar alignment, card spacing, field rhythm, and unbroken catalog scrolling.
+- Browser console after Admin, Manager, permission filtering, POS open, add, and remove tests: no errors.
+
+final result: passed

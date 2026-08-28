@@ -1,7 +1,7 @@
 {
   "name": "kunchas",
   "main": "src/index.js",
-  "compatibility_date": "2026-08-14",
+  "compatibility_date": "2026-08-28",
   "compatibility_flags": [
     "nodejs_compat"
   ],

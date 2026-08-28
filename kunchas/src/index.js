@@ -9,6 +9,10 @@ export default {
         return htmlResponse(renderApp("", "overview", "admin"));
       }
 
+      if (request.method === "GET" && url.pathname === "/manager") {
+        return htmlResponse(renderApp("", "overview", "manager"));
+      }
+
       if (request.method === "GET" && url.pathname === "/pos") {
         return htmlResponse(renderApp("", "pos", "staff"));
       }
@@ -87,6 +91,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/staff-roster") return saveStaffRoster(request, env);
       if (request.method === "POST" && url.pathname === "/api/staff-regular-days-off") return saveStaffRegularDaysOff(request, env);
       if (request.method === "POST" && url.pathname === "/api/manager-assignments") return saveManagerAssignment(request, env);
+      if (request.method === "POST" && url.pathname === "/api/manager-login") return managerLogin(request, env);
       if (request.method === "POST" && url.pathname === "/api/branches") return createBranch(request, env);
       if (request.method === "DELETE" && url.pathname.startsWith("/api/branches/")) return deleteBranch(request, env, clean(url.pathname.replace("/api/branches/", "")));
       if (request.method === "POST" && url.pathname === "/api/stock-movements") return createStockMovement(request, env);
@@ -840,6 +845,7 @@ async function saveManagerAssignment(request, env) {
   const staffId = clean(body.staffId);
   const branchIds = Array.isArray(body.branchIds) ? [...new Set(body.branchIds.map(clean).filter(Boolean))] : [];
   const pin = clean(body.pin);
+  const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions.map(clean).filter(Boolean))] : [];
   if (!staffId || !branchIds.length || pin.length < 4) return jsonResponse({ error: "Manager, at least one branch, and a PIN of 4 or more characters are required." }, 400);
   const staff = await env.DB.prepare("SELECT id FROM staff WHERE id = ? AND status = 'Active'").bind(staffId).first();
   if (!staff) return jsonResponse({ error: "Active staff member not found." }, 404);
@@ -849,7 +855,22 @@ async function saveManagerAssignment(request, env) {
       .bind(staffId, branchId, await managerPinHash(staffId, branchId, pin)));
   }
   await env.DB.batch(statements);
+  await env.DB.prepare("INSERT INTO manager_permissions (staff_id, permissions) VALUES (?, ?) ON CONFLICT(staff_id) DO UPDATE SET permissions = excluded.permissions")
+    .bind(staffId, JSON.stringify(permissions)).run();
   return jsonResponse({ ok: true });
+}
+
+async function managerLogin(request, env) {
+  const body = await request.json();
+  const staffId = clean(body.staffId);
+  const branchId = clean(body.branchId);
+  const pin = clean(body.pin);
+  const assignment = await env.DB.prepare("SELECT pin_hash FROM manager_branch_assignments WHERE staff_id = ? AND branch_id = ?").bind(staffId, branchId).first();
+  if (!assignment || !constantTimeEqual(assignment.pin_hash, await managerPinHash(staffId, branchId, pin))) return jsonResponse({ error: "Manager sign-in failed for this location." }, 403);
+  const access = await env.DB.prepare("SELECT permissions FROM manager_permissions WHERE staff_id = ?").bind(staffId).first();
+  let permissions = [];
+  try { permissions = JSON.parse(access?.permissions || "[]"); } catch {}
+  return jsonResponse({ ok:true, permissions });
 }
 
 async function updateSaleInvoice(request, env, saleId) {
@@ -1173,6 +1194,8 @@ function uiIcon(name, className = "ui-icon") {
 
 function renderApp(initialBranchId, initialTab, mode = "admin") {
   const isAdmin = mode === "admin";
+  const isManager = mode === "manager";
+  const isPos = mode === "staff";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1182,22 +1205,32 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.2/src/regular/style.css">
   <style>${styles()}</style>
 </head>
-<body class="${isAdmin ? "admin-mode" : "staff-mode"}">
+<body class="${isAdmin ? "admin-mode" : isManager ? "manager-mode manager-locked" : "staff-mode"}">
   <aside class="sidebar">
     <div class="brand"><strong>Kunchas</strong></div>
     <nav>
       ${isAdmin ? `
       <button class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">${uiIcon("dashboard")}<span>Dashboard</span></button>
-      <a class="nav nav-link" href="/pos">${uiIcon("pos")}<span>POS</span></a>
-      <a class="nav nav-link" href="/bookings">${uiIcon("bookings")}<span>Bookings</span></a>
-      <a class="nav nav-link" href="/pos">${uiIcon("closing")}<span>Daily Closing</span></a>
-      <a class="nav nav-link" href="/pos">${uiIcon("sales")}<span>Recent Sales</span></a>
-      <a class="nav nav-link" href="/pos">${uiIcon("employee")}<span>Employee</span></a>` : `
-      <a class="nav nav-link" href="/admin">${uiIcon("dashboard")}<span>Dashboard</span></a>
+      <button class="nav" data-tab="customers">${uiIcon("customers")}<span>Customers</span></button>
+      <button class="nav" data-tab="staff">${uiIcon("employee")}<span>Staff</span></button>
+      <button class="nav" data-tab="roster">${uiIcon("bookings")}<span>Roster</span></button>
+      <button class="nav" data-tab="services">${uiIcon("services")}<span>Services</span></button>
+      <button class="nav" data-tab="products">${uiIcon("products")}<span>Products</span></button>
+      <button class="nav" data-tab="inventory">${uiIcon("inventory")}<span>Inventory</span></button>
+      <button class="nav" data-tab="reports">${uiIcon("reports")}<span>Reports</span></button>
+      <button class="nav" data-tab="branches">${uiIcon("branches")}<span>Branches &amp; access</span></button>
+      <button class="nav" data-tab="discounts">${uiIcon("discount")}<span>Discounts</span></button>` : isManager ? `
+      <button class="nav manager-nav" data-permission="overview" data-tab="overview">${uiIcon("dashboard")}<span>Dashboard</span></button>
+      <button class="nav manager-nav" data-permission="customers" data-tab="customers">${uiIcon("customers")}<span>Customers</span></button>
+      <button class="nav manager-nav" data-permission="staff" data-tab="staff">${uiIcon("employee")}<span>Staff</span></button>
+      <button class="nav manager-nav" data-permission="roster" data-tab="roster">${uiIcon("bookings")}<span>Roster</span></button>
+      <button class="nav manager-nav" data-permission="services" data-tab="services">${uiIcon("services")}<span>Services</span></button>
+      <button class="nav manager-nav" data-permission="products" data-tab="products">${uiIcon("products")}<span>Products</span></button>
+      <button class="nav manager-nav" data-permission="inventory" data-tab="inventory">${uiIcon("inventory")}<span>Inventory</span></button>
+      <button class="nav manager-nav" data-permission="reports" data-tab="reports">${uiIcon("reports")}<span>Reports</span></button>` : `
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">${uiIcon("pos")}<span>POS</span></button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">${uiIcon("bookings")}<span>Bookings</span></button>
-      <button class="nav" data-tab="closing">${uiIcon("closing")}<span>Daily Closing</span></button>`}
-      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">${uiIcon("sales")}<span>Recent Sales</span></button><button class="nav" data-tab="employee">${uiIcon("employee")}<span>Employee</span></button>`}
+      <button class="nav" data-tab="employee">${uiIcon("employee")}<span>Employee</span></button>`}
     </nav>
     <div class="sidebar-footer">${uiIcon("help")}<span>Help &amp; Support</span>${uiIcon("chevron","ui-icon chevron")}</div>
   </aside>
@@ -1205,15 +1238,17 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
   <main class="app">
     <header class="topbar">
       <div>
-        <h1 id="pageTitle">${isAdmin ? "Dashboard" : initialTab === "bookings" ? "Bookings" : "New POS sale"}</h1>
+        <h1 id="pageTitle">${isAdmin ? "Admin Dashboard" : isManager ? "Manager Dashboard" : initialTab === "bookings" ? "Bookings" : "POS Checkout"}</h1>
       </div>
-      <div class="topbar-tools"><label class="location-picker">${uiIcon("store")}<select id="headerBranch"><option>Kunchas</option></select></label><button class="notification" type="button" aria-label="Notifications">${uiIcon("bell")}<b>3</b></button>${isAdmin ? `<details class="profile-menu"><summary><span class="profile-badge">KM</span><strong class="profile-name">Manager</strong><i class="ph ph-caret-down"></i></summary><div class="profile-popover"><p>Management</p><button data-menu-tab="customers" type="button">${uiIcon("customers")} Customers</button><button data-menu-tab="staff" type="button">${uiIcon("employee")} Staff</button><button data-menu-tab="roster" type="button">${uiIcon("bookings")} Roster</button><button data-menu-tab="services" type="button">${uiIcon("services")} Services</button><button data-menu-tab="products" type="button">${uiIcon("products")} Products</button><button data-menu-tab="inventory" type="button">${uiIcon("inventory")} Inventory</button><button data-menu-tab="reports" type="button">${uiIcon("reports")} Reports</button><button data-menu-tab="branches" type="button">${uiIcon("branches")} Branches</button><button data-menu-tab="discounts" type="button">${uiIcon("discount")} Discounts</button></div></details>` : `<div class="profile-badge">KM</div><strong class="profile-name">Manager</strong><span class="profile-caret">⌄</span>`}</div>
+      <div class="topbar-tools"><label class="location-picker">${uiIcon("store")}<select id="headerBranch"><option>Kunchas</option></select></label><button class="notification" type="button" aria-label="Notifications">${uiIcon("bell")}</button><div class="profile-badge">${isAdmin ? "AD" : isManager ? "MG" : "POS"}</div><strong class="profile-name">${isAdmin ? "Admin" : isManager ? "Manager" : "Team"}</strong></div>
     </header>
 
     <div class="load-row admin-only">
       <button class="primary" id="loadData" type="button">Refresh data</button>
     </div>
     <p class="message" id="message">${isAdmin ? "Loading admin data." : "Open your branch with the postcode PIN."}</p>
+
+    ${isManager ? `<div class="panel manager-login" id="managerLogin"><div><p class="eyebrow">Secure workspace</p><h2>Open Manager Dashboard</h2><p class="hint">Use the manager and location access configured by Admin.</p></div><div class="grid"><label>Location<select id="managerBranch"></select></label><label>Manager<select id="managerStaff"></select></label><label>Manager PIN<input id="managerPin" type="password" inputmode="numeric" autocomplete="off"></label></div><button class="primary" id="openManager" type="button">Open dashboard</button></div>` : ""}
 
     <section class="tab admin-only ${initialTab === "overview" ? "active" : ""}" id="overview">
       <div class="dashboard-toolbar"><label>${uiIcon("store")}<select id="dashboardBranch"><option value="">All Kunchas locations</option></select></label><div class="period-tabs"><button class="active" type="button">Today</button><button type="button">This Week</button><button type="button">This Month</button><button type="button">Last Month</button></div></div>
@@ -1376,7 +1411,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel"><h2>Admin closing review</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Actual cash</th><th>Cash taken</th><th>Actual card</th><th>Status</th><th>Approved by</th><th></th></tr></thead><tbody id="adminClosingTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="branches">
-      <form class="panel" id="managerAssignmentForm"><h2>Assign manager to branches</h2><div class="grid"><label>Manager<select name="staffId" data-staff-select required></select></label><label>Manager PIN<input name="pin" type="password" minlength="4" required></label></div><fieldset><legend>Authorized branches</legend><div class="staff-checks" id="managerBranchChecks"></div></fieldset><button class="primary" type="submit">Save manager access</button><p class="hint">The PIN is stored as a one-way hash and is required with a reason whenever an invoice is edited.</p></form>
+      <form class="panel" id="managerAssignmentForm"><p class="eyebrow">Role access</p><h2>Manager Dashboard permissions</h2><div class="grid"><label>Manager<select name="staffId" data-staff-select required></select></label><label>Manager PIN<input name="pin" type="password" minlength="4" required></label></div><fieldset><legend>Authorized branches</legend><div class="staff-checks" id="managerBranchChecks"></div></fieldset><fieldset><legend>Dashboard pages this manager can access</legend><div class="permission-grid">${["overview:Dashboard","customers:Customers","staff:Staff","roster:Roster","services:Services","products:Products","inventory:Inventory","reports:Reports"].map((entry) => { const [value,label] = entry.split(":"); return `<label class="check"><input name="permissions" type="checkbox" value="${value}">${label}</label>`; }).join("")}</div></fieldset><button class="primary" type="submit">Save manager access</button><p class="hint">Managers only see the locations and pages selected here. Their PIN is stored as a one-way hash.</p></form>
       <div class="split">
         <form class="panel" id="branchForm"><h2>Create branch</h2><label>Name<input name="name" required></label><label>Address<input name="address" required></label><div class="grid"><label>Phone<input name="phone" required></label><label>Postcode / PIN<input name="postCode" inputmode="numeric"></label></div><button class="primary full" type="submit">Create branch</button></form>
         <div class="panel"><h2>Branch details</h2><label>Choose branch<select id="branchDetailSelect"></select></label><div id="branchDetail"></div></div>
@@ -1448,6 +1483,7 @@ document.querySelector("#rosterForm").addEventListener("submit", submitRosterFor
 document.querySelector("#regularOffForm").addEventListener("submit", submitRegularOffForm);
 document.querySelector("#regularOffForm select[name='staffId']").addEventListener("change", renderRegularDayChecks);
 document.querySelector("#managerAssignmentForm").addEventListener("submit", submitManagerAssignment);
+document.querySelector("#openManager")?.addEventListener("click", openManagerDashboard);
 document.querySelectorAll("#timeReportFrom,#timeReportTo,#timeReportBranch").forEach((input) => input.addEventListener("change", renderTimeReport));
 document.querySelector("#rosterStatus").addEventListener("change", updateRosterStatusFields);
 document.querySelector("#rosterMonth").addEventListener("change", renderRosterMonthCalendar);
@@ -1468,7 +1504,7 @@ updateCustomerMode();
 updateBookingCustomerMode();
 loadPublicBranches();
 setInitialRosterWeek();
-if (appMode === "admin") loadData();
+if (appMode === "admin" || appMode === "manager") loadData();
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -1487,6 +1523,7 @@ async function loadData() {
     message.textContent = "Loading Kunchas data...";
     state = normalizeState(await api("/api/app-data"));
     renderAll();
+    if (appMode === "manager") renderManagerLoginOptions();
     message.textContent = "Cloud software loaded.";
   } catch (error) {
     message.textContent = error.message;
@@ -1604,6 +1641,27 @@ function renderMetrics() {
   document.querySelector("#bookingChart").innerHTML = hourCounts.map((count,index) => '<div class="chart-column"><span style="height:' + Math.max(4, Math.round(count / maxCount * 88)) + '%"></span><b>' + (((index+7)%12)||12) + ((index+7)<12?'am':'pm') + '</b></div>').join("");
   document.querySelector("#upcomingBookings").innerHTML = todaysBookings.slice(0,5).map((booking) => '<div class="dashboard-row"><time>' + esc(String(booking.booking_time || "").slice(0,5)) + '</time><span>' + esc(booking.service_names || "Booking") + '</span><i></i></div>').join("") || '<p class="hint">No upcoming bookings today.</p>';
   document.querySelector("#staffOnShift").innerHTML = state.staff.filter((staff) => staff.status !== "Inactive").slice(0,5).map((staff) => '<div class="dashboard-row staff-shift"><b>' + esc(initials(staff.name)) + '</b><span><strong>' + esc(staff.name) + '</strong><small>' + esc(staff.role || "Team member") + '</small></span><i></i></div>').join("");
+}
+function renderManagerLoginOptions() {
+  const branch = document.querySelector("#managerBranch");
+  const staff = document.querySelector("#managerStaff");
+  if (!branch || !staff) return;
+  branch.innerHTML = '<option value="">Select location</option>' + state.branches.map((item) => '<option value="' + esc(item.id) + '">' + esc(item.name) + '</option>').join('');
+  const managers = [...new Map(state.managerAssignments.map((item) => [item.staff_id, item])).values()];
+  staff.innerHTML = '<option value="">Select manager</option>' + managers.map((item) => '<option value="' + esc(item.staff_id) + '">' + esc(item.staff_name) + '</option>').join('');
+}
+async function openManagerDashboard() {
+  try {
+    const result = await api("/api/manager-login", { method:"POST", body:JSON.stringify({ branchId:document.querySelector("#managerBranch").value, staffId:document.querySelector("#managerStaff").value, pin:document.querySelector("#managerPin").value }) });
+    const allowed = new Set(result.permissions || []);
+    document.querySelectorAll(".manager-nav").forEach((item) => item.classList.toggle("hidden", !allowed.has(item.dataset.permission)));
+    document.querySelectorAll(".admin-only.tab").forEach((item) => item.classList.toggle("manager-denied", !allowed.has(item.id)));
+    document.body.classList.remove("manager-locked");
+    document.querySelector("#managerLogin").classList.add("hidden");
+    const first = document.querySelector(".manager-nav:not(.hidden)");
+    if (first) showTab(first.dataset.tab);
+    message.textContent = "Manager workspace opened.";
+  } catch (error) { message.textContent = error.message; }
 }
 function renderBranches() {
   document.querySelector("#branchCards").innerHTML = state.branches.map((b) => '<article><strong>' + esc(b.name) + '</strong><span>' + esc(b.address) + '</span><span>' + esc(b.phone) + ' · ' + esc(b.post_code || "No postcode") + '</span><em>' + esc(b.status) + '</em><a class="branch-pos" href="/pos/' + esc(b.id) + '">Open branch POS</a><button class="danger delete-branch" data-branch-id="' + esc(b.id) + '" type="button">Delete branch</button></article>').join("");
@@ -2104,7 +2162,7 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
   row.className = "sale-item";
   const categories = [...new Set(saleCatalog().map((item) => item.category))].sort();
-  row.innerHTML = '<div class="grid"><label>Category<select name="saleCategory"><option value="">All categories</option>' + categories.map((category) => '<option>' + esc(category) + '</option>').join('') + '</select></label><label>Service / product<input name="saleItemSearch" required placeholder="Choose category, then search"></label></div><datalist class="row-item-list"></datalist><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">Only this sale and receipt change. The master service stays the same.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
+  row.innerHTML = '<button class="remove-sale-item" type="button" aria-label="Remove this item"><i class="ph ph-x"></i></button><div class="grid"><label>Category<select name="saleCategory"><option value="">All categories</option>' + categories.map((category) => '<option>' + esc(category) + '</option>').join('') + '</select></label><label>Service / product<input name="saleItemSearch" required placeholder="Choose category, then search"></label></div><datalist class="row-item-list"></datalist><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">Only this sale and receipt change. The master service stays the same.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
   document.querySelector("#saleItems").append(row);
   const rowListId = "sale-items-" + crypto.randomUUID();
   row.querySelector(".row-item-list").id = rowListId;
@@ -2113,6 +2171,7 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
   row.querySelector('select[name="saleCategory"]').addEventListener("change", () => { row.querySelector('input[name="saleItemSearch"]').value = ""; refreshItems(); updateSaleItemRow(row); });
   refreshItems();
   row.querySelector(".add-staff").addEventListener("click", () => addStaffToSaleItem(row));
+  row.querySelector(".remove-sale-item").addEventListener("click", () => { row.remove(); renderCartSummary(); });
   row.querySelector('input[name="saleItemSearch"]').addEventListener("input", () => updateSaleItemRow(row));
   row.querySelector('input[name="instanceName"]').addEventListener("input", renderCartSummary);
   row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { updateAllocationSummary(row); renderCartSummary(); });
@@ -2184,7 +2243,7 @@ async function submitManagerAssignment(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const data = new FormData(form);
-  const payload = { staffId:data.get('staffId'), pin:data.get('pin'), branchIds:data.getAll('branchIds') };
+  const payload = { staffId:data.get('staffId'), pin:data.get('pin'), branchIds:data.getAll('branchIds'), permissions:data.getAll('permissions') };
   try { message.textContent = 'Saving manager access...'; await api('/api/manager-assignments', { method:'POST', body:JSON.stringify(payload) }); form.reset(); await loadData(); message.textContent = 'Manager branch access saved.'; }
   catch (error) { message.textContent = error.message; }
 }
@@ -2269,7 +2328,7 @@ async function submitJson(path, payload, form) {
       document.querySelector("#printReceipt").classList.remove("hidden");
     }
     form.reset();
-    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; addSaleItem(); updateCustomerMode(); }
+    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; renderCartSummary(); updateCustomerMode(); }
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); updateBookingCustomerMode(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
@@ -2468,7 +2527,9 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .danger { width:100%; margin-top:12px; color:#db1522; background:#fff; border:1px solid #f0202d; }
 .full { width:100%; }
 .hidden { display:none; }
-.admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
+.admin-mode .staff-only,.staff-mode .admin-only,.manager-mode .staff-only { display:none !important; }
+.manager-mode .manager-nav{display:flex}.manager-mode .manager-nav.hidden,.manager-mode.manager-locked .manager-nav,.manager-mode.manager-locked .admin-only.tab{display:none!important}.manager-mode .manager-denied{display:none!important}
+.manager-login{max-width:860px;margin:50px auto;padding:30px}.manager-login>.grid{grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}.permission-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.permission-grid .check{min-height:44px;margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff}
 .hint { margin:8px 0 0; color:var(--muted); font-size:13px; }
 .load-row { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
 .message { min-height:22px; margin:4px 0; color:var(--brand); font-size:12px; font-weight:700; }.admin-mode .load-row{display:none!important}.admin-mode #message{display:none}
@@ -2555,7 +2616,8 @@ legend { grid-column:1/-1; }
 .branch-detail-heading { display:grid; gap:3px; margin:16px 0; padding:14px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .branch-detail-heading strong { font-size:20px; }
 .branch-detail-heading span { color:var(--muted); }
-.sale-item { padding:14px; margin-bottom:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
+.sale-item { position:relative; padding:18px; margin-bottom:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:10px; }
+.remove-sale-item{position:absolute;z-index:2;top:9px;right:9px;display:grid;place-items:center;width:32px;min-width:32px;min-height:32px;padding:0;color:#7a657f;background:#f3edf5;border:1px solid #e3d8e7;border-radius:50%}.remove-sale-item:hover{color:#a12646;background:#fff0f3}.sale-item>.grid:first-of-type{padding-right:30px}
 .time-clock-panel { display:grid; grid-template-columns:minmax(220px,1fr) minmax(180px,260px) auto; align-items:end; gap:16px; }
 .time-clock-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .time-clock-actions button { min-height:40px; }
@@ -2628,6 +2690,6 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .employee-shell{padding:28px}.employee-select{display:block;max-width:520px;margin-top:20px}.employee-grid{display:grid;grid-template-columns:minmax(560px,1fr) minmax(290px,.48fr);gap:24px;margin-top:2px}.clock-card,.current-status-card{padding:24px;border:1px solid var(--line);border-radius:10px;background:#fff}.employee-identity{display:flex;align-items:center;gap:20px}.large-avatar{width:82px;height:82px;font-size:30px}.status-chip{display:inline-flex;padding:5px 11px;color:#087a4e;background:#daf1e3;border-radius:6px;font-size:13px;font-weight:700}.clock-display{margin:24px 0 4px;font-size:68px;font-weight:800;letter-spacing:1px;line-height:1}.clock-caption{color:var(--muted);font-size:17px}.employee-shell .time-clock-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:20px}.employee-shell .time-clock-actions button{min-height:50px}.break-button{color:#5b3b00;background:#ffd27d}.current-status-card h3{margin:0 -24px 10px;padding:0 24px 18px;border-bottom:1px solid var(--line)}.employee-shell .time-active-list article{display:grid;grid-template-columns:48px 1fr;align-items:center;padding:14px 0;background:#fff;border:0;border-bottom:1px solid var(--line)}.employee-shell .time-active-list article>b{display:grid;place-items:center;width:44px;height:44px;color:#552075;background:#eadffc;border-radius:50%}.employee-shell .time-active-list small,.employee-shell .time-active-list strong{display:block}.employee-shell .time-active-list small{color:#087a4e}.clock-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:15px}.clock-stats article{display:flex;align-items:center;gap:14px;padding:15px;border:1px solid var(--line);border-radius:9px}.clock-stats article>span{display:grid;place-items:center;width:45px;height:45px;color:var(--brand);background:#f0e5fb;border-radius:50%;font-size:22px}.clock-stats div{font-size:13px}.clock-stats strong{display:block;font-size:22px}
 @media (max-width:1100px){ body{grid-template-columns:165px minmax(0,1fr)}.employee-grid{grid-template-columns:1fr}.staff-mode #pos .split{grid-template-columns:minmax(0,1.45fr) minmax(230px,.75fr)}.profile-name{display:none}.nav{padding:0 12px}.app{padding-left:22px;padding-right:8px}.topbar{margin-left:-22px;margin-right:-8px;padding-left:22px;padding-right:8px}.location-picker{min-width:220px}.metrics{gap:8px}.metrics article{min-height:76px;padding:9px 10px}.metric-icon{flex-basis:36px;width:36px;height:36px;font-size:20px}.dashboard-lower{gap:8px}.panel{padding:14px}#overview h2{font-size:14px}.booking-chart{height:140px;margin-top:12px}.chart-panel{padding-bottom:10px}.dashboard-row{min-height:38px}.dashboard-lower .panel{min-height:272px}.dashboard-lower h2{font-size:14px}.dashboard-lower .panel-heading span{font-size:10px} }
 @media (max-width:700px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-lower{grid-template-columns:1fr 1fr}}
-@media (max-width:760px){ body{display:block}.sidebar{position:static;height:auto}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-footer{display:none}.topbar{margin:0 -18px;padding:12px 18px;align-items:flex-start}.topbar-tools{gap:6px}.location-picker{min-width:0;width:180px}.app{padding:0 18px 36px}.dashboard-toolbar{align-items:stretch;flex-direction:column}.period-tabs{overflow-x:auto}.metrics,.dashboard-lower,.cards,.branch-grid,.roster-branch-board,.booking-diary,.booking-detail-grid,.grid,fieldset,.staff-checks,.closing-summary,.clock-stats{grid-template-columns:1fr}.employee-shell{padding:18px}.employee-grid{grid-template-columns:1fr}.clock-display{font-size:48px}.employee-shell .time-clock-actions{grid-template-columns:1fr 1fr}.booking-date-heading{display:grid}.split,.staff-mode #pos .split,.time-clock-panel{grid-template-columns:1fr;display:grid} }
+@media (max-width:760px){ body{display:block}.sidebar{position:static;height:auto}.sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar-footer{display:none}.topbar{margin:0 -18px;padding:12px 18px;align-items:flex-start}.topbar-tools{gap:6px}.location-picker{min-width:0;width:180px}.app{padding:0 18px 36px}.dashboard-toolbar{align-items:stretch;flex-direction:column}.period-tabs{overflow-x:auto}.metrics,.dashboard-lower,.cards,.branch-grid,.roster-branch-board,.booking-diary,.booking-detail-grid,.grid,fieldset,.staff-checks,.closing-summary,.clock-stats,.permission-grid,.manager-login>.grid{grid-template-columns:1fr}.employee-shell{padding:18px}.employee-grid{grid-template-columns:1fr}.clock-display{font-size:48px}.employee-shell .time-clock-actions{grid-template-columns:1fr 1fr}.booking-date-heading{display:grid}.split,.staff-mode #pos .split,.time-clock-panel{grid-template-columns:1fr;display:grid} }
 `;
 }

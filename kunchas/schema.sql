@@ -152,6 +152,11 @@ CREATE TABLE IF NOT EXISTS manager_branch_assignments (
   PRIMARY KEY (staff_id, branch_id)
 );
 
+CREATE TABLE IF NOT EXISTS manager_permissions (
+  staff_id TEXT PRIMARY KEY,
+  permissions TEXT NOT NULL DEFAULT '[]'
+);
+
 CREATE TABLE IF NOT EXISTS sale_edit_audit (
   id TEXT PRIMARY KEY,
   sale_id TEXT NOT NULL,
