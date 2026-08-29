@@ -1,3 +1,5 @@
+import * as XLSX from "xlsx";
+
 export default {
   async fetch(request, env, ctx) {
     try {
@@ -67,6 +69,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/services") return createService(request, env);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/services/")) return updateService(request, env, clean(url.pathname.replace("/api/services/", "")));
       if (request.method === "POST" && url.pathname === "/api/products") return createProduct(request, env);
+      if (request.method === "GET" && url.pathname === "/api/products/export") return exportProducts(env);
+      if (request.method === "POST" && url.pathname === "/api/products/import") return importProducts(request, env);
+      if (request.method === "PATCH" && url.pathname.startsWith("/api/products/")) return updateProduct(request, env, clean(url.pathname.replace("/api/products/", "")));
       if (request.method === "POST" && url.pathname === "/api/staff") return createStaff(request, env);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/staff/")) return updateStaff(request, env, clean(url.pathname.replace("/api/staff/", "")));
       if (request.method === "POST" && url.pathname === "/api/staff-roster") return saveStaffRoster(request, env);
@@ -443,11 +448,110 @@ async function createProduct(request, env) {
   const category = clean(body.category) || "Retail";
   const priceCents = Math.round(Number(body.price || 0) * 100);
   const costCents = Math.round(Number(body.cost || 0) * 100);
-  if (!name || !priceCents) return jsonResponse({ error: "Product name and retail price are required." }, 400);
+  if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0) return jsonResponse({ error: "Product name and a valid retail price are required." }, 400);
+  const id = `product-${crypto.randomUUID()}`;
   await env.DB.prepare("INSERT INTO products (id, name, brand, category, sku, barcode, cost_cents, price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(`product-${crypto.randomUUID()}`, name, clean(body.brand), category, clean(body.sku), clean(body.barcode), costCents, priceCents, clean(body.status) || "Active")
+    .bind(id, name, clean(body.brand), category, clean(body.sku), clean(body.barcode), costCents, priceCents, clean(body.status) === "Inactive" ? "Inactive" : "Active")
     .run();
+  return jsonResponse({ ok: true, id }, 201);
+}
+
+async function updateProduct(request, env, productId) {
+  if (!productId) return jsonResponse({ error: "Product is required." }, 400);
+  const body = await request.json();
+  const name = clean(body.name);
+  const category = clean(body.category) || "Retail";
+  const priceCents = Math.round(Number(body.price || 0) * 100);
+  const costCents = Math.round(Number(body.cost || 0) * 100);
+  if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0) return jsonResponse({ error: "Product name and a valid retail price are required." }, 400);
+  const result = await env.DB.prepare("UPDATE products SET name = ?, brand = ?, category = ?, sku = ?, barcode = ?, cost_cents = ?, price_cents = ?, status = ? WHERE id = ?")
+    .bind(name, clean(body.brand), category, clean(body.sku), clean(body.barcode), costCents, priceCents, clean(body.status) === "Inactive" ? "Inactive" : "Active", productId)
+    .run();
+  if (!result.meta.changes) return jsonResponse({ error: "Product not found." }, 404);
   return jsonResponse({ ok: true });
+}
+
+async function exportProducts(env) {
+  const products = await all(env, "SELECT * FROM products ORDER BY category, name");
+  const rows = [["Product ID", "Name", "Brand", "Category", "SKU", "Barcode", "Cost", "Retail Price", "Status"], ...products.map((product) => [
+    product.id,
+    product.name,
+    product.brand || "",
+    product.category || "Retail",
+    product.sku || "",
+    product.barcode || "",
+    Number(product.cost_cents || 0) / 100,
+    Number(product.price_cents || 0) / 100,
+    product.status || "Active"
+  ])];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  sheet["!cols"] = [{ wch: 34 }, { wch: 28 }, { wch: 18 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 12 }];
+  sheet["!autofilter"] = { ref: `A1:I${Math.max(rows.length, 1)}` };
+  for (let row = 2; row <= rows.length; row += 1) {
+    if (sheet[`G${row}`]) sheet[`G${row}`].z = '"$"#,##0.00';
+    if (sheet[`H${row}`]) sheet[`H${row}`].z = '"$"#,##0.00';
+  }
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "Products");
+  workbook.Props = { Title:"Kunchas products", Subject:"Product import and export", Company:"Kunchas" };
+  const output = XLSX.write(workbook, { type:"array", bookType:"xlsx", compression:true });
+  const date = new Date().toISOString().slice(0, 10);
+  return new Response(output, { headers:{
+    "content-type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "content-disposition":`attachment; filename="kunchas-products-${date}.xlsx"`,
+    "cache-control":"no-store",
+    "x-content-type-options":"nosniff"
+  } });
+}
+
+function spreadsheetValue(row, names) {
+  const key = Object.keys(row).find((candidate) => names.includes(candidate.trim().toLowerCase()));
+  return key ? row[key] : "";
+}
+
+async function importProducts(request, env) {
+  const bytes = await request.arrayBuffer();
+  if (!bytes.byteLength) return jsonResponse({ error:"Choose an Excel workbook to import." }, 400);
+  if (bytes.byteLength > 5 * 1024 * 1024) return jsonResponse({ error:"The workbook must be smaller than 5 MB." }, 413);
+  let workbook;
+  try { workbook = XLSX.read(new Uint8Array(bytes), { type:"array", cellDates:false }); }
+  catch (_) { return jsonResponse({ error:"The selected file could not be read as an Excel workbook." }, 400); }
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = sheet ? XLSX.utils.sheet_to_json(sheet, { defval:"", raw:true }) : [];
+  if (!rows.length) return jsonResponse({ error:"The workbook has no product rows." }, 400);
+  if (rows.length > 1000) return jsonResponse({ error:"Import up to 1,000 products at a time." }, 400);
+  let created = 0, updated = 0, skipped = 0;
+  const errors = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const productId = clean(spreadsheetValue(row, ["product id", "id"]));
+    const name = clean(spreadsheetValue(row, ["name", "product name"]));
+    const brand = clean(spreadsheetValue(row, ["brand"]));
+    const category = clean(spreadsheetValue(row, ["category"])) || "Retail";
+    const sku = clean(spreadsheetValue(row, ["sku"]));
+    const barcode = clean(spreadsheetValue(row, ["barcode"]));
+    const costCents = Math.round(Number(spreadsheetValue(row, ["cost", "cost price"]) || 0) * 100);
+    const priceCents = Math.round(Number(spreadsheetValue(row, ["retail price", "price", "retail"]) || 0) * 100);
+    const status = clean(spreadsheetValue(row, ["status"])).toLowerCase() === "inactive" ? "Inactive" : "Active";
+    if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0) {
+      skipped += 1;
+      errors.push(`Row ${index + 2}: name and valid retail price are required.`);
+      continue;
+    }
+    let existing = productId ? await env.DB.prepare("SELECT id FROM products WHERE id = ?").bind(productId).first() : null;
+    if (!existing && sku) existing = await env.DB.prepare("SELECT id FROM products WHERE sku = ? LIMIT 1").bind(sku).first();
+    if (!existing && barcode) existing = await env.DB.prepare("SELECT id FROM products WHERE barcode = ? LIMIT 1").bind(barcode).first();
+    if (existing) {
+      await env.DB.prepare("UPDATE products SET name = ?, brand = ?, category = ?, sku = ?, barcode = ?, cost_cents = ?, price_cents = ?, status = ? WHERE id = ?")
+        .bind(name, brand, category, sku, barcode, costCents, priceCents, status, existing.id).run();
+      updated += 1;
+    } else {
+      await env.DB.prepare("INSERT INTO products (id, name, brand, category, sku, barcode, cost_cents, price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(`product-${crypto.randomUUID()}`, name, brand, category, sku, barcode, costCents, priceCents, status).run();
+      created += 1;
+    }
+  }
+  return jsonResponse({ ok:true, created, updated, skipped, errors:errors.slice(0, 10) });
 }
 
 async function createStaff(request, env) {
@@ -1189,10 +1293,11 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       </div>
     </section>
     <section class="tab admin-only" id="products">
-      <div class="split">
-        <form class="panel" id="productForm"><h2>Add product</h2><div class="grid"><label>Name<input name="name" required></label><label>Brand<input name="brand"></label></div><div class="grid"><label>Category<input name="category" placeholder="Haircare"></label><label>SKU<input name="sku"></label></div><label>Barcode<input name="barcode"></label><div class="grid"><label>Cost $<input name="cost" type="number" min="0" step="0.01"></label><label>Retail $<input name="price" type="number" min="0" step="0.01" required></label></div><button class="primary full" type="submit">Save product</button></form>
-        <div class="panel"><h2>Products</h2><div class="cards" id="productCards"></div></div>
+      <div class="product-top-grid">
+        <form class="panel product-editor" id="productForm"><div class="section-heading"><div><p class="eyebrow">Product details</p><h2 id="productFormTitle">Add product</h2></div><button class="secondary hidden" id="cancelProductEdit" type="button">Cancel edit</button></div><input name="productId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Brand<input name="brand"></label></div><div class="grid"><label>Category<input name="category" placeholder="Haircare"></label><label>SKU<input name="sku"></label></div><div class="grid"><label>Barcode<input name="barcode"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><div class="grid"><label>Cost $<input name="cost" type="number" min="0" step="0.01" value="0.00"></label><label>Retail $<input name="price" type="number" min="0.01" step="0.01" required></label></div><button class="primary full" id="productSaveButton" type="submit">Save product</button></form>
+        <div class="panel product-excel-panel"><div class="excel-icon">${appIcon("products")}</div><p class="eyebrow">Excel tools</p><h2>Import or export products</h2><p class="hint">Export the current catalogue, edit it in Excel, then import it back. Existing products are matched by Product ID, SKU, or barcode.</p><div class="excel-actions"><a class="secondary button-link" href="/api/products/export">Export Excel</a><button class="primary" id="importProductsButton" type="button">Import Excel</button><input class="hidden" id="productImportFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"></div><p class="import-result" id="productImportResult"></p></div>
       </div>
+      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2>All products</h2><p class="hint" id="productCount"></p></div><label class="product-search"><span>Search</span><input id="productSearch" type="search" placeholder="Name, SKU, brand or barcode"></label></div><div class="table-wrap"><table class="product-table"><thead><tr><th>Product</th><th>Brand</th><th>Category</th><th>SKU / barcode</th><th>Cost</th><th>Retail</th><th>Status</th><th></th></tr></thead><tbody id="productsTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="inventory">
       <div class="split">
@@ -1279,7 +1384,11 @@ document.querySelector("#branchForm").addEventListener("submit", (event) => subm
 document.querySelector("#branchDetailSelect").addEventListener("change", renderBranchDetail);
 document.querySelector("#serviceForm").addEventListener("submit", submitServiceForm);
 document.querySelector("#cancelServiceEdit").addEventListener("click", resetServiceForm);
-document.querySelector("#productForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/products"));
+document.querySelector("#productForm").addEventListener("submit", submitProductForm);
+document.querySelector("#cancelProductEdit").addEventListener("click", resetProductForm);
+document.querySelector("#productSearch").addEventListener("input", renderProducts);
+document.querySelector("#importProductsButton").addEventListener("click", () => document.querySelector("#productImportFile").click());
+document.querySelector("#productImportFile").addEventListener("change", importProductsWorkbook);
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
 document.querySelector("#closingForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/daily-closing"));
 document.querySelector("#hoursForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branch-hours"));
@@ -1750,7 +1859,70 @@ async function dropService(event) {
     message.textContent = service.name + " moved to " + category + ".";
   } catch (error) { message.textContent = error.message; }
 }
-function renderProducts() { document.querySelector("#productCards").innerHTML = (state.products || []).map((p) => '<article><strong>' + esc(p.name) + '</strong><span>' + esc(p.category) + ' - SKU ' + esc(p.sku || "") + '</span><em>' + money(p.price_cents) + '</em></article>').join(""); }
+function renderProducts() {
+  const query = document.querySelector("#productSearch")?.value.trim().toLowerCase() || "";
+  const products = (state.products || []).filter((product) => !query || [product.name, product.brand, product.category, product.sku, product.barcode].some((value) => String(value || "").toLowerCase().includes(query)));
+  document.querySelector("#productCount").textContent = products.length + " of " + (state.products || []).length + " product" + ((state.products || []).length === 1 ? "" : "s");
+  document.querySelector("#productsTable").innerHTML = products.length ? products.map((product) => '<tr><td><strong>' + esc(product.name) + '</strong><span class="table-subtext">' + esc(product.id) + '</span></td><td>' + esc(product.brand || "—") + '</td><td>' + esc(product.category || "Retail") + '</td><td><strong>' + esc(product.sku || "—") + '</strong><span class="table-subtext">' + esc(product.barcode || "No barcode") + '</span></td><td>' + money(product.cost_cents) + '</td><td><strong>' + money(product.price_cents) + '</strong></td><td><span class="status-pill ' + (product.status === "Inactive" ? "inactive" : "") + '">' + esc(product.status || "Active") + '</span></td><td><button class="secondary compact-button edit-product" type="button" data-product-id="' + esc(product.id) + '">Edit</button></td></tr>').join("") : '<tr><td colspan="8" class="empty-cell">No products match this search.</td></tr>';
+  document.querySelectorAll(".edit-product").forEach((button) => button.addEventListener("click", editProduct));
+}
+function editProduct(event) {
+  const product = state.products.find((item) => item.id === event.currentTarget.dataset.productId);
+  if (!product) return;
+  const form = document.querySelector("#productForm");
+  form.elements.productId.value = product.id;
+  form.elements.name.value = product.name || "";
+  form.elements.brand.value = product.brand || "";
+  form.elements.category.value = product.category || "Retail";
+  form.elements.sku.value = product.sku || "";
+  form.elements.barcode.value = product.barcode || "";
+  form.elements.cost.value = dollars(product.cost_cents);
+  form.elements.price.value = dollars(product.price_cents);
+  form.elements.status.value = product.status === "Inactive" ? "Inactive" : "Active";
+  document.querySelector("#productFormTitle").textContent = "Edit product";
+  document.querySelector("#productSaveButton").textContent = "Update product";
+  document.querySelector("#cancelProductEdit").classList.remove("hidden");
+  form.scrollIntoView({ behavior:"smooth", block:"start" });
+}
+function resetProductForm() {
+  const form = document.querySelector("#productForm");
+  form.reset();
+  form.elements.productId.value = "";
+  form.elements.cost.value = "0.00";
+  document.querySelector("#productFormTitle").textContent = "Add product";
+  document.querySelector("#productSaveButton").textContent = "Save product";
+  document.querySelector("#cancelProductEdit").classList.add("hidden");
+}
+async function submitProductForm(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form));
+  const productId = payload.productId;
+  try {
+    message.textContent = productId ? "Updating product..." : "Adding product...";
+    await api(productId ? "/api/products/" + encodeURIComponent(productId) : "/api/products", { method:productId ? "PATCH" : "POST", body:JSON.stringify(payload) });
+    resetProductForm();
+    await loadData();
+    message.textContent = productId ? "Product updated." : "Product added.";
+  } catch (error) { message.textContent = error.message; }
+}
+async function importProductsWorkbook(event) {
+  const file = event.currentTarget.files?.[0];
+  if (!file) return;
+  const resultBox = document.querySelector("#productImportResult");
+  try {
+    message.textContent = "Importing products from " + file.name + "...";
+    resultBox.textContent = "Reading workbook...";
+    const response = await fetch("/api/products/import", { method:"POST", headers:{ "content-type":file.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }, body:file });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Product import failed.");
+    await loadData();
+    resultBox.textContent = result.created + " created · " + result.updated + " updated" + (result.skipped ? " · " + result.skipped + " skipped" : "");
+    message.textContent = "Product import complete.";
+    if (result.errors?.length) resultBox.textContent += " — " + result.errors.join(" ");
+  } catch (error) { resultBox.textContent = error.message; message.textContent = error.message; }
+  finally { event.currentTarget.value = ""; }
+}
 function renderCustomers() {
   document.querySelector("#customersTable").innerHTML = state.customers.map((c) => '<tr class="customer-row" data-customer-id="' + esc(c.id) + '" tabindex="0"><td><strong>' + esc(c.first_name + " " + c.last_name) + '</strong></td><td>' + esc(c.email) + '</td><td>' + esc(c.phone) + '</td><td>' + esc(c.tags || "") + '</td></tr>').join("");
   document.querySelectorAll(".customer-row").forEach((row) => {
@@ -2263,6 +2435,30 @@ legend { grid-column:1/-1; }
 .cards strong,.branch-grid strong { display:block; }
 .cards span,.branch-grid span { display:block; color:var(--muted); }
 .cards em,.branch-grid em { display:block; margin-top:8px; color:var(--brand); font-style:normal; font-weight:800; }
+.product-top-grid { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(300px,.65fr); gap:20px; align-items:stretch; }
+.product-editor { margin:0; }
+.product-editor .section-heading { align-items:flex-start; margin-bottom:14px; }
+.product-editor .section-heading h2 { margin-top:2px; }
+.product-excel-panel { position:relative; overflow:hidden; background:linear-gradient(145deg,#fff 10%,#faf3fc 100%); }
+.product-excel-panel::after { position:absolute; right:-58px; bottom:-70px; width:170px; height:170px; content:""; background:rgba(91,27,111,.07); border-radius:50%; }
+.excel-icon { position:relative; z-index:1; display:grid; place-items:center; width:48px; height:48px; margin-bottom:18px; color:#fff; background:var(--brand); border-radius:13px; }
+.excel-actions { position:relative; z-index:1; display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }
+.button-link { display:inline-flex; align-items:center; justify-content:center; text-decoration:none; }
+.import-result { position:relative; z-index:1; margin:14px 0 0; color:var(--brand); font-size:12px; font-weight:800; }
+.product-table-panel { margin-top:20px; padding:0; overflow:hidden; }
+.product-table-heading { padding:20px 22px; background:#fff; border-bottom:1px solid var(--line); }
+.product-table-heading h2 { margin-top:2px; }
+.product-search { width:min(330px,40vw); color:var(--muted); font-size:11px; text-transform:uppercase; }
+.product-search input { margin:4px 0 0; min-height:40px; color:var(--ink); text-transform:none; }
+.product-table { min-width:980px; }
+.product-table th:first-child,.product-table td:first-child { padding-left:22px; }
+.product-table th:last-child,.product-table td:last-child { padding-right:22px; text-align:right; }
+.product-table tbody tr:hover { background:#fdfafd; }
+.table-subtext { display:block; max-width:230px; margin-top:3px; overflow:hidden; color:var(--muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; color:#087f5b; background:#e9f8f2; border-radius:999px; font-size:11px; font-weight:800; }
+.status-pill::before { width:6px; height:6px; content:""; background:currentColor; border-radius:50%; }
+.status-pill.inactive { color:#8a5260; background:#f8eaee; }
+.compact-button { min-height:34px; padding:0 12px; font-size:12px; }
 .service-editor { position:sticky; top:20px; align-self:start; }
 .service-category { margin-top:22px; }
 .service-category:first-child { margin-top:12px; }
@@ -2394,7 +2590,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
-@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar{align-items:stretch;flex-direction:column}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
+@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid{grid-template-columns:1fr}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading{align-items:stretch;flex-direction:column}.product-search{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
 `;
 }
