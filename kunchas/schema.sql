@@ -37,7 +37,10 @@ CREATE TABLE IF NOT EXISTS staff (
   role TEXT NOT NULL,
   email TEXT,
   phone TEXT,
-  status TEXT NOT NULL DEFAULT 'Active'
+  status TEXT NOT NULL DEFAULT 'Active',
+  hourly_rate_cents INTEGER NOT NULL DEFAULT 0,
+  xero_employee_id TEXT NOT NULL DEFAULT '',
+  xero_earnings_rate_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS services (
@@ -109,7 +112,17 @@ CREATE TABLE IF NOT EXISTS bookings (
   status TEXT NOT NULL,
   payment_status TEXT NOT NULL,
   sale_id TEXT,
-  notes TEXT
+  notes TEXT,
+  source TEXT NOT NULL DEFAULT 'Online'
+);
+
+CREATE TABLE IF NOT EXISTS time_entries (
+  id TEXT PRIMARY KEY,
+  staff_id TEXT NOT NULL,
+  branch_id TEXT NOT NULL,
+  clock_in TEXT NOT NULL,
+  clock_out TEXT,
+  notes TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS sales (
@@ -230,3 +243,5 @@ CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_branch_closed_dates ON branch_closed_dates(branch_id, closed_date);
 CREATE INDEX IF NOT EXISTS idx_stock_movements_product ON stock_movements(product_id, branch_id);
 CREATE INDEX IF NOT EXISTS idx_daily_closings_branch_date ON daily_closings(branch_id, closing_date);
+CREATE INDEX IF NOT EXISTS idx_time_entries_staff_clock ON time_entries(staff_id, clock_in);
+CREATE INDEX IF NOT EXISTS idx_time_entries_branch_clock ON time_entries(branch_id, clock_in);
