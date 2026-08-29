@@ -1297,7 +1297,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         <form class="panel product-editor" id="productForm"><div class="section-heading"><div><p class="eyebrow">Product details</p><h2 id="productFormTitle">Add product</h2></div><button class="secondary hidden" id="cancelProductEdit" type="button">Cancel edit</button></div><input name="productId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Brand<input name="brand"></label></div><div class="grid"><label>Category<input name="category" placeholder="Haircare"></label><label>SKU<input name="sku"></label></div><div class="grid"><label>Barcode<input name="barcode"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><div class="grid"><label>Cost $<input name="cost" type="number" min="0" step="0.01" value="0.00"></label><label>Retail $<input name="price" type="number" min="0.01" step="0.01" required></label></div><button class="primary full" id="productSaveButton" type="submit">Save product</button></form>
         <div class="panel product-excel-panel"><div class="excel-icon">${appIcon("products")}</div><p class="eyebrow">Excel tools</p><h2>Import or export products</h2><p class="hint">Export the current catalogue, edit it in Excel, then import it back. Existing products are matched by Product ID, SKU, or barcode.</p><div class="excel-actions"><a class="secondary button-link" href="/api/products/export">Export Excel</a><button class="primary" id="importProductsButton" type="button">Import Excel</button><input class="hidden" id="productImportFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"></div><p class="import-result" id="productImportResult"></p></div>
       </div>
-      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2>All products</h2><p class="hint" id="productCount"></p></div><label class="product-search"><span>Search</span><input id="productSearch" type="search" placeholder="Name, SKU, brand or barcode"></label></div><div class="table-wrap"><table class="product-table"><thead><tr><th>Product</th><th>Brand</th><th>Category</th><th>SKU / barcode</th><th>Cost</th><th>Retail</th><th>Status</th><th></th></tr></thead><tbody id="productsTable"></tbody></table></div></div>
+      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2 id="productTableTitle">All products</h2><p class="hint" id="productCount"></p></div><div class="product-table-controls"><label><span>Branch</span><select id="productBranchFilter" aria-label="Filter product stock by branch"><option value="">All branches</option></select></label><label class="product-search"><span>Search</span><input id="productSearch" type="search" placeholder="Name, SKU, brand or barcode"></label></div></div><div class="table-wrap"><table class="product-table"><thead><tr><th>Product</th><th>Brand</th><th>Category</th><th>SKU / barcode</th><th>Stock</th><th>Cost</th><th>Retail</th><th>Status</th><th></th></tr></thead><tbody id="productsTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="inventory">
       <div class="split">
@@ -1348,6 +1348,7 @@ let draggedStaffId = "";
 let selectedDashboardPeriod = "today";
 let selectedGlobalBranchId = "";
 let selectedRosterBranchId = "";
+let selectedProductBranchId = "";
 const appMode = window.appMode || "admin";
 const message = document.querySelector("#message");
 document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => {
@@ -1387,6 +1388,7 @@ document.querySelector("#cancelServiceEdit").addEventListener("click", resetServ
 document.querySelector("#productForm").addEventListener("submit", submitProductForm);
 document.querySelector("#cancelProductEdit").addEventListener("click", resetProductForm);
 document.querySelector("#productSearch").addEventListener("input", renderProducts);
+document.querySelector("#productBranchFilter").addEventListener("change", (event) => { selectedProductBranchId = event.currentTarget.value; renderProducts(); });
 document.querySelector("#importProductsButton").addEventListener("click", () => document.querySelector("#productImportFile").click());
 document.querySelector("#productImportFile").addEventListener("change", importProductsWorkbook);
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
@@ -1497,6 +1499,12 @@ function fillSelects() {
     rosterBranch.innerHTML = branchOptions;
     if (!state.branches.some((branch) => branch.id === selectedRosterBranchId)) selectedRosterBranchId = state.branches[0]?.id || "";
     rosterBranch.value = selectedRosterBranchId;
+  }
+  const productBranch = document.querySelector("#productBranchFilter");
+  if (productBranch) {
+    productBranch.innerHTML = '<option value="">All branches</option>' + branchOptions;
+    if (!state.branches.some((branch) => branch.id === selectedProductBranchId)) selectedProductBranchId = "";
+    productBranch.value = selectedProductBranchId;
   }
   document.querySelectorAll('select[name="branchId"]').forEach((select) => select.innerHTML = branchOptions);
   document.querySelectorAll('select[data-optional-branch]').forEach((select) => select.innerHTML = '<option value="">Unassigned / all branches</option>' + branchOptions);
@@ -1862,8 +1870,14 @@ async function dropService(event) {
 function renderProducts() {
   const query = document.querySelector("#productSearch")?.value.trim().toLowerCase() || "";
   const products = (state.products || []).filter((product) => !query || [product.name, product.brand, product.category, product.sku, product.barcode].some((value) => String(value || "").toLowerCase().includes(query)));
-  document.querySelector("#productCount").textContent = products.length + " of " + (state.products || []).length + " product" + ((state.products || []).length === 1 ? "" : "s");
-  document.querySelector("#productsTable").innerHTML = products.length ? products.map((product) => '<tr><td><strong>' + esc(product.name) + '</strong><span class="table-subtext">' + esc(product.id) + '</span></td><td>' + esc(product.brand || "—") + '</td><td>' + esc(product.category || "Retail") + '</td><td><strong>' + esc(product.sku || "—") + '</strong><span class="table-subtext">' + esc(product.barcode || "No barcode") + '</span></td><td>' + money(product.cost_cents) + '</td><td><strong>' + money(product.price_cents) + '</strong></td><td><span class="status-pill ' + (product.status === "Inactive" ? "inactive" : "") + '">' + esc(product.status || "Active") + '</span></td><td><button class="secondary compact-button edit-product" type="button" data-product-id="' + esc(product.id) + '">Edit</button></td></tr>').join("") : '<tr><td colspan="8" class="empty-cell">No products match this search.</td></tr>';
+  const branch = state.branches.find((item) => item.id === selectedProductBranchId);
+  const stockLabel = branch ? branch.name : "All branches";
+  document.querySelector("#productTableTitle").textContent = branch ? branch.name + " products" : "All products";
+  document.querySelector("#productCount").textContent = products.length + " of " + (state.products || []).length + " product" + ((state.products || []).length === 1 ? "" : "s") + " · Stock for " + stockLabel;
+  document.querySelector("#productsTable").innerHTML = products.length ? products.map((product) => {
+    const stock = (state.inventoryStock || []).filter((item) => item.product_id === product.id && (!selectedProductBranchId || item.branch_id === selectedProductBranchId)).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    return '<tr><td><strong>' + esc(product.name) + '</strong><span class="table-subtext">' + esc(product.id) + '</span></td><td>' + esc(product.brand || "—") + '</td><td>' + esc(product.category || "Retail") + '</td><td><strong>' + esc(product.sku || "—") + '</strong><span class="table-subtext">' + esc(product.barcode || "No barcode") + '</span></td><td><strong class="stock-quantity">' + stock + '</strong><span class="table-subtext">' + esc(branch ? branch.name : "combined") + '</span></td><td>' + money(product.cost_cents) + '</td><td><strong>' + money(product.price_cents) + '</strong></td><td><span class="status-pill ' + (product.status === "Inactive" ? "inactive" : "") + '">' + esc(product.status || "Active") + '</span></td><td><button class="secondary compact-button edit-product" type="button" data-product-id="' + esc(product.id) + '">Edit</button></td></tr>';
+  }).join("") : '<tr><td colspan="9" class="empty-cell">No products match this search.</td></tr>';
   document.querySelectorAll(".edit-product").forEach((button) => button.addEventListener("click", editProduct));
 }
 function editProduct(event) {
@@ -2448,9 +2462,11 @@ legend { grid-column:1/-1; }
 .product-table-panel { margin-top:20px; padding:0; overflow:hidden; }
 .product-table-heading { padding:20px 22px; background:#fff; border-bottom:1px solid var(--line); }
 .product-table-heading h2 { margin-top:2px; }
-.product-search { width:min(330px,40vw); color:var(--muted); font-size:11px; text-transform:uppercase; }
-.product-search input { margin:4px 0 0; min-height:40px; color:var(--ink); text-transform:none; }
-.product-table { min-width:980px; }
+.product-table-controls { display:flex; align-items:end; gap:10px; }
+.product-table-controls label { width:min(230px,26vw); color:var(--muted); font-size:11px; text-transform:uppercase; }
+.product-table-controls select,.product-table-controls input { margin:4px 0 0; min-height:40px; color:var(--ink); text-transform:none; }
+.product-table-controls .product-search { width:min(330px,34vw); }
+.product-table { min-width:1060px; }
 .product-table th:first-child,.product-table td:first-child { padding-left:22px; }
 .product-table th:last-child,.product-table td:last-child { padding-right:22px; text-align:right; }
 .product-table tbody tr:hover { background:#fdfafd; }
@@ -2458,6 +2474,7 @@ legend { grid-column:1/-1; }
 .status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; color:#087f5b; background:#e9f8f2; border-radius:999px; font-size:11px; font-weight:800; }
 .status-pill::before { width:6px; height:6px; content:""; background:currentColor; border-radius:50%; }
 .status-pill.inactive { color:#8a5260; background:#f8eaee; }
+.stock-quantity { display:inline-flex; min-width:34px; min-height:30px; align-items:center; justify-content:center; color:var(--brand); background:var(--brand-soft); border-radius:8px; }
 .compact-button { min-height:34px; padding:0 12px; font-size:12px; }
 .service-editor { position:sticky; top:20px; align-self:start; }
 .service-category { margin-top:22px; }
@@ -2591,6 +2608,6 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid{grid-template-columns:1fr}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading{align-items:stretch;flex-direction:column}.product-search{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
+@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
 `;
 }
