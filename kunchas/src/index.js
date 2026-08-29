@@ -1179,7 +1179,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel staff-profile hidden" id="staffProfile"><div class="profile-heading"><div><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary" id="closeStaffProfile" type="button">Close</button></div><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Role<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label><fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary" type="submit">Save staff details</button></form><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="roster">
-      <div class="panel roster-day-panel"><div class="roster-toolbar"><div><p class="eyebrow">Schedule builder</p><h2 id="rosterDayTitle">Roster by branch</h2><p class="hint">Select a staff member and their shift time inside each branch.</p></div><label>Date<input id="rosterDay" type="date"></label></div><div class="roster-branch-board" id="rosterBranchBoard"></div></div>
+      <div class="panel roster-day-panel"><div class="roster-toolbar"><div><p class="eyebrow">Schedule builder</p><h2 id="rosterDayTitle">Branch roster</h2><p class="hint">Choose one branch, then add or adjust staff shifts for the selected day.</p></div><div class="roster-toolbar-controls"><label>Branch<select id="rosterBranchSelect" aria-label="Roster branch"></select></label><label>Date<input id="rosterDay" type="date"></label></div></div><div class="roster-branch-board" id="rosterBranchBoard"></div></div>
       <div class="panel roster-calendar-panel"><div class="roster-toolbar"><div><h2>Roster calendar</h2><p class="hint">See coverage and bookings at a glance, then choose a day to edit above.</p></div><label>Month<input id="rosterMonth" type="month"></label></div><div class="month-calendar" id="rosterMonthCalendar"></div></div>
     </section>
     <section class="tab admin-only" id="services">
@@ -1242,6 +1242,7 @@ let draggedServiceId = "";
 let draggedStaffId = "";
 let selectedDashboardPeriod = "today";
 let selectedGlobalBranchId = "";
+let selectedRosterBranchId = "";
 const appMode = window.appMode || "admin";
 const message = document.querySelector("#message");
 document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => {
@@ -1271,7 +1272,8 @@ document.querySelector("#staffProfileForm").addEventListener("submit", submitSta
 document.querySelector("#closeStaffProfile").addEventListener("click", closeStaffProfile);
 document.querySelector("#rosterMonth").addEventListener("change", renderRosterMonthCalendar);
 document.querySelector("#rosterDay").addEventListener("change", () => { renderRosterMonthCalendar(); renderRosterBranchBoard(); });
-document.querySelector("#globalBranchFilter")?.addEventListener("change", (event) => { selectedGlobalBranchId = event.currentTarget.value; renderMetrics(); renderRosterBranchBoard(); });
+document.querySelector("#rosterBranchSelect").addEventListener("change", (event) => { selectedRosterBranchId = event.currentTarget.value; renderRosterMonthCalendar(); renderRosterBranchBoard(); });
+document.querySelector("#globalBranchFilter")?.addEventListener("change", (event) => { selectedGlobalBranchId = event.currentTarget.value; renderMetrics(); });
 document.querySelectorAll(".period-tab").forEach((button) => button.addEventListener("click", () => { selectedDashboardPeriod = button.dataset.period; document.querySelectorAll(".period-tab").forEach((item) => item.classList.toggle("active", item === button)); renderMetrics(); }));
 document.querySelector("#branchForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branches"));
 document.querySelector("#branchDetailSelect").addEventListener("change", renderBranchDetail);
@@ -1380,6 +1382,12 @@ function fillSelects() {
     globalBranch.innerHTML = '<option value="">All branches</option>' + branchOptions;
     if (state.branches.some((branch) => branch.id === selectedGlobalBranchId)) globalBranch.value = selectedGlobalBranchId;
     else selectedGlobalBranchId = "";
+  }
+  const rosterBranch = document.querySelector("#rosterBranchSelect");
+  if (rosterBranch) {
+    rosterBranch.innerHTML = branchOptions;
+    if (!state.branches.some((branch) => branch.id === selectedRosterBranchId)) selectedRosterBranchId = state.branches[0]?.id || "";
+    rosterBranch.value = selectedRosterBranchId;
   }
   document.querySelectorAll('select[name="branchId"]').forEach((select) => select.innerHTML = branchOptions);
   document.querySelectorAll('select[data-optional-branch]').forEach((select) => select.innerHTML = '<option value="">Unassigned / all branches</option>' + branchOptions);
@@ -1589,7 +1597,7 @@ function renderRosterMonthCalendar() {
   const days = Array.from({ length:daysInMonth }, (_, index) => {
     const day = index + 1;
     const date = value + "-" + String(day).padStart(2, "0");
-    const branchMatches = (item) => !selectedGlobalBranchId || item.branch_id === selectedGlobalBranchId;
+    const branchMatches = (item) => item.branch_id === selectedRosterBranchId;
     const bookings = state.bookings.filter((booking) => booking.booking_date === date && branchMatches(booking) && !["Cancelled","No show"].includes(booking.status)).length;
     const rostered = state.staffRoster.filter((entry) => entry.roster_date === date && branchMatches(entry) && entry.status === "Working").length;
     return '<button class="month-day' + (date === selectedDate ? ' selected' : '') + '" type="button" data-date="' + date + '"><strong>' + day + '</strong><span>' + bookings + ' booking' + (bookings === 1 ? '' : 's') + '</span><span>' + rostered + ' staff rostered</span></button>';
@@ -1600,17 +1608,17 @@ function renderRosterMonthCalendar() {
 function renderRosterBranchBoard() {
   const date = document.querySelector("#rosterDay").value;
   if (!date) return;
-  document.querySelector("#rosterDayTitle").textContent = "Roster by branch · " + new Date(date + "T00:00:00").toLocaleDateString("en-AU", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+  const branch = state.branches.find((item) => item.id === selectedRosterBranchId);
+  const board = document.querySelector("#rosterBranchBoard");
+  if (!branch) { document.querySelector("#rosterDayTitle").textContent = "Branch roster"; board.innerHTML = '<p class="empty-state">Create a branch before building the roster.</p>'; return; }
+  document.querySelector("#rosterDayTitle").textContent = branch.name + " roster · " + new Date(date + "T00:00:00").toLocaleDateString("en-AU", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
   const activeStaff = state.staff.filter((staff) => staff.status !== "Inactive");
-  const visibleBranches = selectedGlobalBranchId ? state.branches.filter((branch) => branch.id === selectedGlobalBranchId) : state.branches;
-  document.querySelector("#rosterBranchBoard").innerHTML = visibleBranches.map((branch) => {
-    const entries = state.staffRoster.filter((entry) => entry.roster_date === date && entry.branch_id === branch.id && entry.status === "Working");
-    const bookings = state.bookings.filter((booking) => booking.booking_date === date && booking.branch_id === branch.id && !["Cancelled","No show"].includes(booking.status));
-    const assignedIds = new Set(state.staffRoster.filter((entry) => entry.roster_date === date && entry.status === "Working").map((entry) => entry.staff_id));
-    const options = activeStaff.filter((staff) => !assignedIds.has(staff.id)).map((staff) => '<option value="' + esc(staff.id) + '">' + esc(staff.name) + '</option>').join("");
-    const rows = entries.map((entry) => '<div class="roster-person" data-staff-id="' + esc(entry.staff_id) + '" data-date="' + esc(date) + '" data-branch-id="' + esc(branch.id) + '"><div class="roster-person-name"><strong>' + esc(state.staff.find((staff) => staff.id === entry.staff_id)?.name || "Staff") + '</strong><span>' + esc(state.staff.find((staff) => staff.id === entry.staff_id)?.role || "") + '</span></div><label><span>Start</span><input name="startTime" type="time" value="' + esc(entry.start_time || "09:00") + '"></label><label><span>Finish</span><input name="endTime" type="time" value="' + esc(entry.end_time || "17:30") + '"></label><div class="roster-row-actions"><button class="secondary save-roster-row" type="button">Save</button><button class="icon-danger remove-roster-row" type="button" aria-label="Remove from roster">×</button></div></div>').join("");
-    return '<article class="roster-branch-card"><div class="branch-roster-heading"><div><h3>' + esc(branch.name) + '</h3><span>' + esc(branch.address || "") + '</span></div><strong>' + bookings.length + ' booking' + (bookings.length === 1 ? '' : 's') + '</strong></div><div class="roster-assigned">' + (rows || '<p class="empty-state">No staff assigned yet.</p>') + '</div><div class="branch-assign-row"><label><span>Staff</span><select aria-label="Staff to assign"><option value="">Choose staff</option>' + options + '</select></label><label><span>Start</span><input name="startTime" type="time" value="09:00"></label><label><span>Finish</span><input name="endTime" type="time" value="17:30"></label><button class="primary assign-roster-staff" type="button" data-branch-id="' + esc(branch.id) + '" data-date="' + esc(date) + '">Add shift</button></div></article>';
-  }).join("");
+  const entries = state.staffRoster.filter((entry) => entry.roster_date === date && entry.branch_id === branch.id && entry.status === "Working");
+  const bookings = state.bookings.filter((booking) => booking.booking_date === date && booking.branch_id === branch.id && !["Cancelled","No show"].includes(booking.status));
+  const assignedIds = new Set(state.staffRoster.filter((entry) => entry.roster_date === date && entry.status === "Working").map((entry) => entry.staff_id));
+  const options = activeStaff.filter((staff) => !assignedIds.has(staff.id)).map((staff) => '<option value="' + esc(staff.id) + '">' + esc(staff.name) + '</option>').join("");
+  const rows = entries.map((entry) => '<div class="roster-person" data-staff-id="' + esc(entry.staff_id) + '" data-date="' + esc(date) + '" data-branch-id="' + esc(branch.id) + '"><div class="roster-person-name"><div class="person-avatar">' + esc((state.staff.find((staff) => staff.id === entry.staff_id)?.name || "S").split(/\\s+/).map((part) => part[0]).join("").slice(0, 2)) + '</div><div><strong>' + esc(state.staff.find((staff) => staff.id === entry.staff_id)?.name || "Staff") + '</strong><span>' + esc(state.staff.find((staff) => staff.id === entry.staff_id)?.role || "") + '</span></div></div><label><span>Start</span><input name="startTime" type="time" value="' + esc(entry.start_time || "09:00") + '"></label><label><span>Finish</span><input name="endTime" type="time" value="' + esc(entry.end_time || "17:30") + '"></label><div class="roster-row-actions"><button class="secondary save-roster-row" type="button">Save</button><button class="icon-danger remove-roster-row" type="button" aria-label="Remove from roster">×</button></div></div>').join("");
+  board.innerHTML = '<article class="roster-branch-card"><div class="branch-roster-heading"><div><h3>' + esc(branch.name) + '</h3><span>' + esc(branch.address || "") + '</span></div><div class="roster-day-stats"><span>' + entries.length + ' staff</span><strong>' + bookings.length + ' booking' + (bookings.length === 1 ? '' : 's') + '</strong></div></div><div class="roster-table-head"><span>Staff member</span><span>Start</span><span>Finish</span><span>Actions</span></div><div class="roster-assigned">' + (rows || '<p class="empty-state roster-empty">No staff assigned for this day.</p>') + '</div><div class="branch-assign-row"><label><span>Staff member</span><select aria-label="Staff to assign"><option value="">Choose staff</option>' + options + '</select></label><label><span>Start</span><input name="startTime" type="time" value="09:00"></label><label><span>Finish</span><input name="endTime" type="time" value="17:30"></label><button class="primary assign-roster-staff" type="button" data-branch-id="' + esc(branch.id) + '" data-date="' + esc(date) + '">Add shift</button></div></article>';
   document.querySelectorAll(".assign-roster-staff").forEach((button) => button.addEventListener("click", assignStaffToBranch));
   document.querySelectorAll(".save-roster-row").forEach((button) => button.addEventListener("click", saveRosterRow));
   document.querySelectorAll(".remove-roster-row").forEach((button) => button.addEventListener("click", removeRosterRow));
@@ -1786,6 +1794,7 @@ function showTab(tabId) {
   document.querySelectorAll(".nav,.tab").forEach((item) => item.classList.remove("active"));
   document.querySelector('.nav[data-tab="' + cssEsc(tabId) + '"]')?.classList.add("active");
   document.querySelector("#" + tabId)?.classList.add("active");
+  document.querySelector(".branch-switcher")?.classList.toggle("hidden", tabId !== "overview");
   const titles = { overview:"Dashboard", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Access", pos:"POS", bookings:"Bookings", closing:"Daily closing", "recent-sales":"Recent sales" };
   if (document.querySelector("#appTitle")) document.querySelector("#appTitle").textContent = titles[tabId] || "Kunchas";
 }
@@ -2279,6 +2288,11 @@ legend { grid-column:1/-1; }
 .roster-toolbar { display:flex; align-items:end; justify-content:space-between; gap:20px; }
 .roster-toolbar h2 { margin-bottom:2px; }
 .roster-toolbar label { min-width:210px; }
+.roster-day-panel { padding:0; overflow:hidden; }
+.roster-day-panel > .roster-toolbar { align-items:center; padding:22px 24px; border-bottom:1px solid var(--line); }
+.roster-toolbar-controls { display:grid; grid-template-columns:minmax(220px,280px) 190px; gap:12px; align-items:end; }
+.roster-toolbar-controls label { min-width:0; }
+.roster-toolbar-controls select,.roster-toolbar-controls input { margin-bottom:0; background:#fff; }
 .roster-calendar-panel { margin-top:20px; }
 .month-calendar { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:1px; margin-top:14px; overflow:hidden; background:var(--line); border:1px solid var(--line); border-radius:12px; }
 .month-weekday { padding:7px; color:var(--muted); font-size:12px; font-weight:800; text-align:center; text-transform:uppercase; }
@@ -2288,19 +2302,26 @@ legend { grid-column:1/-1; }
 .month-day strong { font-size:18px; }
 .month-day span { margin-top:5px; color:var(--muted); font-size:11px; }
 .month-day:hover,.month-day:focus-visible,.month-day.selected { background:var(--brand-soft); box-shadow:inset 0 0 0 2px var(--brand); outline:none; }
-.roster-branch-board { display:grid; grid-template-columns:1fr; gap:14px; margin-top:20px; }
-.roster-branch-card { padding:18px; border:1px solid var(--line); border-radius:12px; background:#fcfbfc; }
-.roster-branch-card h3 { margin:0 0 12px; }
-.roster-assigned { display:grid; gap:8px; min-height:58px; margin:14px 0; }
-.roster-person { display:grid; grid-template-columns:minmax(180px,1fr) 130px 130px auto; align-items:center; gap:10px; width:100%; padding:9px 11px; color:var(--ink); background:#fff; border:1px solid #d7e8df; border-radius:10px; }
+.roster-branch-board { display:grid; grid-template-columns:1fr; margin:0; }
+.roster-branch-card { padding:0; border:0; border-radius:0; background:#fff; }
+.roster-branch-card h3 { margin:0; }
+.roster-table-head { display:grid; grid-template-columns:minmax(200px,1fr) 135px 135px 128px; gap:12px; padding:9px 24px; color:var(--muted); background:#fff; border-bottom:1px solid var(--line); font-size:11px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+.roster-assigned { display:grid; gap:0; min-height:0; margin:0; }
+.roster-person { display:grid; grid-template-columns:minmax(200px,1fr) 135px 135px 128px; align-items:center; gap:12px; width:100%; padding:12px 24px; color:var(--ink); background:#fff; border:0; border-bottom:1px solid var(--line); border-radius:0; }
+.roster-person:hover { background:#fdfbfd; }
 .roster-person strong,.roster-person span { display:block; }
 .roster-person span { color:var(--muted); font-size:11px; }
+.roster-person-name { display:flex; align-items:center; gap:10px; min-width:0; }
+.roster-person-name .person-avatar { display:grid; place-items:center; width:38px; height:38px; flex:0 0 auto; color:var(--brand); background:var(--brand-soft); border-radius:10px; font-size:12px; font-weight:900; }
+.roster-person-name div { min-width:0; }
 .roster-person label,.branch-assign-row label { font-size:11px; color:var(--muted); }
 .roster-person input,.branch-assign-row input,.branch-assign-row select { min-height:38px; margin:2px 0 0; }
 .roster-row-actions { display:flex; align-items:center; gap:6px; }
-.roster-row-actions button { min-height:38px; }
+.roster-row-actions button { min-height:38px; white-space:nowrap; }
 .icon-danger { width:38px; padding:0; color:#a6293d; background:#fff0f2; border:1px solid #efc8ce; }
-.branch-assign-row { display:grid; grid-template-columns:minmax(200px,1fr) 130px 130px auto; gap:8px; margin-top:12px; padding-top:14px; border-top:1px solid var(--line); align-items:end; }
+.branch-assign-row { display:grid; grid-template-columns:minmax(200px,1fr) 135px 135px 128px; gap:12px; margin:0; padding:16px 24px 20px; border-top:0; background:#f8f4fa; align-items:end; }
+.branch-assign-row button { width:100%; }
+.roster-empty { margin:0; padding:24px; color:var(--muted); border-bottom:1px solid var(--line); text-align:center; }
 .day-off-card { background:#fff0f1; border-color:#e5b1b8; }
 .day-off-card .roster-person { margin-bottom:8px; background:#fff; border-color:#e5b1b8; }
 .day-off-fieldset { display:block; margin:12px 0 16px; }
@@ -2310,10 +2331,14 @@ legend { grid-column:1/-1; }
 .day-chip input { position:absolute; opacity:0; pointer-events:none; }
 .day-chip span { display:grid; place-items:center; min-width:44px; min-height:38px; padding:0 9px; color:var(--muted); background:#fff; border:1px solid var(--line); border-radius:9px; }
 .day-chip input:checked + span { color:#fff; background:var(--brand); border-color:var(--brand); }
-.branch-roster-heading { display:flex; align-items:start; justify-content:space-between; gap:10px; }
+.branch-roster-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:18px 24px; background:#faf8fb; border-bottom:1px solid var(--line); }
 .branch-roster-heading h3 { margin:0; }
 .branch-roster-heading span { color:var(--muted); font-size:12px; }
 .branch-roster-heading strong { color:var(--brand); font-size:13px; }
+.roster-day-stats { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
+.roster-day-stats span,.roster-day-stats strong { padding:5px 9px; border-radius:999px; }
+.roster-day-stats span { background:#eee8f0; }
+.roster-day-stats strong { background:var(--brand-soft); }
 .branch-pos { display:inline-flex; margin-top:12px; color:var(--brand); font-weight:800; }
 .branch-detail-heading { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:12px; margin:16px 0 22px; padding:16px; background:var(--brand-soft); border:1px solid #e3d3e8; border-radius:12px; }
 .branch-detail-heading strong { font-size:20px; }
@@ -2368,8 +2393,8 @@ th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left;
 th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
-@media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1} }
+@media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar{align-items:stretch;flex-direction:column}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.month-day{min-height:76px}.month-day span{display:none} }
+@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar{align-items:stretch;flex-direction:column}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
 `;
 }
