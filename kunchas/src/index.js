@@ -984,6 +984,30 @@ function jsonResponse(payload, status = 200) {
   return Response.json(payload, { status, headers: { "x-content-type-options": "nosniff" } });
 }
 
+const UI_ICON_PATHS = {
+  dashboard:'<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5"/><path d="M9.5 20v-6h5v6"/>',
+  customers:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  staff:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  roster:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/>',
+  services:'<path d="m12 3 1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3Z"/><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15ZM5 14l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3Z"/>',
+  products:'<path d="m21 8-9-5-9 5 9 5 9-5Z"/><path d="m3 8 9 5v9l-9-5V8ZM21 8l-9 5v9l9-5V8Z"/>',
+  inventory:'<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3 6 1 1 2-2M3 12l1 1 2-2M3 18l1 1 2-2"/>',
+  reports:'<path d="M3 3v18h18"/><path d="m7 16 4-5 3 3 5-7"/>',
+  branches:'<path d="M3 21h18M5 21V9l7-4 7 4v12M9 21v-5h6v5M9 11h.01M15 11h.01"/>',
+  access:'<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',
+  pos:'<path d="M4 5h16l-1 6H5L4 5Z"/><path d="M7 11v8h10v-8M9 15h6"/>',
+  bookings:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
+  closing:'<path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+  sales:'<path d="M3 3v18h18"/><path d="m7 16 4-5 3 3 5-7"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
+  money:'<circle cx="12" cy="12" r="9"/><path d="M12 7v10M15 9.5c0-1.4-1.3-2.5-3-2.5s-3 1-3 2.4c0 3.6 6 1.6 6 5.1 0 1.4-1.3 2.5-3 2.5s-3-1.1-3-2.5"/>',
+  trend:'<path d="m4 16 5-5 4 4 7-8"/><path d="M15 7h5v5"/>',
+  card:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h2"/>',
+  bank:'<path d="m3 10 9-6 9 6M5 10h14M6 10v8M10 10v8M14 10v8M18 10v8M3 20h18"/>',
+  voucher:'<path d="M4 7h16v4a2 2 0 0 0 0 4v4H4v-4a2 2 0 0 0 0-4V7Z"/><path d="M12 7v12"/>'
+};
+function appIcon(name) { return '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (UI_ICON_PATHS[name] || UI_ICON_PATHS.dashboard) + '</svg>'; }
+
 function renderApp(initialBranchId, initialTab, mode = "admin") {
   const isAdmin = mode === "admin";
   return `<!doctype html>
@@ -999,20 +1023,20 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     <div class="brand"><span>K</span><strong>Kunchas</strong></div>
     <nav>
       ${isAdmin ? `
-      <button class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">Dashboard</button>
-      <button class="nav" data-tab="customers">Customers</button>
-      <button class="nav" data-tab="staff">Staff</button>
-      <button class="nav" data-tab="roster">Roster</button>
-      <button class="nav" data-tab="services">Services</button>
-      <button class="nav" data-tab="products">Products</button>
-      <button class="nav" data-tab="inventory">Inventory</button>
-      <button class="nav" data-tab="reports">Reports</button>
-      <button class="nav" data-tab="branches">Branches</button>
-      <button class="nav" data-tab="access">Access</button>` : `
-      <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">POS</button>
-      <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">Bookings</button>
-      <button class="nav" data-tab="closing">Daily Closing</button>`}
-      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">Recent Sales</button>`}
+      <button class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">${appIcon("dashboard")}<span>Dashboard</span></button>
+      <button class="nav" data-tab="customers">${appIcon("customers")}<span>Customers</span></button>
+      <button class="nav" data-tab="staff">${appIcon("staff")}<span>Staff</span></button>
+      <button class="nav" data-tab="roster">${appIcon("roster")}<span>Roster</span></button>
+      <button class="nav" data-tab="services">${appIcon("services")}<span>Services</span></button>
+      <button class="nav" data-tab="products">${appIcon("products")}<span>Products</span></button>
+      <button class="nav" data-tab="inventory">${appIcon("inventory")}<span>Inventory</span></button>
+      <button class="nav" data-tab="reports">${appIcon("reports")}<span>Reports</span></button>
+      <button class="nav" data-tab="branches">${appIcon("branches")}<span>Branches</span></button>
+      <button class="nav" data-tab="access">${appIcon("access")}<span>Access</span></button>` : `
+      <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">${appIcon("pos")}<span>POS</span></button>
+      <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">${appIcon("bookings")}<span>Bookings</span></button>
+      <button class="nav" data-tab="closing">${appIcon("closing")}<span>Daily Closing</span></button>`}
+      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">${appIcon("sales")}<span>Recent Sales</span></button>`}
     </nav>
   </aside>
 
@@ -1032,7 +1056,6 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
 
     <section class="tab admin-only ${initialTab === "overview" ? "active" : ""}" id="overview">
       <div class="dashboard-toolbar">
-        <div><p class="eyebrow">Business overview</p><h2 id="dashboardScopeTitle">All branches</h2></div>
         <div class="period-tabs" role="group" aria-label="Dashboard period">
           <button class="period-tab active" type="button" data-period="today">Today</button>
           <button class="period-tab" type="button" data-period="week">This week</button>
@@ -1041,9 +1064,14 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         </div>
       </div>
       <div class="metrics" id="metrics"></div>
-      <div class="dashboard-grid">
-        <div class="panel"><div class="section-heading"><div><h2>Performance by branch</h2><p class="hint" id="dashboardPeriodLabel"></p></div></div><div class="branch-grid" id="branchSummary"></div></div>
-        <div class="panel"><div class="section-heading"><div><h2>Staff on roster</h2><p class="hint" id="dashboardRosterDate"></p></div></div><div class="dashboard-roster" id="dashboardRoster"></div></div>
+      <div class="panel bookings-chart-panel">
+        <div class="section-heading"><div><h2>Bookings by hour</h2><p class="hint" id="dashboardPeriodLabel"></p></div><div class="chart-legend"><span></span>Bookings</div></div>
+        <div class="bookings-chart" id="bookingsChart"></div>
+      </div>
+      <div class="dashboard-lower-grid">
+        <div class="panel dashboard-list-panel"><div class="section-heading"><h2>Coming up next</h2><span class="text-link">View all</span></div><div class="dashboard-upcoming" id="dashboardUpcoming"></div></div>
+        <div class="panel dashboard-list-panel"><div class="section-heading"><div><h2>Staff on shift</h2><p class="hint" id="dashboardRosterDate"></p></div><span class="text-link">View all</span></div><div class="dashboard-roster" id="dashboardRoster"></div></div>
+        <div class="panel dashboard-list-panel"><div class="section-heading"><h2>Activity feed</h2><span class="text-link">View all</span></div><div class="dashboard-activity" id="dashboardActivity"></div></div>
       </div>
     </section>
 
@@ -1199,7 +1227,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel"><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Branch workspace</th><th>Current PIN</th><th>Status</th></tr></thead><tbody id="accessTable"></tbody></table></div></div>
     </section>
   </main>
-  <script>window.initialBranchId = ${JSON.stringify(initialBranchId)}; window.appMode = ${JSON.stringify(mode)}; ${clientScript()}</script>
+  <script>window.initialBranchId = ${JSON.stringify(initialBranchId)}; window.appMode = ${JSON.stringify(mode)}; window.uiIconPaths = ${JSON.stringify(UI_ICON_PATHS)}; ${clientScript()}</script>
 </body>
 </html>`;
 }
@@ -1277,7 +1305,7 @@ async function loadData() {
     message.textContent = "Loading Kunchas data...";
     state = normalizeState(await api("/api/app-data"));
     renderAll();
-    message.textContent = "Cloud software loaded.";
+    message.textContent = "";
   } catch (error) {
     message.textContent = error.message;
   }
@@ -1394,30 +1422,54 @@ function dashboardRange() {
 }
 function inDashboardRange(value, range) { const date = String(value || "").slice(0, 10); return date >= range.start && date <= range.end; }
 function formatDashboardDate(value) { return new Date(String(value).slice(0, 10) + "T00:00:00").toLocaleDateString("en-AU", { day:"numeric", month:"long", year:"numeric" }); }
+function uiIcon(name) { return '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (window.uiIconPaths?.[name] || window.uiIconPaths?.dashboard || '') + '</svg>'; }
+function salePaymentAmount(sale, type) {
+  const method = String(sale.payment_method || "");
+  const match = method.match(new RegExp(type + " \\\\$([0-9.]+)", "i"));
+  if (match) return Math.round(Number(match[1]) * 100);
+  return method.toLowerCase().includes(type.toLowerCase()) ? Number(sale.total_cents || 0) : 0;
+}
 function renderMetrics() {
   const range = dashboardRange();
-  const scopedBranches = selectedGlobalBranchId ? state.branches.filter((branch) => branch.id === selectedGlobalBranchId) : state.branches;
   const branchMatches = (item) => !selectedGlobalBranchId || item.branch_id === selectedGlobalBranchId;
   const bookings = state.bookings.filter((booking) => branchMatches(booking) && inDashboardRange(booking.booking_date, range) && !["Cancelled","No show"].includes(booking.status));
   const sales = state.sales.filter((sale) => branchMatches(sale) && inDashboardRange(sale.created_at, range) && sale.status === "Paid");
   const revenue = sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
+  const confirmed = bookings.filter((booking) => ["Confirmed","Completed"].includes(booking.status)).reduce((sum, booking) => sum + Number(booking.total_cents || 0), 0);
   const projected = bookings.filter((booking) => booking.payment_status !== "Paid").reduce((sum, booking) => sum + Number(booking.total_cents || 0), 0);
+  const cash = sales.reduce((sum, sale) => sum + salePaymentAmount(sale, "cash"), 0);
+  const card = sales.reduce((sum, sale) => sum + salePaymentAmount(sale, "card"), 0);
+  const bank = sales.reduce((sum, sale) => sum + salePaymentAmount(sale, "bank transfer"), 0);
+  const voucher = sales.reduce((sum, sale) => sum + salePaymentAmount(sale, "voucher"), 0);
   const rosterDate = selectedDashboardPeriod === "today" ? range.start : document.querySelector("#rosterDay").value || range.start;
   const roster = state.staffRoster.filter((entry) => entry.roster_date === rosterDate && entry.status === "Working" && branchMatches(entry));
-  document.querySelector("#dashboardScopeTitle").textContent = selectedGlobalBranchId ? branchName(selectedGlobalBranchId) : "All branches";
   document.querySelector("#dashboardPeriodLabel").textContent = range.start === range.end ? formatDashboardDate(range.start) : formatDashboardDate(range.start) + " – " + formatDashboardDate(range.end);
   document.querySelector("#dashboardRosterDate").textContent = formatDashboardDate(rosterDate);
-  document.querySelector("#metrics").innerHTML = [["Bookings", bookings.length], ["Revenue", money(revenue)], ["Projected", money(projected)], ["Staff rostered", roster.length]].map(([label, value]) => '<article><span>' + label + '</span><strong>' + value + '</strong></article>').join("");
-  document.querySelector("#branchSummary").innerHTML = scopedBranches.map((branch) => {
-    const branchSales = sales.filter((sale) => sale.branch_id === branch.id);
-    const branchBookings = bookings.filter((booking) => booking.branch_id === branch.id);
-    const branchRevenue = branchSales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
-    return '<article><strong>' + esc(branch.name) + '</strong><span>' + branchBookings.length + ' booking' + (branchBookings.length === 1 ? '' : 's') + ' · ' + branchSales.length + ' sale' + (branchSales.length === 1 ? '' : 's') + '</span><em>' + money(branchRevenue) + '</em></article>';
-  }).join("") || '<p class="empty-state">No branch activity in this period.</p>';
+  const metricItems = [
+    ["Total bookings", bookings.length, "calendar", "purple"], ["Confirmed revenue", money(confirmed), "money", "green"], ["Projected revenue", money(projected), "trend", "orange"], ["Total revenue", money(revenue), "money", "purple"],
+    ["Cash", money(cash), "money", "green"], ["Card", money(card), "card", "blue"], ["Bank transfer", money(bank), "bank", "teal"], ["Voucher", money(voucher), "voucher", "pink"]
+  ];
+  document.querySelector("#metrics").innerHTML = metricItems.map(([label, value, icon, tone]) => '<article class="metric-card"><div class="metric-icon tone-' + tone + '">' + uiIcon(icon) + '</div><div><span>' + label + '</span><strong>' + value + '</strong></div></article>').join("");
+  const chartHours = Array.from({ length:14 }, (_, index) => index + 7);
+  const counts = chartHours.map((hour) => bookings.filter((booking) => Number(String(booking.booking_time || "").slice(0, 2)) === hour).length);
+  const maxCount = Math.max(1, ...counts);
+  document.querySelector("#bookingsChart").innerHTML = chartHours.map((hour, index) => {
+    const count = counts[index], height = count ? Math.max(10, Math.round(count / maxCount * 100)) : 4;
+    const label = hour === 12 ? "12pm" : hour > 12 ? (hour - 12) + "pm" : hour + "am";
+    return '<div class="chart-hour" title="' + count + ' booking' + (count === 1 ? '' : 's') + '"><div class="chart-bar-wrap"><span class="chart-value">' + (count || '') + '</span><i style="height:' + height + '%"></i></div><span>' + label + '</span></div>';
+  }).join("");
+  const upcoming = state.bookings.filter((booking) => branchMatches(booking) && booking.booking_date >= localIsoDate() && !["Cancelled","No show","Completed"].includes(booking.status)).sort((a, b) => String(a.booking_date + a.booking_time).localeCompare(String(b.booking_date + b.booking_time))).slice(0, 5);
+  document.querySelector("#dashboardUpcoming").innerHTML = upcoming.length ? upcoming.map((booking) => '<article><time>' + esc(String(booking.booking_time || "").slice(0, 5)) + '</time><div><strong>' + esc(booking.service_names || "Booking") + '</strong><span>' + esc(booking.customer_name || "Customer") + (selectedGlobalBranchId ? '' : ' · ' + esc(branchName(booking.branch_id))) + '</span></div><b></b></article>').join("") : '<p class="empty-state">No upcoming bookings.</p>';
   document.querySelector("#dashboardRoster").innerHTML = roster.length ? roster.map((entry) => {
     const staff = state.staff.find((item) => item.id === entry.staff_id);
     return '<article><div class="person-avatar">' + esc((staff?.name || "S").split(/\\s+/).map((part) => part[0]).join("").slice(0, 2)) + '</div><div><strong>' + esc(staff?.name || "Staff") + '</strong><span>' + esc((entry.start_time || "") + (entry.end_time ? "–" + entry.end_time : "")) + (selectedGlobalBranchId ? '' : ' · ' + esc(branchName(entry.branch_id))) + '</span></div></article>';
   }).join("") : '<p class="empty-state">No staff rostered for this day.</p>';
+  const activityBranches = selectedGlobalBranchId ? state.branches.filter((branch) => branch.id === selectedGlobalBranchId) : state.branches;
+  document.querySelector("#dashboardActivity").innerHTML = activityBranches.map((branch) => {
+    const branchSales = sales.filter((sale) => sale.branch_id === branch.id);
+    const total = branchSales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
+    return '<article><div class="activity-icon">' + uiIcon("money") + '</div><div><strong>' + esc(branch.name) + '</strong><span>' + branchSales.length + ' sale' + (branchSales.length === 1 ? '' : 's') + ' · ' + money(total) + '</span></div><time>' + (selectedDashboardPeriod === 'today' ? 'Today' : 'Period') + '</time></article>';
+  }).join("") || '<p class="empty-state">No activity in this period.</p>';
 }
 function renderBranches() {
   document.querySelector("#branchCards").innerHTML = state.branches.map((b) => '<article><div class="branch-card-top"><div class="branch-icon">' + esc(b.name.slice(0, 1)) + '</div><span class="pill">' + esc(b.status) + '</span></div><strong>' + esc(b.name) + '</strong><span>' + esc(b.address) + '</span><span>' + esc(b.phone) + '</span><button class="danger delete-branch" data-branch-id="' + esc(b.id) + '" type="button">Delete branch</button></article>').join("");
@@ -2109,8 +2161,9 @@ body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-he
 .brand { display:flex; align-items:center; gap:10px; margin-bottom:30px; font-size:22px; }
 .brand span { display:grid; place-items:center; width:38px; height:38px; border-radius:11px; background:rgba(255,255,255,.14); font-weight:800; }
 nav { display:grid; gap:8px; }
-.nav { min-height:44px; padding:0 14px; color:#e6dbe9; background:transparent; border:0; border-radius:9px; text-align:left; font:inherit; font-weight:700; cursor:pointer; }
+.nav { display:flex; align-items:center; gap:12px; min-height:44px; padding:0 14px; color:#e6dbe9; background:transparent; border:0; border-radius:9px; text-align:left; font:inherit; font-weight:700; cursor:pointer; }
 .nav.active,.nav:hover { color:#fff; background:rgba(255,255,255,.12); }
+.ui-icon { width:20px; height:20px; flex:0 0 auto; }
 .app { min-width:0; padding:24px clamp(18px,3vw,40px) 46px; }
 .topbar { display:flex; justify-content:space-between; gap:22px; align-items:center; margin:-24px clamp(-40px,-3vw,-18px) 20px; padding:20px clamp(18px,3vw,40px); background:#fff; border-bottom:1px solid var(--line); }
 .eyebrow { margin:0 0 5px; color:var(--brand); font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
@@ -2128,14 +2181,20 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
 .hint { margin:8px 0 0; color:var(--muted); font-size:13px; }
 .load-row { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
+.admin-mode .load-row { display:none; }
 .message { min-height:28px; color:var(--brand); font-weight:800; }
+.message:empty { display:none; }
 .tab { display:none; margin-top:22px; }
 .tab.active { display:block; }
 .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-bottom:18px; }
 .metrics article,.panel,.cards article,.branch-grid article { background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 28px rgba(56,24,66,.05); }
-.metrics article { padding:20px; }
+.metrics article { padding:18px; }
 .metrics span { display:block; color:var(--muted); font-weight:800; }
 .metrics strong { display:block; margin-top:8px; font-size:28px; }
+.metric-card { display:flex; align-items:center; gap:14px; min-height:88px; }
+.metric-icon { display:grid; place-items:center; width:44px; height:44px; flex:0 0 auto; border-radius:50%; }
+.metric-icon .ui-icon { width:19px; height:19px; }
+.tone-purple { color:#71328a; background:#eadcf5; }.tone-green { color:#168044; background:#e2f3d7; }.tone-orange { color:#d36d13; background:#fff0dc; }.tone-blue { color:#3f6fce; background:#e4edff; }.tone-teal { color:#168487; background:#def2f1; }.tone-pink { color:#d14e7b; background:#fbe2eb; }
 .panel { padding:22px; }
 .admin-controls,.admin-avatar { display:flex; align-items:center; gap:14px; }
 .branch-switcher { min-width:250px; margin:0; }
@@ -2143,18 +2202,38 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .branch-switcher select { margin:2px 0 0; min-height:42px; }
 .admin-avatar span { display:grid; place-items:center; width:40px; height:40px; border-radius:50%; color:var(--brand); background:#eadcf0; font-weight:800; }
 .dashboard-toolbar,.section-heading { display:flex; justify-content:space-between; align-items:center; gap:18px; }
-.dashboard-toolbar { margin-bottom:14px; }
+.dashboard-toolbar { justify-content:flex-end; margin-bottom:14px; }
 .dashboard-toolbar h2,.section-heading h2 { margin:0; }
 .period-tabs { display:flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; }
 .period-tab { min-height:40px; padding:0 16px; color:var(--muted); background:#fff; border:0; border-right:1px solid var(--line); border-radius:0; }
 .period-tab:last-child { border-right:0; }
 .period-tab.active { color:#fff; background:var(--brand); }
-.dashboard-grid { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(300px,.8fr); gap:18px; }
-.dashboard-grid .branch-grid { grid-template-columns:repeat(2,minmax(0,1fr)); margin-top:16px; }
-.dashboard-roster { display:grid; gap:8px; margin-top:16px; }
-.dashboard-roster article { display:flex; align-items:center; gap:11px; padding:10px; border:1px solid var(--line); border-radius:10px; }
+.bookings-chart-panel { margin-bottom:16px; }
+.chart-legend { display:flex; align-items:center; gap:7px; color:var(--brand); font-size:12px; font-weight:800; }
+.chart-legend span { width:8px; height:8px; border-radius:50%; background:var(--brand); }
+.bookings-chart { display:grid; grid-template-columns:repeat(14,minmax(34px,1fr)); align-items:end; min-height:190px; margin-top:18px; padding:12px 8px 0; background:repeating-linear-gradient(to bottom,transparent 0,transparent 44px,#eee8f0 45px); border-bottom:1px solid var(--line); overflow-x:auto; }
+.chart-hour { display:grid; grid-template-rows:150px auto; align-items:end; min-width:42px; color:var(--muted); font-size:11px; text-align:center; }
+.chart-bar-wrap { position:relative; display:flex; align-items:end; justify-content:center; height:144px; }
+.chart-bar-wrap i { display:block; width:10px; min-height:5px; background:linear-gradient(180deg,#7b3294,var(--brand)); border-radius:6px 6px 2px 2px; box-shadow:0 0 0 4px rgba(91,27,111,.08); }
+.chart-value { position:absolute; top:4px; color:var(--brand); font-weight:800; }
+.chart-hour>span { padding:8px 0; }
+.dashboard-lower-grid { display:grid; grid-template-columns:1fr 1.05fr 1.1fr; gap:14px; }
+.dashboard-list-panel { min-width:0; }
+.dashboard-list-panel h2 { font-size:20px; }
+.text-link { color:var(--brand); font-size:12px; font-weight:800; }
+.dashboard-roster,.dashboard-upcoming,.dashboard-activity { display:grid; margin-top:12px; }
+.dashboard-roster article,.dashboard-upcoming article,.dashboard-activity article { display:flex; align-items:center; gap:11px; min-height:58px; padding:9px 0; border-bottom:1px solid var(--line); }
+.dashboard-roster article:last-child,.dashboard-upcoming article:last-child,.dashboard-activity article:last-child { border-bottom:0; }
 .dashboard-roster strong,.dashboard-roster span { display:block; }
 .dashboard-roster span { color:var(--muted); font-size:12px; }
+.dashboard-upcoming time { padding:5px 9px; color:var(--brand); background:var(--brand-soft); border-radius:7px; font-weight:800; }
+.dashboard-upcoming div,.dashboard-activity div:nth-child(2) { min-width:0; flex:1; }
+.dashboard-upcoming strong,.dashboard-upcoming span,.dashboard-activity strong,.dashboard-activity span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dashboard-upcoming span,.dashboard-activity span { color:var(--muted); font-size:11px; }
+.dashboard-upcoming b { width:7px; height:7px; border-radius:50%; background:var(--brand); }
+.activity-icon { display:grid; place-items:center; width:34px; height:34px; flex:0 0 auto; color:#fff; background:var(--brand); border-radius:50%; }
+.activity-icon .ui-icon { width:17px; height:17px; }
+.dashboard-activity time { color:var(--muted); font-size:10px; }
 .person-avatar { display:grid; place-items:center; width:36px; height:36px; flex:0 0 auto; color:var(--brand); background:var(--brand-soft); border-radius:50%; font-size:12px; font-weight:800; }
 .empty-state { margin:14px 0; color:var(--muted); }
 .customer-profile,.staff-profile,.roster-day-panel { margin-top:20px; }
@@ -2289,7 +2368,7 @@ th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left;
 th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
-@media (max-width:1100px){ .dashboard-grid{grid-template-columns:1fr}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1} }
+@media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar{align-items:stretch;flex-direction:column}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.month-day{min-height:76px}.month-day span{display:none} }
 `;
