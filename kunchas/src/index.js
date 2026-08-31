@@ -582,7 +582,7 @@ async function recordTimeClock(request, env) {
   const staffId = clean(body.staffId);
   const action = clean(body.action).toLowerCase();
   const staff = staffId ? await env.DB.prepare("SELECT id, name FROM staff WHERE id = ? AND status = 'Active'").bind(staffId).first() : null;
-  if (!staff || !["clock-in", "clock-out"].includes(action)) return jsonResponse({ error:"Choose an active staff member and a clock action." }, 400);
+  if (!staff || !["clock-in", "break-start", "break-end", "clock-out"].includes(action)) return jsonResponse({ error:"Choose an active staff member and a clock action." }, 400);
   const openEntry = await env.DB.prepare("SELECT * FROM time_entries WHERE staff_id = ? AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1").bind(staffId).first();
   if (action === "clock-in") {
     if (openEntry) return jsonResponse({ error:`${staff.name} is already clocked in.` }, 409);
@@ -592,8 +592,22 @@ async function recordTimeClock(request, env) {
   }
   if (!openEntry) return jsonResponse({ error:`${staff.name} is not clocked in.` }, 409);
   if (openEntry.branch_id !== branchId) return jsonResponse({ error:`${staff.name} must clock out at the branch where they clocked in.` }, 409);
-  await env.DB.prepare("UPDATE time_entries SET clock_out = ?, notes = ? WHERE id = ?")
-    .bind(new Date().toISOString(), clean(body.notes) || openEntry.notes || "", openEntry.id).run();
+  const now = new Date();
+  if (action === "break-start") {
+    if (openEntry.break_started_at) return jsonResponse({ error:`${staff.name} is already on break.` }, 409);
+    await env.DB.prepare("UPDATE time_entries SET break_started_at = ? WHERE id = ?").bind(now.toISOString(), openEntry.id).run();
+    return jsonResponse({ ok:true, status:"Break started" });
+  }
+  if (action === "break-end") {
+    if (!openEntry.break_started_at) return jsonResponse({ error:`${staff.name} does not have an active break.` }, 409);
+    const minutes = Math.max(1, Math.round((now.getTime() - new Date(openEntry.break_started_at).getTime()) / 60000));
+    await env.DB.prepare("UPDATE time_entries SET break_started_at = NULL, break_minutes = ? WHERE id = ?").bind(Number(openEntry.break_minutes || 0) + minutes, openEntry.id).run();
+    return jsonResponse({ ok:true, status:"Break ended" });
+  }
+  let breakMinutes = Number(openEntry.break_minutes || 0);
+  if (openEntry.break_started_at) breakMinutes += Math.max(1, Math.round((now.getTime() - new Date(openEntry.break_started_at).getTime()) / 60000));
+  await env.DB.prepare("UPDATE time_entries SET clock_out = ?, break_started_at = NULL, break_minutes = ?, notes = ? WHERE id = ?")
+    .bind(now.toISOString(), breakMinutes, clean(body.notes) || openEntry.notes || "", openEntry.id).run();
   return jsonResponse({ ok:true, status:"Clocked out" });
 }
 
@@ -608,7 +622,7 @@ function reportDateRange(url) {
 
 function reportHours(entry) {
   if (!entry.clock_in || !entry.clock_out) return 0;
-  return Math.max(0, (new Date(entry.clock_out).getTime() - new Date(entry.clock_in).getTime()) / 3600000);
+  return Math.max(0, (new Date(entry.clock_out).getTime() - new Date(entry.clock_in).getTime()) / 3600000 - Number(entry.break_minutes || 0) / 60);
 }
 
 async function buildReportData(url, env) {
@@ -682,7 +696,7 @@ async function buildReportData(url, env) {
 
   const payrollRows = timeEntries.map((entry) => {
     const hours = reportHours(entry);
-    return { id:entry.id, date:String(entry.clock_in || "").slice(0, 10), staffId:entry.staff_id, staff:entry.staff_name || "Staff", role:entry.role || "", branch:entry.branch_name || "Branch", clockIn:entry.clock_in, clockOut:entry.clock_out || "", hours, hourlyRateCents:Number(entry.hourly_rate_cents || 0), grossPayCents:Math.round(hours * Number(entry.hourly_rate_cents || 0)), xeroEmployeeId:entry.xero_employee_id || "", xeroEarningsRateId:entry.xero_earnings_rate_id || "", status:entry.clock_out ? "Complete" : "Clocked in" };
+    return { id:entry.id, date:String(entry.clock_in || "").slice(0, 10), staffId:entry.staff_id, staff:entry.staff_name || "Staff", role:entry.role || "", branch:entry.branch_name || "Branch", clockIn:entry.clock_in, clockOut:entry.clock_out || "", breakMinutes:Number(entry.break_minutes || 0), hours, hourlyRateCents:Number(entry.hourly_rate_cents || 0), grossPayCents:Math.round(hours * Number(entry.hourly_rate_cents || 0)), xeroEmployeeId:entry.xero_employee_id || "", xeroEarningsRateId:entry.xero_earnings_rate_id || "", status:entry.clock_out ? "Complete" : entry.break_started_at ? "On break" : "Clocked in" };
   });
   const revenueCents = sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
   return { range:{ from, to, branchId }, summary:{ revenueCents, transactions:sales.length, productsSold:[...productMap.values()].reduce((sum, row) => sum + row.quantity, 0), servicesSold:[...serviceMap.values()].reduce((sum, row) => sum + row.quantity, 0), onlineBookings:bookings.filter((booking) => booking.source !== "Manual" && !["Cancelled", "No show"].includes(booking.status)).length, walkIns:sales.filter((sale) => !bookedSaleIds.has(sale.id)).length, workedHours:payrollRows.reduce((sum, row) => sum + row.hours, 0) }, branchRows, staffRows, productRows:[...productMap.values()], serviceRows:[...serviceMap.values()], bookingRows:[...bookingMap.values()], payrollRows };
@@ -719,7 +733,7 @@ async function exportReport(url, env) {
   if (type === "products") return excelReportResponse("Products Sold", ["Product", "Quantity", "Sales"], report.productRows.map((row) => [row.name, row.quantity, row.revenueCents / 100]));
   if (type === "services") return excelReportResponse("Services Sold", ["Service", "Quantity", "Sales"], report.serviceRows.map((row) => [row.name, row.quantity, row.revenueCents / 100]));
   if (type === "bookings") return excelReportResponse("Booking Sources", ["Branch", "Source", "Bookings or Visits", "Value", "Completed"], report.bookingRows.map((row) => [row.branch, row.source, row.count, row.valueCents / 100, row.completed]));
-  if (type === "payroll") return excelReportResponse("Payroll Hours", ["Date", "Staff", "Role", "Branch", "Clock In", "Clock Out", "Hours", "Hourly Rate", "Gross Pay", "Status"], report.payrollRows.map((row) => [row.date, row.staff, row.role, row.branch, row.clockIn, row.clockOut, Number(row.hours.toFixed(2)), row.hourlyRateCents / 100, row.grossPayCents / 100, row.status]));
+  if (type === "payroll") return excelReportResponse("Payroll Hours", ["Date", "Staff", "Role", "Branch", "Clock In", "Break Minutes", "Clock Out", "Net Hours", "Hourly Rate", "Gross Pay", "Status"], report.payrollRows.map((row) => [row.date, row.staff, row.role, row.branch, row.clockIn, row.breakMinutes, row.clockOut, Number(row.hours.toFixed(2)), row.hourlyRateCents / 100, row.grossPayCents / 100, row.status]));
   if (type === "xero") {
     const headers = ["Date", "EmployeeID", "EmployeeName", "EarningsRateID", "NumberOfUnits", "Branch", "ClockIn", "ClockOut"];
     const rows = report.payrollRows.filter((row) => row.clockOut).map((row) => [row.date, row.xeroEmployeeId, row.staff, row.xeroEarningsRateId, row.hours.toFixed(2), row.branch, row.clockIn, row.clockOut]);
@@ -1374,7 +1388,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         </div>
         <button class="secondary" id="switchBranch" type="button">Switch branch</button>
       </div>
-      <div class="panel time-clock-panel"><div><p class="eyebrow">Staff time clock</p><h2>Clock in or out</h2><p class="hint" id="timeClockStatus">Actual hours feed the payroll report.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button">Clock in</button><button class="secondary" id="clockOutButton" type="button">Clock out</button></div></div>
+      <div class="panel time-clock-panel"><div><p class="eyebrow">Staff time clock</p><h2>Clock in, break or out</h2><p class="hint" id="timeClockStatus">Actual hours feed the payroll report.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button">Clock in</button><button class="secondary" id="breakStartButton" type="button">Start break</button><button class="secondary" id="breakEndButton" type="button">End break</button><button class="secondary" id="clockOutButton" type="button">Clock out</button></div></div>
       <div class="split">
         <form class="panel" id="saleForm">
           <h2>New POS sale</h2>
@@ -1457,7 +1471,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         <form class="panel" id="staffForm"><h2>Add staff</h2><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Role<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01" value="0.00"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><fieldset class="day-off-fieldset"><legend>Regular day off</legend><p class="hint">Choose their usual weekly day or days off.</p><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary full" type="submit">Save staff</button></form>
         <div class="panel"><h2>Staff</h2><p class="hint">Staff are shared across all branches and assigned through the roster.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Day off</th><th>Hourly rate</th><th>Status</th><th>Sales made</th></tr></thead><tbody id="staffTable"></tbody></table></div></div>
       </div>
-      <div class="panel staff-profile hidden" id="staffProfile"><div class="profile-heading"><div><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary" id="closeStaffProfile" type="button">Close</button></div><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Role<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary" type="submit">Save staff details</button></form><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div></div>
+      <div class="panel staff-profile hidden" id="staffProfile"><div class="profile-heading"><div><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary" id="closeStaffProfile" type="button">Close</button></div><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Role<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary" type="submit">Save staff details</button></form><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div><div class="staff-hours-section"><div class="section-heading"><div><h3>Daily hours</h3><p class="hint">Last 14 days · Net hours exclude recorded breaks.</p></div><strong id="staffHoursSummary"></strong></div><div class="table-wrap"><table class="staff-hours-table"><thead><tr><th>Date</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Total hours</th><th>Estimated pay</th></tr></thead><tbody id="staffHoursTable"></tbody></table></div></div></div>
     </section>
     <section class="tab admin-only" id="roster">
       <div class="panel roster-day-panel"><div class="roster-toolbar"><div><p class="eyebrow">Schedule builder</p><h2 id="rosterDayTitle">Branch roster</h2><p class="hint">Choose one branch, then add or adjust staff shifts for the selected day.</p></div><div class="roster-toolbar-controls"><label>Branch<select id="rosterBranchSelect" aria-label="Roster branch"></select></label><label>Date<input id="rosterDay" type="date"></label></div></div><div class="roster-branch-board" id="rosterBranchBoard"></div></div>
@@ -1495,7 +1509,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel report-section"><div class="section-heading"><div><h2>Staff and manager sales</h2><p class="hint">Staff credited sales; manager store sales add the branch totals for each day they were rostered there.</p></div><a class="secondary button-link report-export" data-report-type="staff">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Staff</th><th>Role</th><th>Credited sales</th><th>Services sold</th><th>Managed store sales</th></tr></thead><tbody id="reportStaffTable"></tbody></table></div></div>
       <div class="report-two-column"><div class="panel report-section"><div class="section-heading"><div><h2>Products sold</h2></div><a class="secondary button-link report-export" data-report-type="products">Export</a></div><div class="table-wrap"><table><thead><tr><th>Product</th><th>Qty</th><th>Sales</th></tr></thead><tbody id="reportProductsTable"></tbody></table></div></div><div class="panel report-section"><div class="section-heading"><div><h2>Services sold</h2></div><a class="secondary button-link report-export" data-report-type="services">Export</a></div><div class="table-wrap"><table><thead><tr><th>Service</th><th>Qty</th><th>Sales</th></tr></thead><tbody id="reportServicesTable"></tbody></table></div></div></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Bookings and walk-ins</h2><p class="hint">Online bookings, branch-created manual bookings, and POS visits without a booking.</p></div><a class="secondary button-link report-export" data-report-type="bookings">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Source</th><th>Bookings / visits</th><th>Value</th><th>Completed</th></tr></thead><tbody id="reportBookingsTable"></tbody></table></div></div>
-      <div class="panel report-section payroll-report"><div class="section-heading"><div><h2>Clock-in/out and payroll hours</h2><p class="hint">Actual completed time entries calculate hours and estimated gross pay.</p></div><div class="report-export-actions"><a class="secondary button-link report-export" data-report-type="payroll">Export Excel</a><a class="primary button-link report-export" data-report-type="xero">Export Xero CSV</a></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Branch</th><th>Clock in</th><th>Clock out</th><th>Hours</th><th>Rate</th><th>Gross pay</th><th>Status</th></tr></thead><tbody id="reportPayrollTable"></tbody></table></div></div>
+      <div class="panel report-section payroll-report"><div class="section-heading"><div><h2>Clock-in/out and payroll hours</h2><p class="hint">Actual completed time entries calculate net hours and estimated gross pay.</p></div><div class="report-export-actions"><a class="secondary button-link report-export" data-report-type="payroll">Export Excel</a><a class="primary button-link report-export" data-report-type="xero">Export Xero CSV</a></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Net hours</th><th>Rate</th><th>Gross pay</th><th>Status</th></tr></thead><tbody id="reportPayrollTable"></tbody></table></div></div>
       <div class="panel"><h2>Admin closing review</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Actual cash</th><th>Cash taken</th><th>Actual card</th><th>Status</th><th>Approved by</th><th></th></tr></thead><tbody id="adminClosingTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="branches">
@@ -1541,6 +1555,8 @@ document.querySelector("#loadData").addEventListener("click", loadData);
 document.querySelector("#openPos").addEventListener("click", openPos);
 document.querySelector("#switchBranch").addEventListener("click", switchBranch);
 document.querySelector("#clockInButton").addEventListener("click", () => submitTimeClock("clock-in"));
+document.querySelector("#breakStartButton").addEventListener("click", () => submitTimeClock("break-start"));
+document.querySelector("#breakEndButton").addEventListener("click", () => submitTimeClock("break-end"));
 document.querySelector("#clockOutButton").addEventListener("click", () => submitTimeClock("clock-out"));
 document.querySelector("#timeClockStaff").addEventListener("change", renderTimeClockStatus);
 document.querySelector("#addSaleItem").addEventListener("click", () => addSaleItem());
@@ -1670,7 +1686,7 @@ function renderTimeClockStatus() {
   const status = document.querySelector("#timeClockStatus");
   if (!select || !status) return;
   const open = (state.timeEntries || []).find((entry) => entry.staff_id === select.value && !entry.clock_out);
-  status.textContent = open ? "Clocked in since " + new Date(open.clock_in).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : "Actual hours feed the payroll report.";
+  status.textContent = open?.break_started_at ? "On break since " + new Date(open.break_started_at).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : open ? "Clocked in since " + new Date(open.clock_in).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : "Actual hours feed the payroll report.";
 }
 async function submitTimeClock(action) {
   const staffId = document.querySelector("#timeClockStaff").value;
@@ -1871,6 +1887,32 @@ function staffSaleRows(staffId) {
   }).filter(Boolean);
 }
 function staffSalesTotal(staffId) { return staffSaleRows(staffId).reduce((sum, item) => sum + item.credit, 0); }
+function staffEntryHours(entry) {
+  const end = entry.clock_out ? new Date(entry.clock_out) : new Date();
+  let breakMinutes = Number(entry.break_minutes || 0);
+  if (entry.break_started_at) breakMinutes += Math.max(0, (Date.now() - new Date(entry.break_started_at).getTime()) / 60000);
+  return Math.max(0, (end.getTime() - new Date(entry.clock_in).getTime()) / 3600000 - breakMinutes / 60);
+}
+function staffClockTime(value) { return value ? new Date(value).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : "—"; }
+function renderStaffHours(staff) {
+  const today = new Date();
+  const entries = (state.timeEntries || []).filter((entry) => entry.staff_id === staff.id);
+  const days = Array.from({ length:14 }, (_, index) => {
+    const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() - index);
+    const dateKey = localIsoDate(date);
+    const dayEntries = entries.filter((entry) => localIsoDate(new Date(entry.clock_in)) === dateKey);
+    const clockIns = dayEntries.map((entry) => entry.clock_in).filter(Boolean).sort();
+    const clockOuts = dayEntries.map((entry) => entry.clock_out).filter(Boolean).sort();
+    const breakMinutes = dayEntries.reduce((sum, entry) => sum + Number(entry.break_minutes || 0) + (entry.break_started_at ? Math.max(0, Math.round((Date.now() - new Date(entry.break_started_at).getTime()) / 60000)) : 0), 0);
+    const hours = dayEntries.reduce((sum, entry) => sum + staffEntryHours(entry), 0);
+    const branches = [...new Set(dayEntries.map((entry) => entry.branch_name || branchName(entry.branch_id)).filter(Boolean))];
+    return { date, dateKey, branches, clockIn:clockIns[0] || "", clockOut:clockOuts.at(-1) || "", open:dayEntries.some((entry) => !entry.clock_out), breakMinutes, hours, payCents:Math.round(hours * Number(staff.hourly_rate_cents || 0)) };
+  });
+  document.querySelector("#staffHoursTable").innerHTML = days.map((day) => '<tr class="' + (day.hours ? '' : 'no-hours-row') + '"><td><strong>' + esc(day.date.toLocaleDateString("en-AU", { weekday:"short", day:"numeric", month:"short" })) + '</strong></td><td>' + esc(day.branches.join(", ") || "—") + '</td><td>' + esc(staffClockTime(day.clockIn)) + '</td><td>' + day.breakMinutes + ' min</td><td>' + (day.open ? '<span class="status-pill inactive">In progress</span>' : esc(staffClockTime(day.clockOut))) + '</td><td><strong>' + day.hours.toFixed(2) + '</strong></td><td>' + money(day.payCents) + '</td></tr>').join("");
+  const totalHours = days.reduce((sum, day) => sum + day.hours, 0);
+  const totalPay = days.reduce((sum, day) => sum + day.payCents, 0);
+  document.querySelector("#staffHoursSummary").textContent = totalHours.toFixed(2) + " hours · " + money(totalPay);
+}
 function openStaffProfile(staffId) {
   const staff = state.staff.find((item) => item.id === staffId);
   if (!staff) return;
@@ -1889,6 +1931,7 @@ function openStaffProfile(staffId) {
   document.querySelector("#staffProfileTitle").textContent = staff.name;
   document.querySelector("#staffProfileSummary").textContent = rows.length + " service sale" + (rows.length === 1 ? "" : "s") + " · " + money(staffSalesTotal(staffId)) + " credited sales";
   document.querySelector("#staffSalesTable").innerHTML = rows.length ? rows.map((item) => '<tr><td>' + esc(formatCustomerDate(item.created_at)) + '</td><td>' + esc(item.branch_name || branchName(item.branch_id)) + '</td><td>' + esc(item.item_name) + '</td><td>' + money(item.price_cents) + '</td><td><strong>' + money(item.credit) + '</strong></td></tr>').join("") : '<tr><td colspan="5" class="empty-cell">No credited sales yet.</td></tr>';
+  renderStaffHours(staff);
   document.querySelector("#staffProfile").classList.remove("hidden");
   document.querySelector("#staffProfile").scrollIntoView({ behavior:"smooth", block:"start" });
 }
@@ -2307,7 +2350,7 @@ function renderReports() {
   document.querySelector("#reportProductsTable").innerHTML = reportData.productRows.length ? reportData.productRows.map((row) => '<tr><td><strong>' + esc(row.name) + '</strong></td><td>' + row.quantity + '</td><td>' + money(row.revenueCents) + '</td></tr>').join("") : reportEmpty(3, "No products sold.");
   document.querySelector("#reportServicesTable").innerHTML = reportData.serviceRows.length ? reportData.serviceRows.map((row) => '<tr><td><strong>' + esc(row.name) + '</strong></td><td>' + row.quantity + '</td><td>' + money(row.revenueCents) + '</td></tr>').join("") : reportEmpty(3, "No services sold.");
   document.querySelector("#reportBookingsTable").innerHTML = reportData.bookingRows.length ? reportData.bookingRows.map((row) => '<tr><td><strong>' + esc(row.branch) + '</strong></td><td><span class="source-pill">' + esc(row.source) + '</span></td><td>' + row.count + '</td><td>' + money(row.valueCents) + '</td><td>' + row.completed + '</td></tr>').join("") : reportEmpty(5);
-  document.querySelector("#reportPayrollTable").innerHTML = reportData.payrollRows.length ? reportData.payrollRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong><span class="table-subtext">' + esc(row.role) + '</span></td><td>' + esc(row.branch) + '</td><td>' + esc(reportTime(row.clockIn)) + '</td><td>' + esc(reportTime(row.clockOut)) + '</td><td><strong>' + Number(row.hours || 0).toFixed(2) + '</strong></td><td>' + money(row.hourlyRateCents) + '</td><td><strong>' + money(row.grossPayCents) + '</strong></td><td><span class="status-pill ' + (row.status === "Complete" ? "" : "inactive") + '">' + esc(row.status) + '</span></td></tr>').join("") : reportEmpty(9, "No clock-in records for this period.");
+  document.querySelector("#reportPayrollTable").innerHTML = reportData.payrollRows.length ? reportData.payrollRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong><span class="table-subtext">' + esc(row.role) + '</span></td><td>' + esc(row.branch) + '</td><td>' + esc(reportTime(row.clockIn)) + '</td><td>' + Number(row.breakMinutes || 0) + ' min</td><td>' + esc(reportTime(row.clockOut)) + '</td><td><strong>' + Number(row.hours || 0).toFixed(2) + '</strong></td><td>' + money(row.hourlyRateCents) + '</td><td><strong>' + money(row.grossPayCents) + '</strong></td><td><span class="status-pill ' + (row.status === "Complete" ? "" : "inactive") + '">' + esc(row.status) + '</span></td></tr>').join("") : reportEmpty(10, "No clock-in records for this period.");
   document.querySelectorAll(".report-export").forEach((link) => { link.href = "/api/reports/export?type=" + encodeURIComponent(link.dataset.reportType) + "&" + reportQuery(); });
 }
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
@@ -2712,7 +2755,16 @@ legend { grid-column:1/-1; }
 .time-clock-panel { display:grid; grid-template-columns:minmax(260px,1fr) minmax(220px,320px) auto; align-items:end; gap:18px; margin-bottom:20px; background:linear-gradient(135deg,#fff 30%,#faf3fc); }
 .time-clock-panel h2 { margin-bottom:2px; }
 .time-clock-panel label,.time-clock-panel select { margin-bottom:0; }
-.time-clock-actions { display:flex; gap:8px; padding-bottom:0; }
+.time-clock-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; padding-bottom:0; }
+.time-clock-actions button { min-height:40px; padding:0 13px; white-space:nowrap; }
+.staff-hours-section { margin:26px -22px -22px; border-top:1px solid var(--line); }
+.staff-hours-section>.section-heading { padding:18px 22px; background:#faf8fb; border-bottom:1px solid var(--line); }
+.staff-hours-section h3 { margin:0; font-size:20px; }
+.staff-hours-section>.section-heading>strong { color:var(--brand); }
+.staff-hours-table { min-width:900px; }
+.staff-hours-table th:first-child,.staff-hours-table td:first-child { padding-left:22px; }
+.staff-hours-table th:last-child,.staff-hours-table td:last-child { padding-right:22px; }
+.no-hours-row { color:var(--muted); background:#fdfcfd; }
 .xero-fields { margin:4px 0 16px; padding:12px 14px; background:#faf8fb; border:1px solid var(--line); border-radius:9px; }
 .xero-fields summary { color:var(--brand); font-weight:800; cursor:pointer; }
 .xero-fields .grid { margin-top:12px; }
