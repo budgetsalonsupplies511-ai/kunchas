@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS services (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   category TEXT NOT NULL,
+  sub_category TEXT NOT NULL DEFAULT 'General',
   duration_minutes INTEGER NOT NULL,
   price_cents INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'Active'
@@ -109,6 +110,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   status TEXT NOT NULL,
   payment_status TEXT NOT NULL,
   sale_id TEXT,
+  booking_source TEXT NOT NULL DEFAULT 'Manual',
   notes TEXT
 );
 
@@ -229,13 +231,13 @@ INSERT OR IGNORE INTO staff (id, branch_id, name, role, email, phone, status) VA
   ('staff-ella', '', 'Ella Martin', 'Beauty therapist', 'ella@kunchas.com.au', '0400 100 004', 'Active'),
   ('staff-lina', '', 'Lina Patel', 'Salon coordinator', 'lina@kunchas.com.au', '0400 100 005', 'Active');
 
-INSERT OR IGNORE INTO services (id, name, category, duration_minutes, price_cents, status) VALUES
-  ('service-haircut', 'Haircut', 'Hair', 30, 4500, 'Active'),
-  ('service-colour', 'Colour service', 'Colour', 90, 12000, 'Active'),
-  ('service-treatment', 'Hair treatment', 'Treatment', 45, 7000, 'Active'),
-  ('service-blowdry', 'Blow dry', 'Hair', 35, 5500, 'Active'),
-  ('service-facial', 'Beauty facial', 'Beauty', 60, 9500, 'Active'),
-  ('service-threading', 'Threading', 'Beauty', 20, 2500, 'Active');
+INSERT OR IGNORE INTO services (id, name, category, sub_category, duration_minutes, price_cents, status) VALUES
+  ('service-haircut', 'Haircut', 'Hair', 'Cuts', 30, 4500, 'Active'),
+  ('service-colour', 'Colour service', 'Hair', 'Colour', 90, 12000, 'Active'),
+  ('service-treatment', 'Hair treatment', 'Hair', 'Treatments', 45, 7000, 'Active'),
+  ('service-blowdry', 'Blow dry', 'Hair', 'Styling', 35, 5500, 'Active'),
+  ('service-facial', 'Beauty facial', 'Beauty', 'Facials', 60, 9500, 'Active'),
+  ('service-threading', 'Threading', 'Beauty', 'Threading', 20, 2500, 'Active');
 
 INSERT OR IGNORE INTO products (id, name, brand, category, sku, barcode, cost_cents, price_cents, status) VALUES
   ('product-shampoo', 'Hydrating shampoo', 'Kunchas', 'Haircare', 'KUN-SHAMPOO', '', 1200, 2800, 'Active'),

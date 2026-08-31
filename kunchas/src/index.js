@@ -283,6 +283,7 @@ async function createBooking(request, env) {
   const serviceIds = Array.isArray(body.serviceIds) ? body.serviceIds.map(clean).filter(Boolean) : [];
   const bookingDate = clean(body.bookingDate);
   const bookingTime = clean(body.bookingTime);
+  const bookingSource = clean(body.bookingSource) === "Manual" ? "Manual" : "Online";
 
   if (!customerId || !branchId || !bookingDate || !bookingTime || !serviceIds.length) {
     return jsonResponse({ error: "Customer, branch, date, time, and at least one service are required." }, 400);
@@ -296,13 +297,20 @@ async function createBooking(request, env) {
   const serviceRows = await all(env, `SELECT id, name, duration_minutes, price_cents FROM services WHERE id IN (${placeholders})`, serviceIds);
   const totalMinutes = serviceRows.reduce((total, service) => total + Number(service.duration_minutes || 0), 0);
   const totalCents = serviceRows.reduce((total, service) => total + Number(service.price_cents || 0), 0);
+  const startMinutes = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+  if (startMinutes < 10 * 60 || startMinutes + totalMinutes > 19 * 60) {
+    return jsonResponse({ error: "Bookings must start at or after 10:00 am and finish by 7:00 pm." }, 400);
+  }
+  if (await exceedsBookingCapacity(env, branchId, bookingDate, startMinutes, startMinutes + totalMinutes)) {
+    return jsonResponse({ error: "This time overlaps two existing bookings. Please select another time." }, 409);
+  }
 
   await env.DB.prepare(
     `INSERT INTO bookings (
       id, created_at, updated_at, customer_id, branch_id, staff_id, service_ids,
       service_names, booking_date, booking_time, duration_minutes, total_cents,
-      status, payment_status, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      status, payment_status, booking_source, notes
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -319,6 +327,7 @@ async function createBooking(request, env) {
       totalCents,
       "Booked",
       "Pay at store",
+      bookingSource,
       clean(body.notes)
     )
     .run();
@@ -358,6 +367,25 @@ async function ensureBookingCustomer(env, customer, branchId, tag) {
   return rows[0]?.id || id;
 }
 
+async function exceedsBookingCapacity(env, branchId, bookingDate, startMinutes, endMinutes, excludeBookingId = "") {
+  const bookings = await all(
+    env,
+    `SELECT id, booking_time, duration_minutes FROM bookings
+     WHERE branch_id = ? AND booking_date = ? AND status NOT IN ('Cancelled', 'No show')`,
+    [branchId, bookingDate]
+  );
+  const overlapping = bookings.flatMap((booking) => {
+    if (booking.id === excludeBookingId) return [];
+    const [hours, minutes] = String(booking.booking_time || "00:00").split(":").map(Number);
+    const existingStart = hours * 60 + minutes;
+    const existingEnd = existingStart + Math.max(15, Number(booking.duration_minutes || 15));
+    return startMinutes < existingEnd && endMinutes > existingStart ? [{ start: existingStart, end: existingEnd }] : [];
+  });
+  return overlapping.some((booking, index) => overlapping.slice(index + 1).some((other) =>
+    Math.max(startMinutes, booking.start, other.start) < Math.min(endMinutes, booking.end, other.end)
+  ));
+}
+
 async function createBranchBooking(request, env) {
   const body = await request.json();
   const branchId = clean(request.headers.get("x-branch-id"));
@@ -377,6 +405,7 @@ async function createBranchBooking(request, env) {
       serviceIds: Array.isArray(body.serviceIds) ? body.serviceIds : [],
       bookingDate: clean(body.bookingDate),
       bookingTime: clean(body.bookingTime),
+      bookingSource: "Manual",
       notes: clean(body.notes)
     })
   });
@@ -395,6 +424,22 @@ async function updateBooking(request, env, bookingId) {
   const serviceRows = serviceIds.length ? await all(env, `SELECT id, name, duration_minutes, price_cents FROM services WHERE id IN (${placeholders})`, serviceIds) : [];
   const totalMinutes = serviceRows.reduce((total, service) => total + Number(service.duration_minutes || 0), 0) || existing.duration_minutes;
   const totalCents = serviceRows.reduce((total, service) => total + Number(service.price_cents || 0), 0) || existing.total_cents;
+  const bookingDate = clean(body.bookingDate) || existing.booking_date;
+  const bookingTime = clean(body.bookingTime) || existing.booking_time;
+  if (body.bookingDate !== undefined || body.bookingTime !== undefined || Array.isArray(body.serviceIds)) {
+    const timeMatch = bookingTime.match(/^(\d{2}):(\d{2})$/);
+    if (!timeMatch || Number(timeMatch[2]) % 15 !== 0) {
+      return jsonResponse({ error: "Booking time must use a 15-minute interval." }, 400);
+    }
+    const startMinutes = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+    if (startMinutes < 10 * 60 || startMinutes + totalMinutes > 19 * 60) {
+      return jsonResponse({ error: "Bookings must start at or after 10:00 am and finish by 7:00 pm." }, 400);
+    }
+    const nextStatus = clean(body.status) || existing.status;
+    if (!['Cancelled', 'No show'].includes(nextStatus) && await exceedsBookingCapacity(env, existing.branch_id, bookingDate, startMinutes, startMinutes + totalMinutes, bookingId)) {
+      return jsonResponse({ error: "This time overlaps two existing bookings. Please select another time." }, 409);
+    }
+  }
 
   await env.DB.prepare(
     `UPDATE bookings SET
@@ -405,15 +450,15 @@ async function updateBooking(request, env, bookingId) {
   )
     .bind(
       new Date().toISOString(),
-      clean(body.staffId) || null,
+      body.staffId !== undefined ? (clean(body.staffId) || null) : existing.staff_id,
       JSON.stringify(serviceIds),
       serviceRows.map((service) => service.name).join(", ") || existing.service_names,
-      clean(body.bookingDate) || existing.booking_date,
-      clean(body.bookingTime) || existing.booking_time,
+      bookingDate,
+      bookingTime,
       totalMinutes,
       totalCents,
       clean(body.status) || existing.status,
-      clean(body.notes) || existing.notes,
+      body.notes !== undefined ? clean(body.notes) : existing.notes,
       bookingId
     )
     .run();
@@ -425,11 +470,12 @@ async function createService(request, env) {
   const body = await request.json();
   const name = clean(body.name);
   const category = clean(body.category) || "General";
+  const subCategory = clean(body.subCategory) || "General";
   const duration = Number(body.durationMinutes || 0);
   const priceCents = Math.round(Number(body.price || 0) * 100);
   if (!name || !duration || !priceCents) return jsonResponse({ error: "Service name, duration, and price are required." }, 400);
-  await env.DB.prepare("INSERT INTO services (id, name, category, duration_minutes, price_cents, status) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(`service-${crypto.randomUUID()}`, name, category, duration, priceCents, clean(body.status) || "Active")
+  await env.DB.prepare("INSERT INTO services (id, name, category, sub_category, duration_minutes, price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(`service-${crypto.randomUUID()}`, name, category, subCategory, duration, priceCents, clean(body.status) || "Active")
     .run();
   return jsonResponse({ ok: true });
 }
@@ -456,6 +502,7 @@ async function updateService(request, env, serviceId) {
   const body = await request.json();
   const name = clean(body.name);
   const category = clean(body.category) || "General";
+  const subCategory = clean(body.subCategory) || "General";
   const duration = Number(body.durationMinutes || 0);
   const priceCents = Math.round(Number(body.price || 0) * 100);
   const status = clean(body.status) === "Inactive" ? "Inactive" : "Active";
@@ -464,8 +511,8 @@ async function updateService(request, env, serviceId) {
   }
   const existing = await env.DB.prepare("SELECT id FROM services WHERE id = ?").bind(serviceId).first();
   if (!existing) return jsonResponse({ error: "Service not found." }, 404);
-  await env.DB.prepare("UPDATE services SET name = ?, category = ?, duration_minutes = ?, price_cents = ?, status = ? WHERE id = ?")
-    .bind(name, category, duration, priceCents, status, serviceId)
+  await env.DB.prepare("UPDATE services SET name = ?, category = ?, sub_category = ?, duration_minutes = ?, price_cents = ?, status = ? WHERE id = ?")
+    .bind(name, category, subCategory, duration, priceCents, status, serviceId)
     .run();
   return jsonResponse({ ok: true });
 }
@@ -1097,6 +1144,19 @@ function jsonResponse(payload, status = 200) {
   return Response.json(payload, { status, headers: { "x-content-type-options": "nosniff" } });
 }
 
+function bookingTimeOptions() {
+  const options = [];
+  for (let minutes = 10 * 60; minutes < 19 * 60; minutes += 15) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    const hour = hours % 12 || 12;
+    const label = `${hour}:${String(mins).padStart(2, "0")} ${hours < 12 ? "am" : "pm"}`;
+    const value = `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+    options.push(`<option value="${value}">${label}</option>`);
+  }
+  return '<option value="">Select time</option>' + options.join("");
+}
+
 function renderApp(initialBranchId, initialTab, mode = "admin") {
   const isAdmin = mode === "admin";
   return `<!doctype html>
@@ -1220,18 +1280,18 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     <section class="tab staff-only ${initialTab === "bookings" ? "active" : ""}" id="bookings">
       <div class="split">
         <form class="panel" id="bookingForm">
-          <h2>New booking</h2>
+          <div class="booking-form-heading"><div><span class="source-badge manual">Manual</span><h2>New booking</h2></div><p class="hint">Appointments run from 10:00 am to 7:00 pm.</p></div>
           <input name="branchId" type="hidden">
           <label>Customer<select name="bookingCustomerMode"><option value="existing">Existing customer</option><option value="new">New customer</option></select></label>
           <div class="booking-customer-existing"><label>Customer search<input name="bookingCustomerSearch" list="customerList" placeholder="Search name, phone, or email"></label></div>
           <div class="booking-customer-new hidden"><div class="grid"><label>First name<input name="firstName"></label><label>Last name<input name="lastName"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div></div>
           <label>Staff<select name="staffId"></select></label>
-          <div class="grid"><label>Date<input name="bookingDate" type="date" required></label><label>Time<input name="bookingTime" type="time" step="900" required></label></div>
+          <div class="grid"><label>Date<input name="bookingDate" type="date" required></label><label>Time<select name="bookingTime" required>${bookingTimeOptions()}</select></label></div>
           <div class="booking-service-picker"><span class="field-label">Services</span><input id="bookingServiceSearch" type="text" placeholder="Click to choose a category" readonly role="combobox" aria-expanded="false" aria-controls="bookingServiceMenu"><div class="booking-service-menu hidden" id="bookingServiceMenu"><div class="booking-service-categories" id="bookingServiceCategories"></div><div class="booking-category-services hidden" id="bookingCategoryServices"></div></div><div class="selected-booking-services" id="bookingSelectedServices"></div><div class="booking-service-total"><span>Total</span><strong id="bookingServiceTotal">$0.00</strong></div></div>
           <label>Notes<textarea name="notes" rows="3"></textarea></label>
           <button class="primary full" type="submit">Save booking</button>
         </form>
-        <div class="panel"><div class="booking-date-heading"><div><h2>Booking diary</h2><p class="hint">Three-column diary for the selected date. Click a booking for full details.</p></div><label>Date<input id="bookingDisplayDate" type="date"></label></div><div class="booking-diary" id="bookingsTable"></div><div class="booking-detail hidden" id="bookingDetail"></div></div>
+        <div class="panel diary-panel"><div class="booking-date-heading"><div><h2>Booking diary</h2><p class="hint">Four booking columns · maximum two concurrent bookings · no visual overlap · 15-minute intervals · 10:00 am–7:00 pm.</p></div><div class="diary-date-controls"><button class="secondary" id="bookingToday" type="button">Today</button><button class="secondary" id="bookingPreviousDay" type="button" aria-label="Previous day">Previous</button><button class="secondary" id="bookingNextDay" type="button" aria-label="Next day">Next</button><label>Date<input id="bookingDisplayDate" type="date"></label></div></div><div class="booking-legend"><span><i class="online"></i>Online</span><span><i class="manual"></i>Manual</span></div><div class="booking-diary" id="bookingsTable"></div><div class="booking-detail hidden" id="bookingDetail"></div></div>
       </div>
     </section>
 
@@ -1272,7 +1332,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
     <section class="tab admin-only" id="services">
       <div class="split">
-        <form class="panel service-editor" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<input name="category" list="serviceCategories" placeholder="Choose or enter a category" required></label></div><datalist id="serviceCategories"></datalist><div class="grid"><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label></div><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary hidden" id="cancelServiceEdit" type="button">Cancel edit</button></div><p class="hint">Drag a service card onto another category to move it.</p></form>
+        <form class="panel service-editor" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><label>Name<input name="name" required></label><div class="grid"><label>Category<input name="category" list="serviceCategories" placeholder="e.g. Hair" required></label><label>Sub-category<input name="subCategory" list="serviceSubCategories" placeholder="e.g. Cuts" required></label></div><datalist id="serviceCategories"></datalist><datalist id="serviceSubCategories"></datalist><div class="grid"><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label></div><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary hidden" id="cancelServiceEdit" type="button">Cancel edit</button></div><p class="hint">Organise services with a category and sub-category. Drag a service card onto another category to move it.</p></form>
         <div class="panel"><h2>Shared services by category</h2><div id="serviceCategoriesList"></div></div>
       </div>
     </section>
@@ -1356,6 +1416,9 @@ document.querySelector("#cancelInvoiceEdit").addEventListener("click", () => doc
 document.querySelector('select[name="customerMode"]').addEventListener("change", updateCustomerMode);
 document.querySelector('select[name="bookingCustomerMode"]').addEventListener("change", updateBookingCustomerMode);
 document.querySelector("#bookingDisplayDate").addEventListener("change", renderBookings);
+document.querySelector("#bookingToday").addEventListener("click", () => moveBookingDiaryTo(new Date()));
+document.querySelector("#bookingPreviousDay").addEventListener("click", () => moveBookingDiaryBy(-1));
+document.querySelector("#bookingNextDay").addEventListener("click", () => moveBookingDiaryBy(1));
 document.querySelector('#closingForm input[name="closingDate"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="openingFloat"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCash"]').addEventListener("input", renderClosingPreview);
@@ -1397,7 +1460,13 @@ async function api(path, options = {}) {
   }
   if (options.body) headers["content-type"] = "application/json";
   const response = await fetch(path, { ...options, headers });
-  const result = await response.json();
+  const responseText = await response.text();
+  let result = {};
+  try { result = responseText ? JSON.parse(responseText) : {}; }
+  catch {
+    if (!response.ok) throw new Error("Server error " + response.status + ". Check that the latest database migrations have been applied.");
+    throw new Error("The server returned an invalid response. Please try again.");
+  }
   if (!response.ok) throw new Error(result.error || "Request failed");
   return result;
 }
@@ -1692,9 +1761,16 @@ function renderServices() {
     return left.localeCompare(right);
   });
   document.querySelector("#serviceCategories").innerHTML = categories.map((category) => '<option value="' + esc(category) + '"></option>').join("");
+  const subCategories = [...new Set(state.services.map((service) => service.sub_category || "General"))].sort();
+  document.querySelector("#serviceSubCategories").innerHTML = subCategories.map((subCategory) => '<option value="' + esc(subCategory) + '"></option>').join("");
   document.querySelector("#serviceCategoriesList").innerHTML = categories.map((category) => {
-    const services = state.services.filter((service) => (service.category || "General") === category);
-    return '<section class="service-category" data-category="' + esc(category) + '"><div class="category-heading"><h3>' + esc(category) + '</h3><span>' + services.length + ' services</span></div><div class="cards service-drop-zone">' + services.map((service) => '<article class="service-card ' + (service.status === "Inactive" ? "service-inactive" : "") + '" draggable="true" data-service-id="' + esc(service.id) + '"><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button><strong>' + esc(service.name) + '</strong><span>' + service.duration_minutes + ' min · ' + esc(service.status) + '</span><em>' + money(service.price_cents) + '</em></article>').join("") + '</div></section>';
+    const categoryServices = state.services.filter((service) => (service.category || "General") === category);
+    const groups = [...new Set(categoryServices.map((service) => service.sub_category || "General"))].sort();
+    const groupMarkup = groups.map((subCategory) => {
+      const services = categoryServices.filter((service) => (service.sub_category || "General") === subCategory);
+      return '<div class="service-subcategory"><div class="subcategory-heading"><h4>' + esc(subCategory) + '</h4><span>' + services.length + '</span></div><div class="cards service-drop-zone">' + services.map((service) => '<article class="service-card ' + (service.status === "Inactive" ? "service-inactive" : "") + '" draggable="true" data-service-id="' + esc(service.id) + '"><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button><strong>' + esc(service.name) + '</strong><span>' + service.duration_minutes + ' min · ' + esc(service.status) + '</span><em>' + money(service.price_cents) + '</em></article>').join("") + '</div></div>';
+    }).join("");
+    return '<section class="service-category" data-category="' + esc(category) + '"><div class="category-heading"><h3>' + esc(category) + '</h3><span>' + categoryServices.length + ' services · ' + groups.length + ' sub-categories</span></div>' + groupMarkup + '</section>';
   }).join("");
   document.querySelectorAll(".edit-service").forEach((button) => button.addEventListener("click", editService));
   document.querySelectorAll(".service-card").forEach((card) => {
@@ -1715,10 +1791,10 @@ function editService(event) {
   form.elements.serviceId.value = service.id;
   form.elements.name.value = service.name;
   form.elements.category.value = service.category;
+  form.elements.subCategory.value = service.sub_category || "General";
   form.elements.durationMinutes.value = service.duration_minutes;
   form.elements.price.value = (Number(service.price_cents || 0) / 100).toFixed(2);
   form.elements.status.value = service.status || "Active";
-  form.elements.category.readOnly = true;
   document.querySelector("#serviceFormTitle").textContent = "Edit service";
   document.querySelector("#serviceSaveButton").textContent = "Update service";
   document.querySelector("#cancelServiceEdit").classList.remove("hidden");
@@ -1728,7 +1804,6 @@ function resetServiceForm() {
   const form = document.querySelector("#serviceForm");
   form.reset();
   form.elements.serviceId.value = "";
-  form.elements.category.readOnly = false;
   document.querySelector("#serviceFormTitle").textContent = "Add service";
   document.querySelector("#serviceSaveButton").textContent = "Save service";
   document.querySelector("#cancelServiceEdit").classList.add("hidden");
@@ -1775,7 +1850,7 @@ async function dropService(event) {
   if (!service || !category || service.category === category) return;
   try {
     message.textContent = "Moving " + service.name + " to " + category + "...";
-    await api("/api/services/" + encodeURIComponent(service.id), { method:"PATCH", body:JSON.stringify({ name:service.name, category, durationMinutes:service.duration_minutes, price:Number(service.price_cents || 0) / 100, status:service.status }) });
+    await api("/api/services/" + encodeURIComponent(service.id), { method:"PATCH", body:JSON.stringify({ name:service.name, category, subCategory:service.sub_category || "General", durationMinutes:service.duration_minutes, price:Number(service.price_cents || 0) / 100, status:service.status }) });
     await loadData();
     message.textContent = service.name + " moved to " + category + ".";
   } catch (error) { message.textContent = error.message; }
@@ -1875,19 +1950,92 @@ function parseClientIdList(value) {
 function renderBookings() {
   const dateInput = document.querySelector("#bookingDisplayDate");
   dateInput.value ||= new Date().toISOString().slice(0, 10);
-  const rows = state.bookings.filter((booking) => booking.booking_date === dateInput.value).sort((a, b) => String(a.booking_time).localeCompare(String(b.booking_time)));
-  document.querySelector("#bookingsTable").innerHTML = rows.length ? rows.map((booking) => '<button class="booking-card" type="button" data-booking-id="' + esc(booking.id) + '"><time>' + esc(booking.booking_time) + '</time><strong>' + esc(booking.customer_name) + '</strong><span>' + esc(booking.service_names) + '</span><em>' + esc(booking.staff_name || "Unassigned") + ' · ' + esc(booking.status) + '</em></button>').join("") : '<p class="hint booking-empty">No bookings for this date.</p>';
+  const rows = state.bookings.filter((booking) => booking.booking_date === dateInput.value && !['Cancelled','No show'].includes(booking.status)).sort((a, b) => String(a.booking_time).localeCompare(String(b.booking_time)));
+  const markers = Array.from({ length:37 }, (_, index) => { const minutes = 600 + index * 15; return '<time class="' + (minutes % 60 === 0 ? 'hour' : 'quarter') + '" style="top:' + (index * 18) + 'px">' + formatBookingTime(minutes) + '</time>'; }).join('');
+  const laneEnds = [0, 0, 0, 0];
+  const laneRows = [[], [], [], []];
+  rows.forEach((booking) => {
+    const parts = String(booking.booking_time || '10:00').split(':');
+    const start = Number(parts[0]) * 60 + Number(parts[1]);
+    const end = start + Math.max(15, Number(booking.duration_minutes || 15));
+    let laneIndex = laneEnds.findIndex((laneEnd) => laneEnd <= start);
+    if (laneIndex < 0) return;
+    laneEnds[laneIndex] = end;
+    laneRows[laneIndex].push(booking);
+  });
+  const appointmentLanes = laneRows.map((appointments, laneIndex) => {
+    const cards = appointments.map((booking) => {
+    const parts = String(booking.booking_time || '10:00').split(':');
+    const start = Number(parts[0]) * 60 + Number(parts[1]);
+    const duration = Math.max(15, Number(booking.duration_minutes || 15));
+    const offset = Math.max(0, (start - 600) * 1.2);
+    const height = Math.max(52, Math.min(duration, 1140 - start) * 1.2);
+    const source = booking.booking_source === 'Online' ? 'Online' : 'Manual';
+    const note = booking.notes ? '<span class="booking-note">Note: ' + esc(booking.notes) + '</span>' : '';
+    return '<button class="booking-card lane-' + (laneIndex % 4) + ' ' + source.toLowerCase() + '" style="top:' + offset + 'px;height:' + height + 'px" type="button" data-booking-id="' + esc(booking.id) + '"><strong>' + esc(booking.service_names) + '</strong><span class="booking-time">' + formatBookingTime(start) + '–' + formatBookingTime(start + duration) + '</span><span class="booking-meta"><b class="source-badge ' + source.toLowerCase() + '">' + source + '</b>' + esc(booking.customer_name) + '</span>' + note + '</button>';
+    }).join('');
+    return '<div class="booking-staff-lane" aria-label="Appointment lane">' + cards + '</div>';
+  }).join('');
+  const columnHeaders = laneRows.map((_, index) => '<div>Booking ' + (index + 1) + '</div>').join('');
+  document.querySelector("#bookingsTable").innerHTML = '<div class="booking-calendar" style="--staff-count:4"><div class="booking-staff-spacer"></div><div class="booking-staff-headers">' + columnHeaders + '</div><div class="booking-time-rail">' + markers + '</div><div class="booking-lanes">' + appointmentLanes + '</div>' + (!rows.length ? '<p class="hint booking-empty">No bookings for this date.</p>' : '') + '</div>';
   document.querySelectorAll(".booking-card").forEach((button) => button.addEventListener("click", () => openBookingDetail(button.dataset.bookingId)));
+}
+function moveBookingDiaryTo(date) {
+  document.querySelector("#bookingDisplayDate").value = date.toISOString().slice(0, 10);
+  renderBookings();
+}
+function moveBookingDiaryBy(days) {
+  const value = document.querySelector("#bookingDisplayDate").value || new Date().toISOString().slice(0, 10);
+  const date = new Date(value + 'T12:00:00');
+  date.setDate(date.getDate() + days);
+  moveBookingDiaryTo(date);
+}
+function formatBookingTime(totalMinutes) {
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const hour = hours % 12 || 12;
+  return hour + ':' + String(minutes).padStart(2, '0') + (hours < 12 ? ' am' : ' pm');
+}
+function bookingTimeSelectOptions(selectedTime) {
+  let options = '<option value="">Select time</option>';
+  for (let minutes = 600; minutes < 1140; minutes += 15) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    const value = String(hours).padStart(2, '0') + ':' + String(mins).padStart(2, '0');
+    options += '<option value="' + value + '"' + (value === selectedTime ? ' selected' : '') + '>' + formatBookingTime(minutes) + '</option>';
+  }
+  return options;
 }
 function openBookingDetail(bookingId) {
   const booking = state.bookings.find((item) => item.id === bookingId);
   if (!booking) return;
   const customer = state.customers.find((item) => item.id === booking.customer_id);
   const detail = document.querySelector("#bookingDetail");
-  detail.innerHTML = '<div class="profile-heading"><div><h3>' + esc(booking.customer_name) + '</h3><p class="hint">' + esc(booking.booking_date + ' at ' + booking.booking_time) + '</p></div><button class="secondary" type="button">Close</button></div><div class="booking-detail-grid"><article><span>Phone</span><strong>' + esc(customer?.phone || "Not supplied") + '</strong></article><article><span>Services</span><strong>' + esc(booking.service_names) + '</strong></article><article><span>Staff</span><strong>' + esc(booking.staff_name || "Unassigned") + '</strong></article><article><span>Status</span><strong>' + esc(booking.status) + '</strong></article></div><label>Special note<textarea name="bookingDetailNote">' + esc(booking.notes || "") + '</textarea></label><div class="form-actions"><button class="primary save-booking-detail" type="button">Save note</button>' + (canCheckoutBooking(booking) ? '<button class="secondary checkout-booking-detail" type="button">Checkout in POS</button>' : '') + '</div>';
+  detail.innerHTML = '<div class="profile-heading"><div><span class="source-badge ' + (booking.booking_source === 'Online' ? 'online' : 'manual') + '">' + esc(booking.booking_source || 'Manual') + '</span><h3>' + esc(booking.customer_name) + '</h3><p class="hint">Select this booking to reschedule or cancel it.</p></div><button class="secondary close-booking-detail" type="button">Close</button></div><div class="booking-detail-grid"><article><span>Phone</span><strong>' + esc(customer?.phone || "Not supplied") + '</strong></article><article><span>Services</span><strong>' + esc(booking.service_names) + '</strong></article><article><span>Staff</span><strong>' + esc(booking.staff_name || "Unassigned") + '</strong></article><article><span>Status</span><strong>' + esc(booking.status) + '</strong></article></div><div class="grid"><label>Booking date<input name="bookingDetailDate" type="date" value="' + esc(booking.booking_date) + '" required></label><label>Booking time<select name="bookingDetailTime" required>' + bookingTimeSelectOptions(booking.booking_time) + '</select></label></div><label>Special note<textarea name="bookingDetailNote">' + esc(booking.notes || "") + '</textarea></label><div class="form-actions booking-edit-actions"><button class="primary save-booking-detail" type="button">Save changes</button>' + (canCheckoutBooking(booking) ? '<button class="secondary checkout-booking-detail" type="button">Checkout in POS</button>' : '') + (!['Cancelled','Completed'].includes(booking.status) ? '<button class="danger cancel-booking-detail" type="button">Cancel booking</button>' : '') + '</div>';
   detail.classList.remove("hidden");
-  detail.querySelector(".profile-heading button").addEventListener("click", () => detail.classList.add("hidden"));
-  detail.querySelector(".save-booking-detail").addEventListener("click", async () => { await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ notes:detail.querySelector('textarea').value }) }); await refreshPosData(); message.textContent = 'Booking note saved.'; });
+  detail.scrollIntoView({ behavior:"smooth", block:"start" });
+  detail.querySelector(".close-booking-detail").addEventListener("click", () => detail.classList.add("hidden"));
+  detail.querySelector(".save-booking-detail").addEventListener("click", async () => {
+    const bookingDate = detail.querySelector('[name="bookingDetailDate"]').value;
+    const bookingTime = detail.querySelector('[name="bookingDetailTime"]').value;
+    try {
+      await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ bookingDate, bookingTime, notes:detail.querySelector('textarea').value }) });
+      await refreshPosData();
+      document.querySelector("#bookingDisplayDate").value = bookingDate;
+      renderBookings();
+      detail.classList.add("hidden");
+      message.textContent = 'Booking date and time updated.';
+    } catch (error) { message.textContent = error.message; }
+  });
+  detail.querySelector(".cancel-booking-detail")?.addEventListener("click", async () => {
+    if (!window.confirm('Cancel this booking?')) return;
+    try {
+      await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ status:'Cancelled' }) });
+      await refreshPosData();
+      detail.classList.add("hidden");
+      message.textContent = 'Booking cancelled.';
+    } catch (error) { message.textContent = error.message; }
+  });
   detail.querySelector(".checkout-booking-detail")?.addEventListener("click", () => { document.querySelector("#bookingCheckout").value = booking.id; selectBookingForCheckout(); showTab("pos"); });
 }
 function renderSales() {
@@ -2015,18 +2163,26 @@ function renderBookingServiceCategories() {
   const categories = [...new Set(state.services.filter((service) => service.status !== "Inactive").map((service) => service.category || "General"))].sort();
   document.querySelector("#bookingServiceCategories").innerHTML = '<p class="booking-picker-title">Choose a category</p>' + categories.map((category) => '<button class="booking-category-option" type="button" data-category="' + esc(category) + '">' + esc(category) + '</button>').join("");
   document.querySelector("#bookingCategoryServices").classList.add("hidden");
-  document.querySelectorAll(".booking-category-option").forEach((button) => button.addEventListener("click", () => renderBookingCategoryServices(button.dataset.category)));
+  document.querySelectorAll(".booking-category-option").forEach((button) => button.addEventListener("click", () => renderBookingSubCategories(button.dataset.category)));
 }
-function renderBookingCategoryServices(category) {
-  const services = state.services.filter((service) => service.status !== "Inactive" && (service.category || "General") === category);
+function renderBookingSubCategories(category) {
+  const subCategories = [...new Set(state.services.filter((service) => service.status !== "Inactive" && (service.category || "General") === category).map((service) => service.sub_category || "General"))].sort();
   const box = document.querySelector("#bookingCategoryServices");
-  box.innerHTML = '<div class="booking-picker-heading"><button class="secondary booking-category-back" type="button">← Categories</button><strong>' + esc(category) + '</strong></div>' + services.map((service) => {
+  box.innerHTML = '<div class="booking-picker-heading"><button class="secondary booking-category-back" type="button">Categories</button><strong>' + esc(category) + '</strong></div><p class="booking-picker-title">Choose a sub-category</p><div class="booking-service-categories">' + subCategories.map((subCategory) => '<button class="booking-category-option" type="button" data-sub-category="' + esc(subCategory) + '">' + esc(subCategory) + '</button>').join('') + '</div>';
+  box.classList.remove("hidden");
+  box.querySelector(".booking-category-back").addEventListener("click", renderBookingServiceCategories);
+  box.querySelectorAll("[data-sub-category]").forEach((button) => button.addEventListener("click", () => renderBookingCategoryServices(category, button.dataset.subCategory)));
+}
+function renderBookingCategoryServices(category, subCategory) {
+  const services = state.services.filter((service) => service.status !== "Inactive" && (service.category || "General") === category && (service.sub_category || "General") === subCategory);
+  const box = document.querySelector("#bookingCategoryServices");
+  box.innerHTML = '<div class="booking-picker-heading"><button class="secondary booking-category-back" type="button">Sub-categories</button><strong>' + esc(category) + ' · ' + esc(subCategory) + '</strong></div>' + services.map((service) => {
     const selected = Boolean(document.querySelector('#bookingSelectedServices input[value="' + cssEsc(service.id) + '"]'));
     return '<button class="booking-service-option' + (selected ? ' selected' : '') + '" type="button" data-service-id="' + esc(service.id) + '"' + (selected ? ' disabled' : '') + '><span><strong>' + esc(service.name) + '</strong><em>' + esc(service.duration_minutes + ' min') + '</em></span><b>' + money(service.price_cents) + '</b></button>';
   }).join("");
   box.classList.remove("hidden");
-  box.querySelector(".booking-category-back").addEventListener("click", renderBookingServiceCategories);
-  box.querySelectorAll(".booking-service-option:not(:disabled)").forEach((button) => button.addEventListener("click", () => { addBookingService(button.dataset.serviceId); renderBookingCategoryServices(category); }));
+  box.querySelector(".booking-category-back").addEventListener("click", () => renderBookingSubCategories(category));
+  box.querySelectorAll(".booking-service-option:not(:disabled)").forEach((button) => button.addEventListener("click", () => { addBookingService(button.dataset.serviceId); renderBookingCategoryServices(category, subCategory); }));
 }
 function addBookingService(serviceId) {
   const service = state.services.find((item) => item.id === serviceId);
@@ -2034,11 +2190,11 @@ function addBookingService(serviceId) {
   if (document.querySelector('#bookingSelectedServices input[value="' + cssEsc(service.id) + '"]')) return;
   const row = document.createElement("div");
   row.className = "booking-service-row";
-  row.innerHTML = '<input type="hidden" name="serviceIds" value="' + esc(service.id) + '"><span><strong>' + esc(service.name) + '</strong><em>' + esc(service.category) + '</em></span><b>' + money(service.price_cents) + '</b><button type="button" aria-label="Remove ' + esc(service.name) + '">×</button>';
+  row.innerHTML = '<input type="hidden" name="serviceIds" value="' + esc(service.id) + '"><span><strong>' + esc(service.name) + '</strong><em>' + esc(service.category) + ' · ' + esc(service.sub_category || "General") + '</em></span><b>' + money(service.price_cents) + '</b><button type="button" aria-label="Remove ' + esc(service.name) + '">×</button>';
   row.querySelector("button").addEventListener("click", () => {
     row.remove();
     renderBookingServiceTotal();
-    if (!document.querySelector("#bookingCategoryServices").classList.contains("hidden")) renderBookingCategoryServices(service.category || "General");
+    if (!document.querySelector("#bookingCategoryServices").classList.contains("hidden")) renderBookingCategoryServices(service.category || "General", service.sub_category || "General");
   });
   document.querySelector("#bookingSelectedServices").append(row);
   renderBookingServiceTotal();
@@ -2372,6 +2528,10 @@ legend { grid-column:1/-1; }
 .category-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--line); }
 .category-heading h3 { margin:0; font-size:20px; }
 .category-heading span { color:var(--muted); font-size:13px; font-weight:800; }
+.service-subcategory { margin:14px 0 20px; padding:14px; background:#f8fbfc; border:1px solid var(--line); border-radius:10px; }
+.subcategory-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.subcategory-heading h4 { margin:0; color:#334155; font-size:15px; }
+.subcategory-heading span { display:grid; place-items:center; min-width:26px; height:26px; padding:0 8px; color:#9b3444; background:#fff3ef; border-radius:999px; font-size:12px; font-weight:900; }
 .service-category { padding:10px; margin-left:-10px; margin-right:-10px; border:2px solid transparent; border-radius:10px; transition:.15s ease; }
 .service-category.drag-over { background:#fff3ef; border-color:#9b3444; }
 .service-card { position:relative; padding-right:54px !important; cursor:grab; user-select:none; }
@@ -2388,6 +2548,8 @@ legend { grid-column:1/-1; }
 .service-inactive { opacity:.62; }
 .form-actions { display:flex; gap:10px; }
 .form-actions button { flex:1; }
+.booking-edit-actions { flex-wrap:wrap; }
+.booking-edit-actions .danger { width:auto; margin-top:0; }
 .roster-toolbar { display:flex; align-items:end; justify-content:space-between; gap:20px; }
 .roster-toolbar h2 { margin-bottom:2px; }
 .roster-toolbar label { min-width:210px; }
@@ -2425,15 +2587,47 @@ legend { grid-column:1/-1; }
 .time-active-list article { display:flex; justify-content:space-between; gap:12px; padding:10px 12px; background:#edf8f3; border:1px solid #a8d8c0; border-radius:8px; }
 .booking-date-heading { display:flex; align-items:end; justify-content:space-between; gap:18px; }
 .booking-date-heading label { min-width:190px; }
-.booking-diary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:16px; }
-.booking-card { min-height:150px; padding:16px; color:var(--ink); background:#fff; border:1px solid var(--line); text-align:left; box-shadow:0 3px 10px rgba(40,49,61,.06); }
-.booking-card:hover,.booking-card:focus-visible { border-color:#9b3444; outline:2px solid #f3cbd1; }
-.booking-card time,.booking-card strong,.booking-card span,.booking-card em { display:block; }
-.booking-card time { color:#9b3444; font-weight:900; }
-.booking-card strong { margin:8px 0 4px; font-size:17px; }
-.booking-card span { color:var(--muted); }
-.booking-card em { margin-top:10px; font-size:12px; font-style:normal; }
-.booking-empty { grid-column:1/-1; }
+.booking-form-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:16px; }
+.booking-form-heading h2 { margin:6px 0 0; }
+.diary-panel { min-width:0; grid-column:1/-1; order:-1; }
+#bookings .split { grid-template-columns:1fr; }
+#bookingForm { max-width:760px; }
+.diary-date-controls { display:flex; align-items:end; gap:8px; }
+.diary-date-controls button { min-height:44px; padding:0 12px; margin-bottom:14px; }
+.diary-date-controls label { min-width:180px; }
+.booking-legend { display:flex; justify-content:flex-end; gap:16px; margin-top:12px; color:var(--muted); font-size:12px; font-weight:800; }
+.booking-legend span { display:flex; align-items:center; gap:6px; }
+.booking-legend i { width:10px; height:10px; border-radius:3px; }
+.booking-legend i.online { background:#287f68; }
+.booking-legend i.manual { background:#b84e5c; }
+.booking-diary { margin-top:10px; overflow:auto; border:1px solid #dbe3f1; border-radius:10px; background:#fff; }
+.booking-calendar { display:grid; grid-template-columns:76px minmax(calc(var(--staff-count) * 210px),1fr); grid-template-rows:54px 648px; min-width:640px; }
+.booking-staff-spacer { grid-column:1; grid-row:1; border-right:1px solid #dbe3f1; border-bottom:1px solid #dbe3f1; background:#fbfcff; }
+.booking-staff-headers { display:grid; grid-column:2; grid-row:1; grid-template-columns:repeat(var(--staff-count),minmax(210px,1fr)); }
+.booking-staff-headers div { display:grid; place-items:center; padding:0 12px; border-right:1px solid #dbe3f1; border-bottom:1px solid #dbe3f1; color:#0c1c48; font-size:16px; font-weight:900; }
+.booking-staff-headers .booking-calendar-label { grid-column:1/-1; letter-spacing:.01em; }
+.booking-time-rail { position:relative; grid-column:1; grid-row:2; border-right:1px solid #dbe3f1; background:#fbfcff; }
+.booking-time-rail time { position:absolute; right:8px; color:#718096; font-size:9px; font-weight:600; transform:translateY(-50%); }
+.booking-time-rail time.hour { color:#26385f; font-size:11px; font-weight:900; }
+.booking-lanes { display:grid; grid-column:2; grid-row:2; grid-template-columns:repeat(var(--staff-count),minmax(210px,1fr)); }
+.booking-staff-lane { position:relative; height:648px; border-right:1px solid #dbe3f1; background:repeating-linear-gradient(to bottom,#fff 0,#fff 17px,#edf1f7 18px); }
+.booking-card { position:absolute; left:8px; right:8px; z-index:1; min-height:52px; padding:9px 12px; overflow:hidden; color:#081632; border:1px solid; border-radius:8px; text-align:left; box-shadow:none; }
+.booking-card.lane-0 { background:#fde4ef; border-color:#ff9dc7; }
+.booking-card.lane-1 { background:#dcf7fb; border-color:#72d4df; }
+.booking-card.lane-2 { background:#e7e2ff; border-color:#b7a8fa; }
+.booking-card.lane-3 { background:#e0f8f2; border-color:#74d9c4; }
+.booking-card.manual { border-left-width:4px; }
+.booking-card.online { border-left-width:4px; border-left-color:#287f68; }
+.booking-card:hover,.booking-card:focus-visible { z-index:3; outline:3px solid rgba(13,35,87,.16); box-shadow:0 8px 22px rgba(40,49,61,.15); }
+.booking-card strong { display:block; font-size:14px; line-height:1.25; }
+.booking-time { display:block; margin-top:3px; font-size:12px; line-height:1.25; }
+.booking-meta { display:flex; align-items:center; gap:6px; margin-top:5px; overflow:hidden; color:#4d5c79; font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.booking-note { margin-top:4px; color:#6d3440; font-style:italic; }
+.booking-note { display:block; overflow:hidden; font-size:11px; line-height:1.25; text-overflow:ellipsis; white-space:nowrap; }
+.source-badge { display:inline-flex; width:max-content; padding:3px 7px; border-radius:999px; font-size:10px; font-weight:900; letter-spacing:.04em; text-transform:uppercase; }
+.source-badge.online { color:#17634f; background:#d8f1e9; }
+.source-badge.manual { color:#913847; background:#f7dfe1; }
+.booking-empty { position:sticky; left:100px; align-self:start; grid-column:2; grid-row:2; width:max-content; margin:28px; z-index:4; }
 .booking-detail { margin-top:18px; padding:18px; background:#fff8f5; border:1px solid #eadbd6; border-radius:10px; }
 .booking-detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:14px 0; }
 .booking-detail-grid article { padding:12px; background:#fff; border:1px solid var(--line); border-radius:8px; }
@@ -2494,7 +2688,7 @@ th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left;
 th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
-@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split,.time-clock-panel{grid-template-columns:1fr;display:grid}.metrics,.cards,.branch-grid,.roster-branch-board,.booking-diary{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:640px){ .metrics,.cards,.branch-grid,.roster-branch-board,.booking-diary,.booking-detail-grid,.grid,fieldset,.staff-checks,.closing-summary{grid-template-columns:1fr}.booking-date-heading{display:grid}.time-clock-actions{display:grid;grid-template-columns:1fr 1fr} }
+@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split,.time-clock-panel{grid-template-columns:1fr;display:grid}.metrics,.cards,.branch-grid,.roster-branch-board{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (max-width:640px){ .metrics,.cards,.branch-grid,.roster-branch-board,.booking-detail-grid,.grid,fieldset,.staff-checks,.closing-summary{grid-template-columns:1fr}.booking-date-heading{display:grid}.diary-date-controls{flex-wrap:wrap}.diary-date-controls label{flex-basis:100%}.booking-form-heading{display:block}.booking-legend{justify-content:flex-start}.time-clock-actions{display:grid;grid-template-columns:1fr 1fr} }
 `;
 }

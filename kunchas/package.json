@@ -7,7 +7,11 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:local": "wrangler d1 execute kunchas-db --local --file=./schema.sql && wrangler d1 execute kunchas-db --local --file=./services-upgrade.sql && wrangler d1 execute kunchas-db --local --file=./roster-upgrade.sql && wrangler d1 execute kunchas-db --local --file=./staff-no-default-branch.sql && wrangler d1 execute kunchas-db --local --file=./pos-operations-upgrade.sql",
-    "db:remote": "wrangler d1 execute kunchas-db --remote --file=./schema.sql && wrangler d1 execute kunchas-db --remote --file=./services-upgrade.sql && wrangler d1 execute kunchas-db --remote --file=./roster-upgrade.sql && wrangler d1 execute kunchas-db --remote --file=./staff-no-default-branch.sql && wrangler d1 execute kunchas-db --remote --file=./pos-operations-upgrade.sql"
+    "db:remote": "wrangler d1 execute kunchas-db --remote --file=./schema.sql && wrangler d1 execute kunchas-db --remote --file=./services-upgrade.sql && wrangler d1 execute kunchas-db --remote --file=./roster-upgrade.sql && wrangler d1 execute kunchas-db --remote --file=./staff-no-default-branch.sql && wrangler d1 execute kunchas-db --remote --file=./pos-operations-upgrade.sql",
+    "db:booking-source:local": "wrangler d1 execute kunchas-db --local --file=./booking-source-upgrade.sql",
+    "db:booking-source:remote": "wrangler d1 execute kunchas-db --remote --file=./booking-source-upgrade.sql",
+    "db:service-subcategory:local": "wrangler d1 execute kunchas-db --local --file=./service-subcategory-upgrade.sql",
+    "db:service-subcategory:remote": "wrangler d1 execute kunchas-db --remote --file=./service-subcategory-upgrade.sql"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

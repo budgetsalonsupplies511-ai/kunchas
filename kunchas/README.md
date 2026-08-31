@@ -33,6 +33,12 @@ Run locally:
 npm run dev
 ```
 
+For an existing database, add the booking source field once before running this version:
+
+```bash
+npm run db:booking-source:local
+```
+
 ## Cloudflare setup
 
 Create the D1 database:
@@ -58,6 +64,10 @@ Deploy:
 ```bash
 npm run deploy
 ```
+
+For an existing production database, run `npm run db:booking-source:remote` once before deployment.
+
+To add service sub-categories to an existing database, run `npm run db:service-subcategory:local` locally or `npm run db:service-subcategory:remote` for production once before deploying this version.
 
 ## Admin access
 
