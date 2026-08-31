@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS time_entries (
   branch_id TEXT NOT NULL,
   clock_in TEXT NOT NULL,
   clock_out TEXT,
+  break_started_at TEXT,
+  break_minutes INTEGER NOT NULL DEFAULT 0,
   notes TEXT NOT NULL DEFAULT ''
 );
 
