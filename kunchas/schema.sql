@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS services (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   category TEXT NOT NULL,
+  sub_category TEXT NOT NULL DEFAULT 'General',
   duration_minutes INTEGER NOT NULL,
   price_cents INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'Active'
