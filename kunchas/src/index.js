@@ -85,6 +85,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/staff-roster") return saveStaffRoster(request, env);
       if (request.method === "DELETE" && url.pathname === "/api/staff-roster") return deleteStaffRoster(request, env, url);
       if (request.method === "POST" && url.pathname === "/api/staff-regular-days-off") return saveStaffRegularDaysOff(request, env);
+      if (request.method === "POST" && url.pathname === "/api/manager-assignments") return saveManagerAssignment(request, env);
       if (request.method === "POST" && url.pathname === "/api/branches") return createBranch(request, env);
       if (request.method === "DELETE" && url.pathname.startsWith("/api/branches/")) return deleteBranch(request, env, clean(url.pathname.replace("/api/branches/", "")));
       if (request.method === "POST" && url.pathname === "/api/stock-movements") return createStockMovement(request, env);
@@ -101,7 +102,7 @@ export default {
 };
 
 async function getAppData(env) {
-  const [branches, staff, services, products, customers, bookings, sales, saleItems, branchHours, closedDates, discounts, inventoryStock, stockMovements, dailyClosings, staffRoster, staffRegularDaysOff, timeEntries] = await Promise.all([
+  const [branches, staff, services, products, customers, bookings, sales, saleItems, branchHours, closedDates, discounts, inventoryStock, stockMovements, dailyClosings, staffRoster, staffRegularDaysOff, timeEntries, managerAssignments] = await Promise.all([
     all(env, "SELECT * FROM branches ORDER BY name"),
     all(env, "SELECT * FROM staff ORDER BY branch_id, name"),
     all(env, "SELECT * FROM services ORDER BY category, name"),
@@ -151,7 +152,12 @@ async function getAppData(env) {
       FROM time_entries te
       LEFT JOIN staff st ON st.id = te.staff_id
       LEFT JOIN branches br ON br.id = te.branch_id
-      ORDER BY te.clock_in DESC LIMIT 2000`)
+      ORDER BY te.clock_in DESC LIMIT 2000`),
+    all(env, `SELECT mba.staff_id, mba.branch_id, st.name AS staff_name, br.name AS branch_name
+      FROM manager_branch_assignments mba
+      LEFT JOIN staff st ON st.id = mba.staff_id
+      LEFT JOIN branches br ON br.id = mba.branch_id
+      ORDER BY st.name, br.name`)
   ]);
 
   return jsonResponse({
@@ -174,7 +180,8 @@ async function getAppData(env) {
     dailyClosings,
     staffRoster,
     staffRegularDaysOff,
-    timeEntries
+    timeEntries,
+    managerAssignments
   });
 }
 
@@ -419,11 +426,12 @@ async function createService(request, env) {
   const body = await request.json();
   const name = clean(body.name);
   const category = clean(body.category) || "General";
+  const subCategory = clean(body.subCategory) || "General";
   const duration = Number(body.durationMinutes || 0);
   const priceCents = Math.round(Number(body.price || 0) * 100);
   if (!name || !duration || !priceCents) return jsonResponse({ error: "Service name, duration, and price are required." }, 400);
-  await env.DB.prepare("INSERT INTO services (id, name, category, duration_minutes, price_cents, status) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(`service-${crypto.randomUUID()}`, name, category, duration, priceCents, clean(body.status) || "Active")
+  await env.DB.prepare("INSERT INTO services (id, name, category, sub_category, duration_minutes, price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .bind(`service-${crypto.randomUUID()}`, name, category, subCategory, duration, priceCents, clean(body.status) || "Active")
     .run();
   return jsonResponse({ ok: true });
 }
@@ -450,6 +458,7 @@ async function updateService(request, env, serviceId) {
   const body = await request.json();
   const name = clean(body.name);
   const category = clean(body.category) || "General";
+  const subCategory = clean(body.subCategory) || "General";
   const duration = Number(body.durationMinutes || 0);
   const priceCents = Math.round(Number(body.price || 0) * 100);
   const status = clean(body.status) === "Inactive" ? "Inactive" : "Active";
@@ -458,8 +467,8 @@ async function updateService(request, env, serviceId) {
   }
   const existing = await env.DB.prepare("SELECT id FROM services WHERE id = ?").bind(serviceId).first();
   if (!existing) return jsonResponse({ error: "Service not found." }, 404);
-  await env.DB.prepare("UPDATE services SET name = ?, category = ?, duration_minutes = ?, price_cents = ?, status = ? WHERE id = ?")
-    .bind(name, category, duration, priceCents, status, serviceId)
+  await env.DB.prepare("UPDATE services SET name = ?, category = ?, sub_category = ?, duration_minutes = ?, price_cents = ?, status = ? WHERE id = ?")
+    .bind(name, category, subCategory, duration, priceCents, status, serviceId)
     .run();
   return jsonResponse({ ok: true });
 }
@@ -1215,6 +1224,29 @@ async function all(env, sql, params = []) {
   return result.results || [];
 }
 
+async function saveManagerAssignment(request, env) {
+  const body = await request.json();
+  const staffId = clean(body.staffId);
+  const branchIds = Array.isArray(body.branchIds) ? [...new Set(body.branchIds.map(clean).filter(Boolean))] : [];
+  const pin = clean(body.pin);
+  if (!staffId || !branchIds.length || pin.length < 4) return jsonResponse({ error:"Choose a manager, at least one branch, and a PIN of 4 or more characters." }, 400);
+  const staff = await env.DB.prepare("SELECT id FROM staff WHERE id = ? AND status = 'Active'").bind(staffId).first();
+  if (!staff) return jsonResponse({ error:"Active staff member not found." }, 404);
+  const statements = [env.DB.prepare("DELETE FROM manager_branch_assignments WHERE staff_id = ?").bind(staffId)];
+  for (const branchId of branchIds) {
+    statements.push(env.DB.prepare("INSERT INTO manager_branch_assignments (staff_id, branch_id, pin_hash) VALUES (?, ?, ?)")
+      .bind(staffId, branchId, await managerPinHash(staffId, branchId, pin)));
+  }
+  await env.DB.batch(statements);
+  return jsonResponse({ ok:true });
+}
+
+async function managerPinHash(staffId, branchId, pin) {
+  const bytes = new TextEncoder().encode(`${staffId}:${branchId}:${pin}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function authorizeBranch(request, env) {
   const branchId = clean(request.headers.get("x-branch-id"));
   const branchPin = clean(request.headers.get("x-branch-pin"));
@@ -1438,7 +1470,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
           <div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div>
           <label>Staff<select name="staffId"></select></label>
           <div class="grid"><label>Date<input name="bookingDate" type="date" required></label><label>Time<input name="bookingTime" type="time" required></label></div>
-          <div class="booking-service-picker"><span class="field-label">Services</span><div class="staff-add-row"><input id="bookingServiceSearch" list="bookingServiceList" placeholder="Type service name, category, or price"><button class="secondary" id="addBookingService" type="button">Add</button></div><datalist id="bookingServiceList"></datalist><div class="selected-booking-services" id="bookingSelectedServices"></div><div class="booking-service-total"><span>Total</span><strong id="bookingServiceTotal">$0.00</strong></div></div>
+          <div class="booking-service-picker"><span class="field-label">Services</span><button class="booking-service-trigger" id="bookingServiceSearch" type="button" aria-expanded="false" aria-controls="bookingServiceMenu">Choose category and sub-category <i class="ph ph-caret-down"></i></button><div class="booking-service-menu hidden" id="bookingServiceMenu"><div class="booking-service-categories" id="bookingServiceCategories"></div><div class="booking-category-services hidden" id="bookingCategoryServices"></div></div><div class="selected-booking-services" id="bookingSelectedServices"></div><div class="booking-service-total"><span>Total</span><strong id="bookingServiceTotal">$0.00</strong></div></div>
           <label>Notes<textarea name="notes" rows="3"></textarea></label>
           <button class="primary full" type="submit">Save booking</button>
         </form>
@@ -1479,7 +1511,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
     <section class="tab admin-only" id="services">
       <div class="split">
-        <form class="panel service-editor" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<input name="category" list="serviceCategories" placeholder="Choose or enter a category" required></label></div><datalist id="serviceCategories"></datalist><div class="grid"><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label></div><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary hidden" id="cancelServiceEdit" type="button">Cancel edit</button></div><p class="hint">Drag a service card onto another category to move it.</p></form>
+        <form class="panel service-editor" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><label>Name<input name="name" required></label><div class="grid"><label>Category<input name="category" list="serviceCategories" placeholder="Choose or enter a category" required></label><label>Sub-category<input name="subCategory" list="serviceSubCategories" placeholder="Choose or enter a sub-category" required></label></div><datalist id="serviceCategories"></datalist><datalist id="serviceSubCategories"></datalist><div class="grid"><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label></div><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary hidden" id="cancelServiceEdit" type="button">Cancel edit</button></div><p class="hint">Categories and sub-categories are also used in the booking service picker.</p></form>
         <div class="panel"><h2>Shared services by category</h2><div id="serviceCategoriesList"></div></div>
       </div>
     </section>
@@ -1525,6 +1557,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
     <section class="tab admin-only" id="access">
       <div class="section-heading page-heading"><div><p class="eyebrow">Security &amp; entry</p><h2>Branch access</h2><p class="hint">Access is managed separately from branch operations.</p></div></div>
+      <div class="split"><form class="panel" id="managerAssignmentForm"><h2>Manager branch access</h2><div class="grid"><label>Manager<select name="staffId" data-staff-select required></select></label><label>Manager PIN<input name="pin" type="password" minlength="4" required></label></div><fieldset><legend>Authorized branches</legend><div class="staff-checks" id="managerBranchChecks"></div></fieldset><button class="primary full" type="submit">Save branch access</button><p class="hint">The PIN is stored securely as a one-way hash.</p></form><div class="panel"><h2>Current manager access</h2><div id="managerAccessList" class="manager-access-list"></div></div></div>
       <div class="panel"><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Branch workspace</th><th>Current PIN</th><th>Status</th></tr></thead><tbody id="accessTable"></tbody></table></div></div>
     </section>
   </main>
@@ -1535,7 +1568,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
 
 function clientScript() {
   return `
-let state = { branches: [], staff: [], services: [], products: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [] };
+let state = { branches: [], staff: [], services: [], products: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [], managerAssignments: [] };
 let reportData = null;
 let lastReceipt = null;
 let selectedPosBranchId = "";
@@ -1566,8 +1599,7 @@ document.querySelector("#customerForm").addEventListener("submit", submitCustome
 document.querySelector("#customerProfileForm").addEventListener("submit", submitCustomerProfile);
 document.querySelector("#closeCustomerProfile").addEventListener("click", closeCustomerProfile);
 document.querySelector("#bookingForm").addEventListener("submit", submitBooking);
-document.querySelector("#addBookingService").addEventListener("click", addBookingService);
-document.querySelector("#bookingServiceSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); addBookingService(); } });
+document.querySelector("#bookingServiceSearch").addEventListener("click", toggleBookingServiceMenu);
 document.querySelector("#saleForm").addEventListener("submit", submitSale);
 document.querySelector('select[name="customerMode"]').addEventListener("change", updateCustomerMode);
 document.querySelector('#closingForm input[name="closingDate"]').addEventListener("input", renderClosingPreview);
@@ -1585,6 +1617,7 @@ document.querySelector("#globalBranchFilter")?.addEventListener("change", (event
 document.querySelectorAll(".period-tab").forEach((button) => button.addEventListener("click", () => { selectedDashboardPeriod = button.dataset.period; document.querySelectorAll(".period-tab").forEach((item) => item.classList.toggle("active", item === button)); renderMetrics(); }));
 document.querySelector("#branchForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branches"));
 document.querySelector("#branchDetailSelect").addEventListener("change", renderBranchDetail);
+document.querySelector("#managerAssignmentForm").addEventListener("submit", submitManagerAssignment);
 document.querySelector("#serviceForm").addEventListener("submit", submitServiceForm);
 document.querySelector("#cancelServiceEdit").addEventListener("click", resetServiceForm);
 document.querySelector("#productForm").addEventListener("submit", submitProductForm);
@@ -1701,7 +1734,7 @@ async function submitTimeClock(action) {
   } catch (error) { message.textContent = error.message; }
 }
 function normalizeState(data = {}) {
-  const arrayKeys = ["branches","staff","services","products","customers","bookings","sales","saleItems","branchHours","closedDates","discounts","inventoryStock","stockMovements","dailyClosings","staffRoster","staffRegularDaysOff","timeEntries"];
+  const arrayKeys = ["branches","staff","services","products","customers","bookings","sales","saleItems","branchHours","closedDates","discounts","inventoryStock","stockMovements","dailyClosings","staffRoster","staffRegularDaysOff","timeEntries","managerAssignments"];
   const normalized = { ...data };
   arrayKeys.forEach((key) => { if (!Array.isArray(normalized[key])) normalized[key] = []; });
   return normalized;
@@ -1750,7 +1783,7 @@ function fillSelects() {
   document.querySelector("#itemList").innerHTML = saleCatalog().map((item) => '<option value="' + esc(item.label) + '"></option>').join("");
   document.querySelector("#staffList").innerHTML = state.staff.map((s) => '<option value="' + esc(staffLabel(s)) + '"></option>').join("");
   renderBookingCheckoutOptions();
-  document.querySelector("#bookingServiceList").innerHTML = state.services.filter((service) => service.status !== "Inactive").map((service) => '<option value="' + esc(bookingServiceLabel(service)) + '"></option>').join("");
+  renderBookingServiceCategories();
   document.querySelectorAll(".staff-checks").forEach((box) => box.innerHTML = staffCheckboxes());
   renderCartSummary();
 }
@@ -1839,6 +1872,10 @@ function renderAccess() {
   const table = document.querySelector("#accessTable");
   if (!table) return;
   table.innerHTML = state.branches.map((branch) => '<tr><td><strong>' + esc(branch.name) + '</strong><div class="hint">' + esc(branch.address) + '</div></td><td><a class="branch-pos" href="/pos/' + esc(branch.id) + '">Open workspace</a></td><td><span class="pin-code">' + esc(branch.post_code || "Not set") + '</span></td><td><span class="pill">' + esc(branch.status) + '</span></td></tr>').join("") || '<tr><td colspan="4" class="empty-cell">No branches available.</td></tr>';
+  const checks = document.querySelector("#managerBranchChecks");
+  if (checks) checks.innerHTML = state.branches.map((branch) => '<label class="check"><input name="branchIds" type="checkbox" value="' + esc(branch.id) + '">' + esc(branch.name) + '</label>').join("");
+  const list = document.querySelector("#managerAccessList");
+  if (list) list.innerHTML = state.managerAssignments.length ? state.managerAssignments.map((entry) => '<article><strong>' + esc(entry.staff_name || "Manager") + '</strong><span>' + esc(entry.branch_name || "Branch") + '</span></article>').join("") : '<p class="hint">No manager branch access has been assigned.</p>';
 }
 function renderBranchDetail() {
   const branchId = document.querySelector("#branchDetailSelect").value;
@@ -2044,9 +2081,15 @@ function renderServices() {
     return left.localeCompare(right);
   });
   document.querySelector("#serviceCategories").innerHTML = categories.map((category) => '<option value="' + esc(category) + '"></option>').join("");
+  const subCategories = [...new Set(state.services.map((service) => service.sub_category || "General"))].sort();
+  document.querySelector("#serviceSubCategories").innerHTML = subCategories.map((category) => '<option value="' + esc(category) + '"></option>').join("");
   document.querySelector("#serviceCategoriesList").innerHTML = categories.map((category) => {
     const services = state.services.filter((service) => (service.category || "General") === category);
-    return '<section class="service-category" data-category="' + esc(category) + '"><div class="category-heading"><h3>' + esc(category) + '</h3><span>' + services.length + ' services</span></div><div class="cards service-drop-zone">' + services.map((service) => '<article class="service-card ' + (service.status === "Inactive" ? "service-inactive" : "") + '" draggable="true" data-service-id="' + esc(service.id) + '"><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button><strong>' + esc(service.name) + '</strong><span>' + service.duration_minutes + ' min · ' + esc(service.status) + '</span><em>' + money(service.price_cents) + '</em></article>').join("") + '</div></section>';
+    const grouped = [...new Set(services.map((service) => service.sub_category || "General"))].sort().map((subCategory) => {
+      const rows = services.filter((service) => (service.sub_category || "General") === subCategory);
+      return '<div class="service-subcategory"><div class="subcategory-heading"><h4>' + esc(subCategory) + '</h4><span>' + rows.length + '</span></div><div class="cards service-drop-zone">' + rows.map((service) => '<article class="service-card ' + (service.status === "Inactive" ? "service-inactive" : "") + '" draggable="true" data-service-id="' + esc(service.id) + '"><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button><strong>' + esc(service.name) + '</strong><span>' + service.duration_minutes + ' min · ' + esc(service.status) + '</span><em>' + money(service.price_cents) + '</em></article>').join("") + '</div></div>';
+    }).join("");
+    return '<section class="service-category" data-category="' + esc(category) + '"><div class="category-heading"><h3>' + esc(category) + '</h3><span>' + services.length + ' services</span></div>' + grouped + '</section>';
   }).join("");
   document.querySelectorAll(".edit-service").forEach((button) => button.addEventListener("click", editService));
   document.querySelectorAll(".service-card").forEach((card) => {
@@ -2067,6 +2110,7 @@ function editService(event) {
   form.elements.serviceId.value = service.id;
   form.elements.name.value = service.name;
   form.elements.category.value = service.category;
+  form.elements.subCategory.value = service.sub_category || "General";
   form.elements.durationMinutes.value = service.duration_minutes;
   form.elements.price.value = (Number(service.price_cents || 0) / 100).toFixed(2);
   form.elements.status.value = service.status || "Active";
@@ -2372,19 +2416,48 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
     }
   }
 }
-function bookingServiceLabel(service) { return service.name + " | " + service.category + " | " + money(service.price_cents); }
-function addBookingService() {
-  const input = document.querySelector("#bookingServiceSearch");
-  const service = state.services.find((item) => bookingServiceLabel(item) === input.value);
-  if (!service) { message.textContent = "Select a service from the search list."; return; }
-  if (document.querySelector('#bookingSelectedServices input[value="' + cssEsc(service.id) + '"]')) { input.value = ""; return; }
+function toggleBookingServiceMenu() {
+  const menu = document.querySelector("#bookingServiceMenu");
+  const open = menu.classList.toggle("hidden");
+  document.querySelector("#bookingServiceSearch").setAttribute("aria-expanded", String(!open));
+  if (!open) renderBookingServiceCategories();
+}
+function renderBookingServiceCategories() {
+  const box = document.querySelector("#bookingServiceCategories");
+  if (!box) return;
+  const categories = [...new Set(state.services.filter((service) => service.status !== "Inactive").map((service) => service.category || "General"))].sort();
+  box.innerHTML = '<p class="booking-picker-title">Choose a category</p>' + categories.map((category) => '<button class="booking-category-option" type="button" data-category="' + esc(category) + '">' + esc(category) + '</button>').join("");
+  document.querySelector("#bookingCategoryServices").classList.add("hidden");
+  box.classList.remove("hidden");
+  box.querySelectorAll("[data-category]").forEach((button) => button.addEventListener("click", () => renderBookingSubCategories(button.dataset.category)));
+}
+function renderBookingSubCategories(category) {
+  const subCategories = [...new Set(state.services.filter((service) => service.status !== "Inactive" && (service.category || "General") === category).map((service) => service.sub_category || "General"))].sort();
+  const box = document.querySelector("#bookingCategoryServices");
+  document.querySelector("#bookingServiceCategories").classList.add("hidden");
+  box.innerHTML = '<div class="booking-picker-heading"><button class="secondary booking-category-back" type="button">Categories</button><strong>' + esc(category) + '</strong></div><p class="booking-picker-title">Choose a sub-category</p><div class="booking-service-categories">' + subCategories.map((subCategory) => '<button class="booking-category-option" type="button" data-sub-category="' + esc(subCategory) + '">' + esc(subCategory) + '</button>').join("") + '</div>';
+  box.classList.remove("hidden");
+  box.querySelector(".booking-category-back").addEventListener("click", renderBookingServiceCategories);
+  box.querySelectorAll("[data-sub-category]").forEach((button) => button.addEventListener("click", () => renderBookingCategoryServices(category, button.dataset.subCategory)));
+}
+function renderBookingCategoryServices(category, subCategory) {
+  const services = state.services.filter((service) => service.status !== "Inactive" && (service.category || "General") === category && (service.sub_category || "General") === subCategory);
+  const box = document.querySelector("#bookingCategoryServices");
+  box.innerHTML = '<div class="booking-picker-heading"><button class="secondary booking-category-back" type="button">Sub-categories</button><strong>' + esc(category) + ' · ' + esc(subCategory) + '</strong></div>' + services.map((service) => '<button class="booking-service-option" type="button" data-service-id="' + esc(service.id) + '"><span><strong>' + esc(service.name) + '</strong><em>' + service.duration_minutes + ' min</em></span><b>' + money(service.price_cents) + '</b></button>').join("");
+  box.querySelector(".booking-category-back").addEventListener("click", () => renderBookingSubCategories(category));
+  box.querySelectorAll("[data-service-id]").forEach((button) => button.addEventListener("click", () => addBookingService(button.dataset.serviceId)));
+}
+function addBookingService(serviceId) {
+  const service = state.services.find((item) => item.id === serviceId);
+  if (!service || document.querySelector('#bookingSelectedServices input[value="' + cssEsc(service.id) + '"]')) return;
   const row = document.createElement("div");
   row.className = "booking-service-row";
-  row.innerHTML = '<input type="hidden" name="serviceIds" value="' + esc(service.id) + '"><span><strong>' + esc(service.name) + '</strong><em>' + esc(service.category) + '</em></span><b>' + money(service.price_cents) + '</b><button type="button" aria-label="Remove ' + esc(service.name) + '">×</button>';
+  row.innerHTML = '<input type="hidden" name="serviceIds" value="' + esc(service.id) + '"><span><strong>' + esc(service.name) + '</strong><em>' + esc(service.category) + ' · ' + esc(service.sub_category || "General") + '</em></span><b>' + money(service.price_cents) + '</b><button type="button" aria-label="Remove ' + esc(service.name) + '">×</button>';
   row.querySelector("button").addEventListener("click", () => { row.remove(); renderBookingServiceTotal(); });
   document.querySelector("#bookingSelectedServices").append(row);
-  input.value = "";
   renderBookingServiceTotal();
+  document.querySelector("#bookingServiceMenu").classList.add("hidden");
+  document.querySelector("#bookingServiceSearch").setAttribute("aria-expanded", "false");
 }
 function renderBookingServiceTotal() {
   const total = [...document.querySelectorAll('#bookingSelectedServices input[name="serviceIds"]')].reduce((sum, input) => sum + Number(state.services.find((service) => service.id === input.value)?.price_cents || 0), 0);
@@ -2411,6 +2484,19 @@ async function submitBooking(event) {
   await submitJson("/api/branch-bookings", { customer:{ firstName:data.get("firstName"), lastName:data.get("lastName"), email:data.get("email"), phone:data.get("phone") }, branchId:data.get("branchId"), staffId:data.get("staffId"), bookingDate:data.get("bookingDate"), bookingTime:data.get("bookingTime"), serviceIds:data.getAll("serviceIds"), notes:data.get("notes") }, event.target);
 }
 async function submitAdminForm(event, path) { event.preventDefault(); await submitJson(path, Object.fromEntries(new FormData(event.target)), event.target); }
+async function submitManagerAssignment(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const payload = { staffId:data.get("staffId"), pin:data.get("pin"), branchIds:data.getAll("branchIds") };
+  try {
+    message.textContent = "Saving manager branch access...";
+    await api("/api/manager-assignments", { method:"POST", body:JSON.stringify(payload) });
+    form.reset();
+    await loadData();
+    message.textContent = "Manager branch access saved.";
+  } catch (error) { message.textContent = error.message; }
+}
 async function submitSale(event) {
   event.preventDefault();
   const data = new FormData(event.target);
@@ -2898,6 +2984,19 @@ legend { grid-column:1/-1; }
 .staff-add-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:start; }
 .staff-add-row input { margin-top:0; }
 .booking-service-picker { margin-bottom:14px; }
+.booking-service-trigger { display:flex; align-items:center; justify-content:space-between; width:100%; margin:6px 0 10px; color:var(--ink); background:#fff; border:1px solid #d7d1dc; text-align:left; font-weight:650; }
+.booking-service-menu { position:relative; z-index:5; margin:-4px 0 12px; padding:14px; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 14px 34px rgba(40,31,45,.12); }
+.booking-service-categories { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.booking-picker-title { grid-column:1/-1; margin:0 0 4px; color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; }
+.booking-category-option { min-height:42px; padding:8px 12px; color:var(--ink); background:#faf8fb; border:1px solid var(--line); text-align:left; }
+.booking-category-option:hover { color:var(--brand); border-color:#cba8d4; background:#fff7fb; }
+.booking-picker-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.booking-picker-heading .secondary { min-height:36px; padding:0 12px; }
+.booking-service-option { display:flex; align-items:center; justify-content:space-between; width:100%; min-height:52px; margin-top:8px; padding:8px 12px; color:var(--ink); background:#fff; border:1px solid var(--line); text-align:left; }
+.booking-service-option span,.booking-service-option strong,.booking-service-option em { display:block; }.booking-service-option em{color:var(--muted);font-size:12px;font-style:normal}
+.service-subcategory { margin:12px 0 18px; padding:14px; background:#fafbfd; border:1px solid var(--line); border-radius:10px; }
+.subcategory-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }.subcategory-heading h4{margin:0;font-size:15px}.subcategory-heading span{display:grid;place-items:center;min-width:26px;height:26px;padding:0 8px;color:var(--brand);background:var(--brand-soft);border-radius:999px;font-size:12px;font-weight:850}
+.manager-access-list { display:grid; gap:8px; }.manager-access-list article{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;background:#faf8fb;border:1px solid var(--line);border-radius:8px}.manager-access-list span{color:var(--muted)}
 .selected-booking-services { display:grid; gap:8px; margin:8px 0; }
 .booking-service-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:12px; padding:11px 12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .booking-service-row strong,.booking-service-row em { display:block; }

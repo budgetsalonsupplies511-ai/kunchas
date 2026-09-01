@@ -47,9 +47,17 @@ CREATE TABLE IF NOT EXISTS services (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   category TEXT NOT NULL,
+  sub_category TEXT NOT NULL DEFAULT 'General',
   duration_minutes INTEGER NOT NULL,
   price_cents INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'Active'
+);
+
+CREATE TABLE IF NOT EXISTS manager_branch_assignments (
+  staff_id TEXT NOT NULL,
+  branch_id TEXT NOT NULL,
+  pin_hash TEXT NOT NULL,
+  PRIMARY KEY (staff_id, branch_id)
 );
 
 CREATE TABLE IF NOT EXISTS products (
