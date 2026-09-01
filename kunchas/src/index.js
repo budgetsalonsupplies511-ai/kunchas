@@ -1666,19 +1666,16 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
 
     <section class="tab staff-only ${initialTab === "bookings" ? "active" : ""}" id="bookings">
-      <div class="split">
-        <form class="panel" id="bookingForm">
-          <h2>New booking</h2>
+      <div class="booking-workspace">
+        <form class="panel booking-create-panel" id="bookingForm">
+          <div class="booking-panel-heading"><div><p class="eyebrow">Appointment desk</p><h2>New booking</h2><p class="hint">Create a salon appointment, then manage it from the schedule below.</p></div><span class="booking-heading-mark">01</span></div>
           <input name="branchId" type="hidden">
-          <div class="grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label></div>
-          <div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div>
-          <label>Staff<select name="staffId"></select></label>
-          <div class="grid"><label>Date<input name="bookingDate" type="date" required></label><label>Time<input name="bookingTime" type="time" required></label></div>
+          <div class="booking-form-grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label><label>Date<input name="bookingDate" type="date" required></label><label>Time<input name="bookingTime" type="time" required></label><label class="booking-staff-field">Preferred staff <span>(optional)</span><select name="staffId"></select><small>Leave as No preference unless the customer requests someone.</small></label></div>
           <div class="booking-service-picker"><span class="field-label">Services</span><button class="booking-service-trigger" id="bookingServiceSearch" type="button" aria-expanded="false" aria-controls="bookingServiceMenu">Choose category and sub-category <i class="ph ph-caret-down"></i></button><div class="booking-service-menu hidden" id="bookingServiceMenu"><div class="booking-service-categories" id="bookingServiceCategories"></div><div class="booking-category-services hidden" id="bookingCategoryServices"></div></div><div class="selected-booking-services" id="bookingSelectedServices"></div><div class="booking-service-total"><span>Total</span><strong id="bookingServiceTotal">$0.00</strong></div></div>
           <label>Notes<textarea name="notes" rows="3"></textarea></label>
-          <button class="primary full" type="submit">Save booking</button>
+          <div class="booking-form-footer"><span>Manual booking · added at this branch</span><button class="primary" type="submit">Save booking</button></div>
         </form>
-        <div class="panel"><h2>Online and manual bookings</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Staff</th><th>Services</th><th>Status</th><th></th></tr></thead><tbody id="bookingsTable"></tbody></table></div></div>
+        <div class="panel booking-schedule-panel"><div class="booking-panel-heading"><div><p class="eyebrow">Daily schedule</p><h2>Online and manual bookings</h2><p class="hint">Sorted by appointment date and time. Use the pencil only when a booking needs changing.</p></div><span class="booking-heading-mark">02</span></div><div class="table-wrap booking-table-wrap"><table class="booking-table"><thead><tr><th>Date &amp; time</th><th>Customer</th><th>Service</th><th>Staff preference</th><th>Source</th><th>Status</th><th>Actions</th></tr></thead><tbody id="bookingsTable"></tbody></table></div></div>
       </div>
     </section>
 
@@ -1855,6 +1852,7 @@ function metric(label,value){return '<article><span>'+managerEsc(label)+'</span>
 function clientScript() {
   return `
 let state = { branches: [], staff: [], services: [], products: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [], managerAssignments: [] };
+let editingBookingId = "";
 let reportData = null;
 let lastReceipt = null;
 let selectedPosBranchId = "";
@@ -2054,7 +2052,7 @@ function normalizeState(data = {}) {
 function renderAll() { fillSelects(); renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); }
 function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
-  const staffSelectOptions = '<option value="">Unassigned</option>' + state.staff.map((s) => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join("");
+  const staffSelectOptions = '<option value="">No preference</option>' + state.staff.map((s) => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join("");
   const customerOptions = '<option value="">Walk-in</option>' + state.customers.map((c) => '<option value="' + c.id + '">' + esc(c.first_name + " " + c.last_name) + '</option>').join("");
   const productOptions = '<option value="">Select product</option>' + (state.products || []).map((p) => '<option value="' + p.id + '">' + esc(p.name) + ' - ' + money(p.price_cents) + '</option>').join("");
   const globalBranch = document.querySelector("#globalBranchFilter");
@@ -2701,9 +2699,17 @@ function parseClientIdList(value) {
   catch { return []; }
 }
 function renderBookings() {
-  document.querySelector("#bookingsTable").innerHTML = state.bookings.map((b) =>
-    '<tr data-booking-id="' + esc(b.id) + '"><td><input name="bookingDate" type="date" value="' + esc(b.booking_date) + '"><input name="bookingTime" type="time" value="' + esc(b.booking_time) + '"></td><td><strong>' + esc(b.customer_name) + '</strong><div class="hint">' + esc(b.notes || "") + '</div></td><td><select name="staffId">' + staffSelectOptions(b.staff_id) + '</select></td><td>' + esc(b.service_names) + '<div class="hint">' + esc(b.payment_status) + '</div></td><td><select name="status"><option' + selected(b.status, "Booked") + '>Booked</option><option' + selected(b.status, "Confirmed") + '>Confirmed</option><option' + selected(b.status, "Completed") + '>Completed</option><option' + selected(b.status, "Cancelled") + '>Cancelled</option><option' + selected(b.status, "No show") + '>No show</option></select></td><td><button class="secondary save-booking" type="button">Save</button>' + (canCheckoutBooking(b) ? '<button class="primary checkout-booking" type="button">Checkout in POS</button>' : '') + '</td></tr>'
-  ).join("");
+  const bookings = [...state.bookings].sort((a, b) => String(a.booking_date + " " + a.booking_time).localeCompare(String(b.booking_date + " " + b.booking_time)));
+  document.querySelector("#bookingsTable").innerHTML = bookings.length ? bookings.map((b) => {
+    const isEditing = editingBookingId === b.id;
+    const dateLabel = new Date(b.booking_date + "T" + (b.booking_time || "00:00")).toLocaleDateString("en-AU", { weekday:"short", day:"numeric", month:"short" });
+    const timeLabel = String(b.booking_time || "").slice(0, 5);
+    const editIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>';
+    if (isEditing) return '<tr class="booking-edit-row" data-booking-id="' + esc(b.id) + '"><td><div class="booking-edit-date"><input name="bookingDate" type="date" value="' + esc(b.booking_date) + '"><input name="bookingTime" type="time" value="' + esc(b.booking_time) + '"></div></td><td><strong>' + esc(b.customer_name) + '</strong><span class="table-subtext">' + esc(b.notes || "No notes") + '</span></td><td>' + esc(b.service_names) + '</td><td><select name="staffId">' + staffSelectOptions(b.staff_id) + '</select></td><td><span class="booking-source ' + (String(b.source).toLowerCase() === "online" ? "online" : "manual") + '">' + esc(b.source || "Manual") + '</span></td><td><select name="status"><option' + selected(b.status, "Booked") + '>Booked</option><option' + selected(b.status, "Confirmed") + '>Confirmed</option><option' + selected(b.status, "Completed") + '>Completed</option><option' + selected(b.status, "Cancelled") + '>Cancelled</option><option' + selected(b.status, "No show") + '>No show</option></select></td><td><div class="booking-actions"><button class="primary save-booking" type="button">Save</button><button class="secondary cancel-booking-edit" type="button">Cancel</button></div></td></tr>';
+    return '<tr data-booking-id="' + esc(b.id) + '"><td><div class="booking-date-cell"><strong>' + esc(dateLabel) + '</strong><span>' + esc(timeLabel) + '</span></div></td><td><strong>' + esc(b.customer_name) + '</strong><span class="table-subtext">' + esc(b.notes || "No notes") + '</span></td><td><strong class="booking-service-name">' + esc(b.service_names || "Service not selected") + '</strong><span class="table-subtext">' + esc(b.payment_status || "Unpaid") + '</span></td><td>' + (b.staff_name ? '<span class="staff-preference">' + esc(b.staff_name) + '</span>' : '<span class="no-preference">No preference</span>') + '</td><td><span class="booking-source ' + (String(b.source).toLowerCase() === "online" ? "online" : "manual") + '">' + esc(b.source || "Manual") + '</span></td><td><span class="booking-status booking-status-' + esc(String(b.status || "booked").toLowerCase().replace(/\s+/g,"-")) + '">' + esc(b.status || "Booked") + '</span></td><td><div class="booking-actions"><button class="booking-edit-button edit-booking" type="button" aria-label="Edit booking" title="Edit booking">' + editIcon + '</button>' + (canCheckoutBooking(b) ? '<button class="primary checkout-booking" type="button">Checkout in POS</button>' : '') + '</div></td></tr>';
+  }).join("") : '<tr><td colspan="7" class="empty-cell">No bookings for this branch yet.</td></tr>';
+  document.querySelectorAll(".edit-booking").forEach((button) => button.addEventListener("click", (event) => { editingBookingId = event.target.closest("tr").dataset.bookingId; renderBookings(); }));
+  document.querySelectorAll(".cancel-booking-edit").forEach((button) => button.addEventListener("click", () => { editingBookingId = ""; renderBookings(); }));
   document.querySelectorAll(".save-booking").forEach((button) => button.addEventListener("click", saveBookingRow));
   document.querySelectorAll(".checkout-booking").forEach((button) => button.addEventListener("click", checkoutBookingFromRow));
 }
@@ -2775,12 +2781,13 @@ function renderReports() {
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
   row.className = "sale-item";
-  row.innerHTML = '<div class="sale-line-heading"><strong>Service or product</strong><button class="remove-sale-line" type="button" aria-label="Remove item">×</button></div><label class="sale-quick-search">Quick search<input name="saleItemQuickSearch" list="itemList" placeholder="Search service or product name, category, brand or price"></label><input name="saleItemSearch" type="hidden"><div class="sale-picker-divider"><span>or browse the catalogue</span></div><div class="sale-catalogue-picker"><label>Type<select name="saleItemType"><option value="service">Service</option><option value="product">Product</option></select></label><label>Category<select name="saleItemCategory"></select></label><label>Subcategory<select name="saleItemSubcategory"></select></label><label>Item<select name="saleItemId" required></select></label></div><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">This changes only this checkout and receipt, not the master service.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Search staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
+  row.innerHTML = '<div class="sale-line-heading"><div class="sale-line-title"><span class="sale-line-number">+</span><div><small>Salon catalogue</small><strong>Add service or product</strong></div></div><button class="remove-sale-line" type="button" aria-label="Remove item">×</button></div><div class="catalogue-type-tabs" role="group" aria-label="Item type"><button class="catalogue-type-tab active" data-item-type="service" type="button">Services</button><button class="catalogue-type-tab" data-item-type="product" type="button">Products</button></div><select class="visually-hidden" name="saleItemType" aria-label="Item type"><option value="service">Service</option><option value="product">Product</option></select><label class="sale-quick-search"><span>Quick find</span><div class="catalogue-search-shell"><span aria-hidden="true">⌕</span><input name="saleItemQuickSearch" list="itemList" placeholder="Search by treatment, product, category or price"></div></label><input name="saleItemSearch" type="hidden"><div class="sale-picker-divider"><span>Browse the collection</span></div><div class="catalogue-browse-panel"><div class="sale-catalogue-picker"><label><span>01 · Category</span><select name="saleItemCategory"></select></label><label><span>02 · Subcategory</span><select name="saleItemSubcategory"></select></label><label class="catalogue-item-field"><span>03 · Select item</span><select name="saleItemId" required></select></label></div></div><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">This changes only this checkout and receipt, not the master service.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Search staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
   document.querySelector("#saleItems").append(row);
   row.querySelector(".add-staff").addEventListener("click", () => addStaffToSaleItem(row));
   row.querySelector(".remove-sale-line").addEventListener("click",()=>{row.remove();renderCartSummary();});
   row.querySelector('input[name="saleItemQuickSearch"]').addEventListener("input",()=>applySaleQuickSearch(row));
   row.querySelector('select[name="saleItemType"]').addEventListener("change",()=>populateSaleItemCategories(row));
+  row.querySelectorAll(".catalogue-type-tab").forEach((button) => button.addEventListener("click", () => { row.querySelector('select[name="saleItemType"]').value = button.dataset.itemType; syncSaleTypeTabs(row); populateSaleItemCategories(row); }));
   row.querySelector('select[name="saleItemCategory"]').addEventListener("change",()=>populateSaleItemSubcategories(row));
   row.querySelector('select[name="saleItemSubcategory"]').addEventListener("change",()=>populateSaleItemChoices(row));
   row.querySelector('select[name="saleItemId"]').addEventListener("change",()=>selectSaleCatalogueItem(row));
@@ -2797,7 +2804,8 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
 }
 function saleItemsByType(row){return saleCatalog().filter((item)=>item.type===row.querySelector('select[name="saleItemType"]').value);}
 function saleOptions(values,label){return '<option value="">'+label+'</option>'+[...new Set(values.filter(Boolean))].sort((a,b)=>a.localeCompare(b)).map((value)=>'<option value="'+esc(value)+'">'+esc(value)+'</option>').join("");}
-function initialiseSaleItemPicker(row,item){if(item)row.querySelector('select[name="saleItemType"]').value=item.type;populateSaleItemCategories(row,item?.category);populateSaleItemSubcategories(row,item?.subcategory);populateSaleItemChoices(row,item?.id);selectSaleCatalogueItem(row);}
+function syncSaleTypeTabs(row){const type=row.querySelector('select[name="saleItemType"]').value;row.querySelectorAll(".catalogue-type-tab").forEach((button)=>button.classList.toggle("active",button.dataset.itemType===type));}
+function initialiseSaleItemPicker(row,item){if(item)row.querySelector('select[name="saleItemType"]').value=item.type;syncSaleTypeTabs(row);populateSaleItemCategories(row,item?.category);populateSaleItemSubcategories(row,item?.subcategory);populateSaleItemChoices(row,item?.id);selectSaleCatalogueItem(row);}
 function populateSaleItemCategories(row,value=""){const select=row.querySelector('select[name="saleItemCategory"]');select.innerHTML=saleOptions(saleItemsByType(row).map((item)=>item.category),"Choose category");select.value=value;populateSaleItemSubcategories(row);}
 function populateSaleItemSubcategories(row,value=""){const category=row.querySelector('select[name="saleItemCategory"]').value;const select=row.querySelector('select[name="saleItemSubcategory"]');select.innerHTML=saleOptions(saleItemsByType(row).filter((item)=>!category||item.category===category).map((item)=>item.subcategory),"Choose subcategory");select.value=value;populateSaleItemChoices(row);}
 function populateSaleItemChoices(row,value=""){const category=row.querySelector('select[name="saleItemCategory"]').value,subcategory=row.querySelector('select[name="saleItemSubcategory"]').value;const items=saleItemsByType(row).filter((item)=>(!category||item.category===category)&&(!subcategory||item.subcategory===subcategory));const select=row.querySelector('select[name="saleItemId"]');select.innerHTML='<option value="">Choose item</option>'+items.map((item)=>'<option value="'+esc(item.id)+'">'+esc(item.name)+' · '+money(item.priceCents)+'</option>').join("");select.value=value;selectSaleCatalogueItem(row);}
@@ -2954,6 +2962,7 @@ async function saveBookingRow(event) {
   const row = event.target.closest("tr");
   await api("/api/bookings/" + row.dataset.bookingId, { method:"PATCH", body:JSON.stringify({ bookingDate:row.querySelector('input[name="bookingDate"]').value, bookingTime:row.querySelector('input[name="bookingTime"]').value, staffId:row.querySelector('select[name="staffId"]').value, status:row.querySelector('select[name="status"]').value }) });
   message.textContent = "Booking updated.";
+  editingBookingId = "";
   await refreshPosData();
 }
 async function saveClosingRow(event) {
@@ -3025,7 +3034,7 @@ function updateSaleItemRow(row) {
     row.querySelector('input[name="instancePrice"]').value = (selectedItem.priceCents / 100).toFixed(2);
   }
   row.dataset.itemKey = itemKey;
-  row.querySelector(".line-meta").innerHTML = selectedItem ? '<span class="pill">' + esc(selectedItem.typeLabel) + '</span><strong>' + money(selectedItem.priceCents) + '</strong>' : "";
+  row.querySelector(".line-meta").innerHTML = selectedItem ? '<div class="selected-catalogue-item"><span class="selected-item-monogram">' + (selectedItem.type === "service" ? "S" : "P") + '</span><span><small>Selected ' + esc(selectedItem.typeLabel.toLowerCase()) + '</small><strong>' + esc(selectedItem.name) + '</strong><em>' + esc(selectedItem.category) + ' · ' + esc(selectedItem.subcategory) + '</em></span><b>' + money(selectedItem.priceCents) + '</b></div>' : '<div class="catalogue-empty-state">Choose an item above to add it to the sale</div>';
   row.querySelector(".instance-edit").classList.toggle("hidden", selectedItem?.type !== "service");
   row.querySelector('input[name="instanceName"]').required = selectedItem?.type === "service";
   row.querySelector('input[name="instancePrice"]').required = selectedItem?.type === "service";
@@ -3062,7 +3071,7 @@ function updateAllocationSummary(row) {
   summary.classList.toggle("allocation-error", Boolean(error));
 }
 function staffCheckboxes() { return state.staff.map((s) => '<label class="mini-check"><input type="checkbox" name="saleStaffIds" value="' + s.id + '">' + esc(s.name) + '</label>').join(""); }
-function staffSelectOptions(value) { return '<option value="">Unassigned</option>' + state.staff.map((s) => '<option value="' + s.id + '"' + selected(value, s.id) + '>' + esc(s.name) + '</option>').join(""); }
+function staffSelectOptions(value) { return '<option value="">No preference</option>' + state.staff.map((s) => '<option value="' + s.id + '"' + selected(value, s.id) + '>' + esc(s.name) + '</option>').join(""); }
 function addStaffToSaleItem(row) {
   const input = row.querySelector('input[name="saleStaffSearch"]');
   const staff = findStaff(input.value);
@@ -3407,22 +3416,82 @@ legend { grid-column:1/-1; }
 .pos-section-heading h2 { margin:0; }
 .pos-step { padding:7px 11px; color:var(--brand); background:var(--brand-soft); border-radius:999px; font-size:12px; font-weight:850; }
 .sale-items-list { display:grid; gap:12px; margin:18px 0 12px; }
-.sale-item { position:relative; margin:0; padding:18px; background:#fcfbfd; border-color:#e2dbe6; border-radius:12px; }
+.sale-item { position:relative; overflow:hidden; margin:0; padding:22px; background:linear-gradient(145deg,#fff 0%,#fcf9fd 100%); border-color:#dfd3e3; border-radius:16px; box-shadow:0 12px 30px rgba(61,25,68,.07); }
 .sale-line-heading { margin-bottom:12px; }
+.sale-line-title { display:flex; align-items:center; gap:11px; }
+.sale-line-title small,.sale-line-title strong { display:block; }
+.sale-line-title small { margin-bottom:2px; color:var(--muted); font-size:10px; font-weight:850; letter-spacing:.12em; text-transform:uppercase; }
+.sale-line-title strong { font-family:Georgia,serif; font-size:20px; }
+.sale-line-number { display:grid; place-items:center; width:38px; height:38px; color:#fff; background:linear-gradient(135deg,#54205f,#8b4b90); border-radius:11px; font-size:20px; box-shadow:0 8px 18px rgba(84,32,95,.2); }
+.catalogue-type-tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; max-width:360px; margin:17px 0 16px; padding:4px; background:#f1ebf3; border-radius:11px; }
+.catalogue-type-tab { min-height:38px; padding:8px 16px; color:#745f79; background:transparent; border:0; border-radius:8px; box-shadow:none; }
+.catalogue-type-tab.active { color:var(--brand); background:#fff; box-shadow:0 5px 14px rgba(65,29,72,.1); }
+.visually-hidden { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
 .sale-quick-search { display:block; color:var(--ink); font-weight:800; }
-.sale-quick-search input { margin-bottom:8px; background:#fff; }
+.sale-quick-search>span { display:block; margin-bottom:7px; font-size:12px; letter-spacing:.02em; }
+.catalogue-search-shell { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:8px; padding:0 13px; background:#fff; border:1px solid #d8cadc; border-radius:11px; box-shadow:inset 0 1px 2px rgba(61,25,68,.03); }
+.catalogue-search-shell>span { color:var(--brand); font-family:Georgia,serif; font-size:25px; transform:rotate(-18deg); }
+.catalogue-search-shell input { margin:0; padding-left:0; background:transparent; border:0; box-shadow:none; }
 .sale-picker-divider { display:flex; align-items:center; gap:10px; margin:4px 0 10px; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; }
 .sale-picker-divider::before,.sale-picker-divider::after { flex:1; height:1px; content:""; background:var(--line); }
 .remove-sale-line { display:grid; place-items:center; width:32px; min-height:32px; padding:0; color:#9b3444; background:#fff3f4; border:1px solid #efdadd; border-radius:8px; font-size:21px; }
-.sale-catalogue-picker { display:grid; grid-template-columns:.62fr 1fr 1fr 1.35fr; gap:10px; }
+.catalogue-browse-panel { padding:14px; background:#f7f3f8; border:1px solid #e5dbe8; border-radius:12px; }
+.sale-catalogue-picker { display:grid; grid-template-columns:1fr 1fr 1.35fr; gap:10px; }
 .sale-catalogue-picker label { color:var(--muted); font-size:12px; font-weight:800; }
-.sale-catalogue-picker select { margin-bottom:8px; color:var(--ink); font-size:14px; }
+.sale-catalogue-picker label>span { display:block; margin-bottom:6px; color:#725979; font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
+.sale-catalogue-picker select { margin:0; color:var(--ink); background:#fff; font-size:14px; }
 .add-sale-line { width:100%; margin-bottom:18px; border-style:dashed; }
 .payment-balance { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:0 0 14px; padding:13px 15px; color:var(--brand); background:var(--brand-soft); border:1px solid #e2d0e8; border-radius:10px; font-weight:800; }
 .payment-balance strong { font-size:21px; }
 .payment-balance.change-due { color:#087f5b; background:#e9f8f2; border-color:#c9eadc; }
-.line-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin:-4px 0 10px; }
+.line-meta { display:block; min-height:34px; margin:13px 0 10px; }
 .line-meta strong { font-size:18px; }
+.selected-catalogue-item { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:12px; padding:13px 15px; color:#fff; background:linear-gradient(120deg,#42144f,#64266f); border-radius:12px; box-shadow:0 10px 22px rgba(60,19,70,.14); }
+.selected-item-monogram { display:grid; place-items:center; width:38px; height:38px; color:#52205d; background:#f4eaf6; border-radius:10px; font-family:Georgia,serif; font-weight:900; }
+.selected-catalogue-item small,.selected-catalogue-item strong,.selected-catalogue-item em { display:block; }
+.selected-catalogue-item small { color:#d8c1dc; font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+.selected-catalogue-item strong { margin:2px 0; color:#fff; font-size:16px; }
+.selected-catalogue-item em { color:#d8c1dc; font-size:11px; font-style:normal; }
+.selected-catalogue-item b { font-size:19px; white-space:nowrap; }
+.catalogue-empty-state { padding:12px 14px; color:var(--muted); background:#fff; border:1px dashed #ddcfdf; border-radius:10px; font-size:12px; text-align:center; }
+.instance-edit,.staff-area { margin-top:12px; padding:14px; background:#fff; border:1px solid #e7dee9; border-radius:11px; }
+.booking-workspace { display:grid; gap:18px; max-width:1480px; margin:0 auto; }
+.booking-create-panel,.booking-schedule-panel { padding:26px; }
+.booking-panel-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:22px; padding-bottom:18px; border-bottom:1px solid var(--line); }
+.booking-panel-heading h2 { margin:0 0 5px; font-family:Georgia,serif; font-size:27px; }
+.booking-heading-mark { display:grid; place-items:center; width:43px; height:43px; color:var(--brand); background:var(--brand-soft); border:1px solid #e4d3e8; border-radius:12px; font-family:Georgia,serif; font-weight:900; }
+.booking-form-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.booking-staff-field { grid-column:span 1; }
+.booking-staff-field>span { color:var(--muted); font-size:11px; font-weight:700; }
+.booking-staff-field small { display:block; margin-top:-5px; color:var(--muted); font-size:10px; line-height:1.4; }
+.booking-form-footer { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
+.booking-form-footer>span { color:var(--muted); font-size:11px; font-weight:750; }
+.booking-table-wrap { border:1px solid var(--line); border-radius:12px; }
+.booking-table { min-width:1080px; }
+.booking-table thead th { padding-top:12px; padding-bottom:12px; color:#725f76; background:#f7f3f8; font-size:10px; letter-spacing:.07em; text-transform:uppercase; }
+.booking-table td { padding-top:15px; padding-bottom:15px; vertical-align:middle; }
+.booking-table tbody tr:hover { background:#fdfafd; }
+.booking-date-cell strong,.booking-date-cell span,.booking-table .table-subtext { display:block; }
+.booking-date-cell strong { white-space:nowrap; }
+.booking-date-cell span { margin-top:4px; color:var(--brand); font-size:16px; font-weight:850; }
+.booking-table .table-subtext { max-width:230px; margin-top:4px; overflow:hidden; color:var(--muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.booking-service-name { display:block; max-width:260px; }
+.staff-preference,.no-preference,.booking-source,.booking-status { display:inline-flex; align-items:center; padding:6px 9px; border-radius:999px; font-size:11px; font-weight:850; white-space:nowrap; }
+.staff-preference { color:#5d3866; background:#f2e9f4; }
+.no-preference { color:#756d77; background:#f1eff1; }
+.booking-source.online { color:#176855; background:#e8f7f2; }
+.booking-source.manual { color:#70547a; background:#f2eaf4; }
+.booking-status { color:#6a526e; background:#f1edf2; }
+.booking-status-confirmed,.booking-status-completed { color:#176855; background:#e8f7f2; }
+.booking-status-cancelled,.booking-status-no-show { color:#973f50; background:#fff0f2; }
+.booking-actions { display:flex; align-items:center; gap:7px; }
+.booking-actions .primary { min-height:34px; padding:7px 11px; white-space:nowrap; font-size:11px; }
+.booking-edit-button { display:grid; place-items:center; width:34px; min-height:34px; padding:0; color:var(--brand); background:#fff; border:1px solid #d9ccdc; border-radius:9px; box-shadow:none; }
+.booking-edit-button:hover { color:#fff; background:var(--brand); }
+.booking-edit-button svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; }
+.booking-edit-row { background:#fdf9fe; }
+.booking-edit-row input,.booking-edit-row select { min-width:125px; margin:0; }
+.booking-edit-date { display:grid; gap:6px; }
 .cart-panel { position:sticky; top:20px; padding:24px; border-top:4px solid var(--brand); }
 .cart-summary { display:grid; gap:10px; min-height:120px; }
 .cart-line { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
@@ -3495,7 +3564,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
-@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.sidebar nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.nav-spacer{display:none}.closing-nav{margin-top:0;border-top:0}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column,.pos-checkout-grid{grid-template-columns:1fr}.cart-panel{position:static}.sale-catalogue-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.clock-page-panel{grid-template-columns:1fr;min-height:0}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:700px){ .sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.recent-sale-footer{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.sale-catalogue-picker,.recent-sale-item,.clock-control-card .time-clock-actions,.time-clock-panel,.report-filters,.access-role-grid{grid-template-columns:1fr}.clock-page-panel{padding:24px}.time-clock-actions{grid-column:auto}.report-filters button,.recent-sale-footer button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none}.access-role-heading{grid-template-columns:auto 1fr}.access-level{grid-column:1/-1;justify-self:start} }
+@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.sidebar nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.nav-spacer{display:none}.closing-nav{margin-top:0;border-top:0}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column,.pos-checkout-grid{grid-template-columns:1fr}.cart-panel{position:static}.sale-catalogue-picker,.booking-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.clock-page-panel{grid-template-columns:1fr;min-height:0}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (max-width:700px){ .sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.recent-sale-footer,.booking-form-footer{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.sale-catalogue-picker,.booking-form-grid,.recent-sale-item,.clock-control-card .time-clock-actions,.time-clock-panel,.report-filters,.access-role-grid{grid-template-columns:1fr}.clock-page-panel{padding:24px}.time-clock-actions{grid-column:auto}.report-filters button,.recent-sale-footer button,.booking-form-footer button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none}.access-role-heading{grid-template-columns:auto 1fr}.access-level{grid-column:1/-1;justify-self:start} }
 `;
 }
