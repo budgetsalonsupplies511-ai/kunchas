@@ -153,7 +153,7 @@ async function getAppData(env) {
       LEFT JOIN staff st ON st.id = te.staff_id
       LEFT JOIN branches br ON br.id = te.branch_id
       ORDER BY te.clock_in DESC LIMIT 2000`),
-    all(env, `SELECT mba.staff_id, mba.branch_id, st.name AS staff_name, br.name AS branch_name
+    all(env, `SELECT mba.staff_id, mba.branch_id, mba.permissions, st.name AS staff_name, br.name AS branch_name
       FROM manager_branch_assignments mba
       LEFT JOIN staff st ON st.id = mba.staff_id
       LEFT JOIN branches br ON br.id = mba.branch_id
@@ -1228,14 +1228,16 @@ async function saveManagerAssignment(request, env) {
   const body = await request.json();
   const staffId = clean(body.staffId);
   const branchIds = Array.isArray(body.branchIds) ? [...new Set(body.branchIds.map(clean).filter(Boolean))] : [];
+  const allowedPermissions = new Set(["dashboard","customers","staff","roster","services","products","inventory","reports","bookings","closing"]);
+  const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions.map(clean).filter((item) => allowedPermissions.has(item)))] : [];
   const pin = clean(body.pin);
-  if (!staffId || !branchIds.length || pin.length < 4) return jsonResponse({ error:"Choose a manager, at least one branch, and a PIN of 4 or more characters." }, 400);
+  if (!staffId || !branchIds.length || !permissions.length || pin.length < 4) return jsonResponse({ error:"Choose a manager, at least one branch, one permission, and a PIN of 4 or more characters." }, 400);
   const staff = await env.DB.prepare("SELECT id FROM staff WHERE id = ? AND status = 'Active'").bind(staffId).first();
   if (!staff) return jsonResponse({ error:"Active staff member not found." }, 404);
   const statements = [env.DB.prepare("DELETE FROM manager_branch_assignments WHERE staff_id = ?").bind(staffId)];
   for (const branchId of branchIds) {
-    statements.push(env.DB.prepare("INSERT INTO manager_branch_assignments (staff_id, branch_id, pin_hash) VALUES (?, ?, ?)")
-      .bind(staffId, branchId, await managerPinHash(staffId, branchId, pin)));
+    statements.push(env.DB.prepare("INSERT INTO manager_branch_assignments (staff_id, branch_id, pin_hash, permissions) VALUES (?, ?, ?, ?)")
+      .bind(staffId, branchId, await managerPinHash(staffId, branchId, pin), JSON.stringify(permissions)));
   }
   await env.DB.batch(statements);
   return jsonResponse({ ok:true });
@@ -1582,7 +1584,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         </article>
       </div>
       <div class="panel access-matrix-panel"><div class="section-heading"><div><h2>Recommended permission matrix</h2><p class="hint">Start with the minimum access needed and review access when responsibilities change.</p></div><span class="access-note">Least privilege</span></div><div class="table-wrap"><table class="access-matrix"><thead><tr><th>Area</th><th>Staff</th><th>Manager</th></tr></thead><tbody><tr><td><strong>POS, bookings &amp; time clock</strong><div class="hint">Everyday customer and shift tasks</div></td><td><span class="permission yes">Allowed</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Recent sales &amp; daily closing</strong><div class="hint">For assigned branches only</div></td><td><span class="permission yes">Allowed</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Staff, roster &amp; payroll review</strong></td><td><span class="permission no">No access</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Products, services &amp; inventory</strong></td><td><span class="permission no">No access</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Branch dashboards &amp; reports</strong></td><td><span class="permission no">No access</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Roles, PINs &amp; business-wide settings</strong><div class="hint">Reserve for the owner or administrator</div></td><td><span class="permission no">No access</span></td><td><span class="permission limited">Owner approval</span></td></tr></tbody></table></div></div>
-      <div class="split"><form class="panel" id="managerAssignmentForm"><h2>Manager branch access</h2><div class="grid"><label>Manager<select name="staffId" data-staff-select required></select></label><label>Manager PIN<input name="pin" type="password" minlength="4" required></label></div><fieldset><legend>Authorized branches</legend><div class="staff-checks" id="managerBranchChecks"></div></fieldset><button class="primary full" type="submit">Save branch access</button><p class="hint">The PIN is stored securely as a one-way hash.</p></form><div class="panel"><h2>Current manager access</h2><div id="managerAccessList" class="manager-access-list"></div></div></div>
+      <div class="split"><form class="panel" id="managerAssignmentForm"><h2 id="managerAssignmentTitle">Manager access</h2><div class="grid"><label>Manager<select name="staffId" data-staff-select required></select></label><label>Manager PIN<input name="pin" type="password" minlength="4" required></label></div><fieldset><legend>Authorized branches</legend><div class="staff-checks" id="managerBranchChecks"></div></fieldset><fieldset><legend>Allowed areas</legend><div class="permission-checks" id="managerPermissionChecks"><label class="check"><input name="permissions" type="checkbox" value="dashboard" checked>Dashboard</label><label class="check"><input name="permissions" type="checkbox" value="customers" checked>Customers</label><label class="check"><input name="permissions" type="checkbox" value="staff" checked>Staff</label><label class="check"><input name="permissions" type="checkbox" value="roster" checked>Roster</label><label class="check"><input name="permissions" type="checkbox" value="services" checked>Services</label><label class="check"><input name="permissions" type="checkbox" value="products" checked>Products</label><label class="check"><input name="permissions" type="checkbox" value="inventory" checked>Inventory</label><label class="check"><input name="permissions" type="checkbox" value="reports" checked>Reports</label><label class="check"><input name="permissions" type="checkbox" value="bookings" checked>Bookings</label><label class="check"><input name="permissions" type="checkbox" value="closing" checked>Daily closing</label></div></fieldset><div class="form-actions"><button class="primary" type="submit">Save manager access</button><button class="secondary hidden" id="cancelManagerEdit" type="button">Cancel</button></div><p class="hint">Editing access requires the manager PIN to be entered again. The PIN is stored as a one-way hash.</p></form><div class="panel"><h2>Current manager access</h2><div id="managerAccessList" class="manager-access-list"></div></div></div>
       <div class="panel branch-access-panel"><div class="section-heading"><div><h2>Branch workspace access</h2><p class="hint">Share each workspace and PIN only with people assigned to that branch.</p></div></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Branch workspace</th><th>Current PIN</th><th>Status</th></tr></thead><tbody id="accessTable"></tbody></table></div></div>
     </section>
   </main>
@@ -1643,6 +1645,7 @@ document.querySelectorAll(".period-tab").forEach((button) => button.addEventList
 document.querySelector("#branchForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branches"));
 document.querySelector("#branchDetailSelect").addEventListener("change", renderBranchDetail);
 document.querySelector("#managerAssignmentForm").addEventListener("submit", submitManagerAssignment);
+document.querySelector("#cancelManagerEdit").addEventListener("click", resetManagerAssignmentForm);
 document.querySelector("#serviceForm").addEventListener("submit", submitServiceForm);
 document.querySelector("#cancelServiceEdit").addEventListener("click", resetServiceForm);
 document.querySelector("#productForm").addEventListener("submit", submitProductForm);
@@ -1900,7 +1903,46 @@ function renderAccess() {
   const checks = document.querySelector("#managerBranchChecks");
   if (checks) checks.innerHTML = state.branches.map((branch) => '<label class="check"><input name="branchIds" type="checkbox" value="' + esc(branch.id) + '">' + esc(branch.name) + '</label>').join("");
   const list = document.querySelector("#managerAccessList");
-  if (list) list.innerHTML = state.managerAssignments.length ? state.managerAssignments.map((entry) => '<article><strong>' + esc(entry.staff_name || "Manager") + '</strong><span>' + esc(entry.branch_name || "Branch") + '</span></article>').join("") : '<p class="hint">No manager branch access has been assigned.</p>';
+  if (list) {
+    const grouped = Object.values(state.managerAssignments.reduce((items, entry) => {
+      const key = entry.staff_id;
+      if (!items[key]) items[key] = { staffId:key, staffName:entry.staff_name || "Manager", branches:[], permissions:managerPermissions(entry) };
+      items[key].branches.push(entry.branch_name || "Branch");
+      return items;
+    }, {}));
+    list.innerHTML = grouped.length ? grouped.map((entry) => '<article class="manager-access-card"><div><strong>' + esc(entry.staffName) + '</strong><span>' + esc(entry.branches.join(", ")) + '</span><div class="permission-tags">' + entry.permissions.map((permission) => '<span>' + esc(managerPermissionLabel(permission)) + '</span>').join("") + '</div></div><button class="icon-button edit-manager-access" data-staff-id="' + esc(entry.staffId) + '" type="button" aria-label="Edit ' + esc(entry.staffName) + ' access" title="Edit access">✎</button></article>').join("") : '<p class="hint">No manager branch access has been assigned.</p>';
+    list.querySelectorAll(".edit-manager-access").forEach((button) => button.addEventListener("click", editManagerAccess));
+  }
+}
+function managerPermissions(entry) {
+  try { const parsed = JSON.parse(entry.permissions || "[]"); return Array.isArray(parsed) ? parsed : []; } catch (_) { return []; }
+}
+function managerPermissionLabel(permission) {
+  return ({ dashboard:"Dashboard", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", bookings:"Bookings", closing:"Daily closing" })[permission] || permission;
+}
+function editManagerAccess(event) {
+  const staffId = event.currentTarget.dataset.staffId;
+  const assignments = state.managerAssignments.filter((entry) => entry.staff_id === staffId);
+  const form = document.querySelector("#managerAssignmentForm");
+  if (!assignments.length) return;
+  form.elements.staffId.value = staffId;
+  form.elements.staffId.disabled = true;
+  form.elements.pin.value = "";
+  const branches = new Set(assignments.map((entry) => entry.branch_id));
+  form.querySelectorAll('input[name="branchIds"]').forEach((input) => { input.checked = branches.has(input.value); });
+  const permissions = new Set(managerPermissions(assignments[0]));
+  form.querySelectorAll('input[name="permissions"]').forEach((input) => { input.checked = permissions.has(input.value); });
+  document.querySelector("#managerAssignmentTitle").textContent = "Edit manager access";
+  document.querySelector("#cancelManagerEdit").classList.remove("hidden");
+  form.scrollIntoView({ behavior:"smooth", block:"start" });
+}
+function resetManagerAssignmentForm() {
+  const form = document.querySelector("#managerAssignmentForm");
+  form.reset();
+  form.elements.staffId.disabled = false;
+  form.querySelectorAll('input[name="permissions"]').forEach((input) => { input.checked = true; });
+  document.querySelector("#managerAssignmentTitle").textContent = "Manager access";
+  document.querySelector("#cancelManagerEdit").classList.add("hidden");
 }
 function renderBranchDetail() {
   const branchId = document.querySelector("#branchDetailSelect").value;
@@ -2513,11 +2555,11 @@ async function submitManagerAssignment(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const data = new FormData(form);
-  const payload = { staffId:data.get("staffId"), pin:data.get("pin"), branchIds:data.getAll("branchIds") };
+  const payload = { staffId:form.elements.staffId.value, pin:data.get("pin"), branchIds:data.getAll("branchIds"), permissions:data.getAll("permissions") };
   try {
     message.textContent = "Saving manager branch access...";
     await api("/api/manager-assignments", { method:"POST", body:JSON.stringify(payload) });
-    form.reset();
+    resetManagerAssignmentForm();
     await loadData();
     message.textContent = "Manager branch access saved.";
   } catch (error) { message.textContent = error.message; }
@@ -3046,7 +3088,7 @@ legend { grid-column:1/-1; }
 .booking-service-option span,.booking-service-option strong,.booking-service-option em { display:block; }.booking-service-option em{color:var(--muted);font-size:12px;font-style:normal}
 .service-subcategory { margin:12px 0 18px; padding:14px; background:#fafbfd; border:1px solid var(--line); border-radius:10px; }
 .subcategory-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }.subcategory-heading h4{margin:0;font-size:15px}.subcategory-heading span{display:grid;place-items:center;min-width:26px;height:26px;padding:0 8px;color:var(--brand);background:var(--brand-soft);border-radius:999px;font-size:12px;font-weight:850}
-.manager-access-list { display:grid; gap:8px; }.manager-access-list article{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;background:#faf8fb;border:1px solid var(--line);border-radius:8px}.manager-access-list span{color:var(--muted)}
+.manager-access-list { display:grid; gap:10px; }.manager-access-list .manager-access-card{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px;background:#faf8fb;border:1px solid var(--line);border-radius:8px}.manager-access-card>div{display:grid;gap:5px;min-width:0}.manager-access-card>div>span{color:var(--muted)}.permission-checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.permission-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}.permission-tags span{padding:4px 7px;color:var(--brand);background:var(--brand-soft);border-radius:999px;font-size:10px;font-weight:800}.icon-button{display:grid;place-items:center;flex:0 0 auto;width:34px;height:34px;padding:0;color:var(--brand);background:#fff;border:1px solid var(--line);border-radius:8px;font-size:18px}.icon-button:hover{background:var(--brand-soft)}
 .selected-booking-services { display:grid; gap:8px; margin:8px 0; }
 .booking-service-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:12px; padding:11px 12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .booking-service-row strong,.booking-service-row em { display:block; }

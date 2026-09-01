@@ -12,7 +12,9 @@
     "db:booking-subcategory:local": "wrangler d1 execute kunchas-db --local --file=./booking-subcategory-upgrade.sql",
     "db:booking-subcategory:remote": "wrangler d1 execute kunchas-db --remote --file=./booking-subcategory-upgrade.sql",
     "db:manager-access:local": "wrangler d1 execute kunchas-db --local --file=./manager-branch-access-upgrade.sql",
-    "db:manager-access:remote": "wrangler d1 execute kunchas-db --remote --file=./manager-branch-access-upgrade.sql"
+    "db:manager-access:remote": "wrangler d1 execute kunchas-db --remote --file=./manager-branch-access-upgrade.sql",
+    "db:manager-permissions:local": "wrangler d1 execute kunchas-db --local --file=./manager-permissions-upgrade.sql",
+    "db:manager-permissions:remote": "wrangler d1 execute kunchas-db --remote --file=./manager-permissions-upgrade.sql"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
