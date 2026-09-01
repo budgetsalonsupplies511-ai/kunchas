@@ -1502,7 +1502,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
   <title>Kunchas Cloud Software</title>
   <style>${styles()}</style>
 </head>
-<body class="${isAdmin ? "admin-mode" : "staff-mode"}">
+<body class="${isAdmin ? "admin-mode" : "staff-mode pos-locked"}">
   <aside class="sidebar">
     <div class="brand"><span>K</span><strong>Kunchas</strong></div>
     <nav>
@@ -1559,15 +1559,18 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       </div>
     </section>
 
-    <div class="panel pos-login staff-only" id="posLogin">
-      <h2>Open branch workspace</h2>
-      <p class="hint">Select a branch and enter that branch postcode as the PIN. These are default PINs for now.</p>
+    <form class="panel pos-login staff-only" id="posLogin">
+      <div class="brand pos-login-brand"><span>K</span><strong>Kunchas POS</strong></div>
+      <p class="eyebrow">Secure branch access</p>
+      <h2 id="posLoginTitle">Open branch workspace</h2>
+      <p class="hint" id="posLoginHint">Select your branch and enter its PIN before opening POS.</p>
       <div class="grid">
         <label>Branch<select id="posBranch" required></select></label>
-        <label>Postcode PIN<input id="posPin" inputmode="numeric" autocomplete="off" placeholder="Branch postcode"></label>
+        <label>Branch PIN<input id="posPin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Enter PIN" required></label>
       </div>
-      <button class="primary" id="openPos" type="button">Open branch</button>
-    </div>
+      <button class="primary full" id="openPos" type="submit">Log in to POS</button>
+      <p class="message" id="posLoginMessage" aria-live="polite"></p>
+    </form>
 
     <section class="tab staff-only ${initialTab === "pos" ? "active" : ""}" id="pos">
       <div class="pos-workspace hidden" id="posWorkspace">
@@ -1744,7 +1747,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel branch-access-panel"><div class="section-heading"><div><h2>Branch workspace access</h2><p class="hint">Share each workspace and PIN only with people assigned to that branch.</p></div></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Branch workspace</th><th>Current PIN</th><th>Status</th></tr></thead><tbody id="accessTable"></tbody></table></div></div>
     </section>
   </main>
-  <script>window.initialBranchId = ${JSON.stringify(initialBranchId)}; window.appMode = ${JSON.stringify(mode)}; window.uiIconPaths = ${JSON.stringify(UI_ICON_PATHS)}; ${clientScript()}</script>
+  <script>window.initialBranchId = ${JSON.stringify(initialBranchId)}; window.initialTab = ${JSON.stringify(initialTab)}; window.appMode = ${JSON.stringify(mode)}; window.uiIconPaths = ${JSON.stringify(UI_ICON_PATHS)}; ${clientScript()}</script>
 </body>
 </html>`;
 }
@@ -1825,7 +1828,7 @@ document.querySelectorAll(".nav").forEach((button) => button.addEventListener("c
   showTab(button.dataset.tab);
 }));
 document.querySelector("#loadData").addEventListener("click", loadData);
-document.querySelector("#openPos").addEventListener("click", openPos);
+document.querySelector("#posLogin").addEventListener("submit", openPos);
 document.querySelector("#switchBranch").addEventListener("click", switchBranch);
 document.querySelector("#clockInButton").addEventListener("click", () => submitTimeClock("clock-in"));
 document.querySelector("#breakStartButton").addEventListener("click", () => submitTimeClock("break-start"));
@@ -1907,20 +1910,31 @@ async function loadPublicBranches() {
     const response = await fetch("/api/branches-public");
     const result = await response.json();
     const options = '<option value="">Select branch</option>' + result.branches.map((branch) => '<option value="' + branch.id + '">' + esc(branch.name) + '</option>').join("");
-    document.querySelector("#posBranch").innerHTML = options;
-    if (window.initialBranchId) document.querySelector("#posBranch").value = window.initialBranchId;
+    const branchSelect = document.querySelector("#posBranch");
+    branchSelect.innerHTML = options;
+    const branch = result.branches.find((item) => item.id === window.initialBranchId);
+    if (window.initialBranchId && branch) {
+      branchSelect.value = window.initialBranchId;
+      branchSelect.disabled = true;
+      document.querySelector("#posLoginTitle").textContent = branch.name + " POS";
+      document.querySelector("#posLoginHint").textContent = "Enter the branch PIN to log in. This link opens only this branch.";
+    }
   } catch (error) {
-    message.textContent = "Could not load branches.";
+    document.querySelector("#posLoginMessage").textContent = "Could not load branches.";
   }
 }
-async function openPos() {
+async function openPos(event) {
+  event?.preventDefault();
+  const loginMessage = document.querySelector("#posLoginMessage");
   selectedPosBranchId = document.querySelector("#posBranch").value;
   selectedPosPin = document.querySelector("#posPin").value;
   if (!selectedPosBranchId || !selectedPosPin) {
-    message.textContent = "Select a branch and enter the postcode PIN.";
+    loginMessage.textContent = "Select a branch and enter its PIN.";
     return;
   }
-  await refreshPosData();
+  loginMessage.textContent = "Checking branch PIN...";
+  try { await refreshPosData(); }
+  catch (error) { loginMessage.textContent = error.message; return; }
   const branch = state.branches[0];
   document.querySelector("#posBranchName").textContent = branch ? branch.name : "Branch POS";
   document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
@@ -1930,6 +1944,10 @@ async function openPos() {
   renderClosingPreview();
   document.querySelector("#posLogin").classList.add("hidden");
   document.querySelector("#posWorkspace").classList.remove("hidden");
+  document.body.classList.remove("pos-locked");
+  loginMessage.textContent = "";
+  const branchPath = "/" + (window.initialTab === "bookings" ? "bookings" : "pos") + "/" + encodeURIComponent(selectedPosBranchId);
+  if (window.location.pathname !== branchPath) history.replaceState(null, "", branchPath);
 }
 function switchBranch() {
   selectedPosBranchId = "";
@@ -1938,6 +1956,13 @@ function switchBranch() {
   document.querySelector("#posWorkspace").classList.add("hidden");
   document.querySelector("#posLogin").classList.remove("hidden");
   document.querySelector("#posPin").value = "";
+  document.querySelector("#posBranch").disabled = false;
+  document.querySelector("#posBranch").value = "";
+  document.querySelector("#posLoginTitle").textContent = "Open branch workspace";
+  document.querySelector("#posLoginHint").textContent = "Select your branch and enter its PIN before opening POS.";
+  window.initialBranchId = "";
+  document.body.classList.add("pos-locked");
+  history.replaceState(null, "", "/" + (window.initialTab === "bookings" ? "bookings" : "pos"));
 }
 async function refreshPosData() {
   try {
@@ -3016,6 +3041,11 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .full { width:100%; }
 .hidden { display:none; }
 .admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
+.staff-mode.pos-locked { display:grid; grid-template-columns:1fr; min-height:100vh; }
+.staff-mode.pos-locked .sidebar,.staff-mode.pos-locked .topbar,.staff-mode.pos-locked .message,.staff-mode.pos-locked .tab { display:none !important; }
+.staff-mode.pos-locked .app { display:grid; place-items:center; min-height:100vh; padding:24px; background:linear-gradient(145deg,#f8f1fa,#f7fbfc); }
+.staff-mode.pos-locked .pos-login { display:block !important; width:min(520px,100%); margin:0; }
+.pos-login-brand { width:max-content; margin-bottom:24px; padding:10px 14px; color:#fff; background:var(--brand); border-radius:12px; }
 .hint { margin:8px 0 0; color:var(--muted); font-size:13px; }
 .load-row { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
 .admin-mode .load-row { display:none; }
