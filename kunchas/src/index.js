@@ -1258,8 +1258,8 @@ async function createSale(request, env) {
         productId: isProduct ? record.id : null,
         name: isProduct ? record.name : (clean(item.instanceName) || record.name),
         priceCents: !isProduct && instancePriceCents > 0 ? instancePriceCents : Number(record.price_cents || 0),
-        staffIds: isProduct ? [] : (Array.isArray(item.staffIds) ? item.staffIds.map(clean).filter(Boolean) : []),
-        staffAllocations: isProduct ? [] : normalizeStaffAllocations(item.staffAllocations)
+        staffIds: Array.isArray(item.staffIds) ? item.staffIds.map(clean).filter(Boolean) : [],
+        staffAllocations: normalizeStaffAllocations(item.staffAllocations)
       };
     })
     .filter(Boolean);
@@ -1267,7 +1267,6 @@ async function createSale(request, env) {
     return jsonResponse({ error: "Select valid services or products for the sale." }, 400);
   }
   for (const item of saleItems) {
-    if (item.itemType !== "service") continue;
     const percentages = item.staffAllocations.map((allocation) => allocation.percent);
     const amounts = item.staffAllocations.map((allocation) => allocation.amountCents);
     if ([...percentages, ...amounts].some((value) => !Number.isFinite(value) || value < 0)) {
@@ -1278,7 +1277,7 @@ async function createSale(request, env) {
     const combinedCredit = amountTotal + Math.round(item.priceCents * percentTotal / 100);
     if (percentTotal > 100) return jsonResponse({ error: `Staff percentages for ${item.name} cannot exceed 100%.` }, 400);
     if (amountTotal > item.priceCents) return jsonResponse({ error: `Staff dollar allocations for ${item.name} cannot exceed ${formatDollars(item.priceCents)}.` }, 400);
-    if (combinedCredit > item.priceCents) return jsonResponse({ error: `Combined staff allocations for ${item.name} cannot exceed the service amount.` }, 400);
+    if (combinedCredit > item.priceCents) return jsonResponse({ error: `Combined staff allocations for ${item.name} cannot exceed the item amount.` }, 400);
   }
   const totalCents = saleItems.reduce((total, item) => total + item.priceCents, 0);
   const cashCents = Math.round(Number(body.cashAmount || 0) * 100);
@@ -1625,7 +1624,8 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
           <div class="pos-section-heading"><div><p class="eyebrow">New transaction</p><h2>Build the sale</h2></div><span class="pos-step">Checkout</span></div>
           <input name="branchId" type="hidden">
           <input name="bookingId" type="hidden">
-          <label>Checkout a booking<select id="bookingCheckout"><option value="">New walk-in sale</option></select></label>
+          <label>Find a booking<input id="bookingCheckoutSearch" list="bookingCheckoutList" placeholder="Search customer name, phone or email"><datalist id="bookingCheckoutList"></datalist></label>
+          <label>Or select booking<select id="bookingCheckout"><option value="">New walk-in sale</option></select></label>
           <p class="hint booking-checkout-hint">Choose an unpaid booking to preload its customer, services, and assigned staff.</p>
           <label>Customer type<select name="customerMode"><option value="walkin">Walking customer</option><option value="existing">Existing customer</option><option value="new">Add new customer</option></select></label>
           <div class="customer-existing hidden">
@@ -1646,6 +1646,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
             <label>Cash amount $<input name="cashAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
             <label>Card amount $<input name="cardAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
           </div>
+          <div class="payment-balance" id="paymentBalance"><span>Remaining to pay</span><strong>$0.00</strong></div>
           <p class="hint">Use one box for full cash/card, or both boxes for split payment.</p>
           <button class="primary full" type="submit">Complete sale</button>
           <button class="secondary full hidden" id="printReceipt" type="button">Print receipt / open cash drawer</button>
@@ -1879,6 +1880,7 @@ document.querySelector("#clockOutButton").addEventListener("click", () => submit
 document.querySelector("#timeClockStaff").addEventListener("change", renderTimeClockStatus);
 document.querySelector("#addSaleItem").addEventListener("click", () => addSaleItem());
 document.querySelector("#bookingCheckout").addEventListener("change", selectBookingForCheckout);
+document.querySelector("#bookingCheckoutSearch").addEventListener("input", searchBookingForCheckout);
 document.querySelector("#printReceipt").addEventListener("click", printLastReceipt);
 document.querySelector("#customerForm").addEventListener("submit", submitCustomer);
 document.querySelector("#customerProfileForm").addEventListener("submit", submitCustomerProfile);
@@ -1887,6 +1889,8 @@ document.querySelector("#bookingForm").addEventListener("submit", submitBooking)
 document.querySelector("#bookingServiceSearch").addEventListener("click", toggleBookingServiceMenu);
 document.querySelector("#saleForm").addEventListener("submit", submitSale);
 document.querySelector('select[name="customerMode"]').addEventListener("change", updateCustomerMode);
+document.querySelector('#saleForm input[name="cashAmount"]').addEventListener("input", renderPaymentBalance);
+document.querySelector('#saleForm input[name="cardAmount"]').addEventListener("input", renderPaymentBalance);
 document.querySelector('#closingForm input[name="closingDate"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="openingFloat"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCash"]').addEventListener("input", renderClosingPreview);
@@ -2647,20 +2651,28 @@ function canCheckoutBooking(booking) {
 function renderBookingCheckoutOptions() {
   const select = document.querySelector("#bookingCheckout");
   const currentValue = select.value;
-  const options = state.bookings.filter(canCheckoutBooking).map((booking) =>
-    '<option value="' + esc(booking.id) + '">' + esc(booking.booking_date + " " + booking.booking_time + " — " + booking.customer_name + " — " + booking.service_names + " — " + money(booking.total_cents)) + '</option>'
+  const available = state.bookings.filter(canCheckoutBooking);
+  const options = available.map((booking) =>
+    '<option value="' + esc(booking.id) + '">' + esc(bookingCheckoutLabel(booking)) + '</option>'
   ).join("");
   select.innerHTML = '<option value="">New walk-in sale</option>' + options;
+  document.querySelector("#bookingCheckoutList").innerHTML = available.map((booking)=>'<option value="'+esc(bookingSearchLabel(booking))+'"></option>').join("");
   if ([...select.options].some((option) => option.value === currentValue)) select.value = currentValue;
 }
+function bookingCustomer(booking){return state.customers.find((customer)=>customer.id===booking.customer_id);}
+function bookingCheckoutLabel(booking){return booking.booking_date+" "+booking.booking_time+" — "+booking.customer_name+" — "+booking.service_names+" — "+money(booking.total_cents);}
+function bookingSearchLabel(booking){const customer=bookingCustomer(booking);return [booking.customer_name,customer?.phone,customer?.email,booking.booking_date+" "+booking.booking_time,booking.service_names].filter(Boolean).join(" | ");}
+function searchBookingForCheckout(){const value=document.querySelector("#bookingCheckoutSearch").value;const booking=state.bookings.filter(canCheckoutBooking).find((item)=>bookingSearchLabel(item)===value);if(!booking){document.querySelector("#bookingCheckout").value="";document.querySelector('#saleForm input[name="bookingId"]').value="";return;}document.querySelector("#bookingCheckout").value=booking.id;selectBookingForCheckout();}
 function selectBookingForCheckout() {
   const form = document.querySelector("#saleForm");
   const booking = state.bookings.find((item) => item.id === document.querySelector("#bookingCheckout").value);
   form.elements.bookingId.value = booking?.id || "";
   if (!booking) {
+    document.querySelector("#bookingCheckoutSearch").value = "";
     document.querySelector(".booking-checkout-hint").textContent = "Choose an unpaid booking to preload its customer, services, and assigned staff.";
     return;
   }
+  document.querySelector("#bookingCheckoutSearch").value = bookingSearchLabel(booking);
   const customer = state.customers.find((item) => item.id === booking.customer_id);
   form.elements.customerMode.value = "existing";
   form.elements.customerSearch.value = customer ? customerLabel(customer) : "";
@@ -2763,16 +2775,17 @@ function renderReports() {
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
   row.className = "sale-item";
-  row.innerHTML = '<div class="sale-line-heading"><strong>Service or product</strong><button class="remove-sale-line" type="button" aria-label="Remove item">×</button></div><input name="saleItemSearch" type="hidden"><div class="sale-catalogue-picker"><label>Type<select name="saleItemType"><option value="service">Service</option><option value="product">Product</option></select></label><label>Category<select name="saleItemCategory"></select></label><label>Subcategory<select name="saleItemSubcategory"></select></label><label>Item<select name="saleItemId" required></select></label></div><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">This changes only this checkout and receipt, not the master service.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Search staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
+  row.innerHTML = '<div class="sale-line-heading"><strong>Service or product</strong><button class="remove-sale-line" type="button" aria-label="Remove item">×</button></div><label class="sale-quick-search">Quick search<input name="saleItemQuickSearch" list="itemList" placeholder="Search service or product name, category, brand or price"></label><input name="saleItemSearch" type="hidden"><div class="sale-picker-divider"><span>or browse the catalogue</span></div><div class="sale-catalogue-picker"><label>Type<select name="saleItemType"><option value="service">Service</option><option value="product">Product</option></select></label><label>Category<select name="saleItemCategory"></select></label><label>Subcategory<select name="saleItemSubcategory"></select></label><label>Item<select name="saleItemId" required></select></label></div><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">This changes only this checkout and receipt, not the master service.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Search staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
   document.querySelector("#saleItems").append(row);
   row.querySelector(".add-staff").addEventListener("click", () => addStaffToSaleItem(row));
   row.querySelector(".remove-sale-line").addEventListener("click",()=>{row.remove();renderCartSummary();});
+  row.querySelector('input[name="saleItemQuickSearch"]').addEventListener("input",()=>applySaleQuickSearch(row));
   row.querySelector('select[name="saleItemType"]').addEventListener("change",()=>populateSaleItemCategories(row));
   row.querySelector('select[name="saleItemCategory"]').addEventListener("change",()=>populateSaleItemSubcategories(row));
   row.querySelector('select[name="saleItemSubcategory"]').addEventListener("change",()=>populateSaleItemChoices(row));
   row.querySelector('select[name="saleItemId"]').addEventListener("change",()=>selectSaleCatalogueItem(row));
   row.querySelector('input[name="instanceName"]').addEventListener("input", renderCartSummary);
-  row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { updateAllocationSummary(row); renderCartSummary(); });
+  row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { syncStaffDollarAmounts(row); updateAllocationSummary(row); renderCartSummary(); });
   initialiseSaleItemPicker(row,selectedItem);
   if (selectedStaffId && selectedItem?.type === "service") {
     const staff = state.staff.find((item) => item.id === selectedStaffId);
@@ -2788,7 +2801,8 @@ function initialiseSaleItemPicker(row,item){if(item)row.querySelector('select[na
 function populateSaleItemCategories(row,value=""){const select=row.querySelector('select[name="saleItemCategory"]');select.innerHTML=saleOptions(saleItemsByType(row).map((item)=>item.category),"Choose category");select.value=value;populateSaleItemSubcategories(row);}
 function populateSaleItemSubcategories(row,value=""){const category=row.querySelector('select[name="saleItemCategory"]').value;const select=row.querySelector('select[name="saleItemSubcategory"]');select.innerHTML=saleOptions(saleItemsByType(row).filter((item)=>!category||item.category===category).map((item)=>item.subcategory),"Choose subcategory");select.value=value;populateSaleItemChoices(row);}
 function populateSaleItemChoices(row,value=""){const category=row.querySelector('select[name="saleItemCategory"]').value,subcategory=row.querySelector('select[name="saleItemSubcategory"]').value;const items=saleItemsByType(row).filter((item)=>(!category||item.category===category)&&(!subcategory||item.subcategory===subcategory));const select=row.querySelector('select[name="saleItemId"]');select.innerHTML='<option value="">Choose item</option>'+items.map((item)=>'<option value="'+esc(item.id)+'">'+esc(item.name)+' · '+money(item.priceCents)+'</option>').join("");select.value=value;selectSaleCatalogueItem(row);}
-function selectSaleCatalogueItem(row){const type=row.querySelector('select[name="saleItemType"]').value,id=row.querySelector('select[name="saleItemId"]').value;const item=saleCatalog().find((entry)=>entry.type===type&&entry.id===id);row.querySelector('input[name="saleItemSearch"]').value=item?.label||"";updateSaleItemRow(row);}
+function selectSaleCatalogueItem(row){const type=row.querySelector('select[name="saleItemType"]').value,id=row.querySelector('select[name="saleItemId"]').value;const item=saleCatalog().find((entry)=>entry.type===type&&entry.id===id);row.querySelector('input[name="saleItemSearch"]').value=item?.label||"";row.querySelector('input[name="saleItemQuickSearch"]').value=item?.label||"";updateSaleItemRow(row);}
+function applySaleQuickSearch(row){const item=findSaleItem(row.querySelector('input[name="saleItemQuickSearch"]').value);if(!item){row.querySelector('input[name="saleItemSearch"]').value="";row.querySelector('select[name="saleItemId"]').value="";updateSaleItemRow(row);return;}initialiseSaleItemPicker(row,item);}
 function toggleBookingServiceMenu() {
   const menu = document.querySelector("#bookingServiceMenu");
   const open = menu.classList.toggle("hidden");
@@ -2891,12 +2905,12 @@ async function submitSale(event) {
       itemId: selectedItem.id,
       instanceName: selectedItem.type === "service" ? row.querySelector('input[name="instanceName"]').value : "",
       instancePrice: selectedItem.type === "service" ? row.querySelector('input[name="instancePrice"]').value : "",
-      staffIds: selectedItem.type === "service" ? [...row.querySelectorAll('input[name="saleStaffIds"]:checked')].map((input) => input.value) : [],
-      staffAllocations: selectedItem.type === "service" ? [...row.querySelectorAll(".staff-chip")].map((chip) => ({
+      staffIds: [...row.querySelectorAll('input[name="saleStaffIds"]:checked')].map((input) => input.value),
+      staffAllocations: [...row.querySelectorAll(".staff-chip")].map((chip) => ({
         staffId: chip.querySelector('input[name="saleStaffIds"]').value,
-        percent: chip.querySelector('input[name="staffPercent"]').value,
-        amount: chip.querySelector('input[name="staffAmount"]').value
-      })) : []
+        percent: chip.dataset.allocationMode === "amount" ? 0 : chip.querySelector('input[name="staffPercent"]').value,
+        amount: chip.dataset.allocationMode === "amount" ? chip.querySelector('input[name="staffAmount"]').value : 0
+      }))
     };
   }).filter(Boolean);
   for (const row of event.target.querySelectorAll(".sale-item")) {
@@ -2924,10 +2938,11 @@ async function submitJson(path, payload, form) {
       document.querySelector("#printReceipt").classList.remove("hidden");
     }
     form.reset();
-    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; addSaleItem(); updateCustomerMode(); }
+    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; document.querySelector("#bookingCheckoutSearch").value = ""; addSaleItem(); updateCustomerMode(); renderPaymentBalance(); }
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
+    if (result.receipt) message.textContent = result.receipt.changeCents ? "Sale complete. Return " + money(result.receipt.changeCents) + " change to the customer." : "Sale completed successfully.";
   } catch (error) { message.textContent = error.message; }
 }
 function updateCustomerMode() {
@@ -2993,11 +3008,15 @@ function renderCartSummary() {
   const selectedItems = [...document.querySelectorAll(".sale-item")].map((row) => {
     const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]')?.value);
     if (!item) return null;
-    return { ...item, name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
+    const staff=[...row.querySelectorAll(".staff-chip")].map((chip)=>chip.querySelector("span")?.textContent).filter(Boolean);
+    return { ...item, staff, name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
   }).filter(Boolean);
-  document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + '</em></span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
+  document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + (item.staff.length?' · '+esc(item.staff.join(", ")):'') + '</em></span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
   document.querySelector("#cartTotal").textContent = money(selectedItems.reduce((sum, item) => sum + item.priceCents, 0));
+  renderPaymentBalance();
 }
+function currentSaleTotalCents(){return [...document.querySelectorAll("#saleItems .sale-item")].reduce((sum,row)=>{const item=findSaleItem(row.querySelector('input[name="saleItemSearch"]')?.value);if(!item)return sum;const price=item.type==="service"?Math.round(Number(row.querySelector('input[name="instancePrice"]').value||0)*100)||item.priceCents:item.priceCents;return sum+price;},0);}
+function renderPaymentBalance(){const box=document.querySelector("#paymentBalance");if(!box)return;const total=currentSaleTotalCents(),cash=Math.round(Number(document.querySelector('#saleForm input[name="cashAmount"]')?.value||0)*100),card=Math.round(Number(document.querySelector('#saleForm input[name="cardAmount"]')?.value||0)*100),difference=cash+card-total;box.classList.toggle("change-due",difference>0);box.innerHTML=difference>0?'<span>Change to return</span><strong>'+money(difference)+'</strong>':'<span>Remaining to pay</span><strong>'+money(Math.max(0,-difference))+'</strong>';}
 function updateSaleItemRow(row) {
   const selectedItem = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
   const itemKey = selectedItem ? selectedItem.type + ":" + selectedItem.id : "";
@@ -3010,31 +3029,36 @@ function updateSaleItemRow(row) {
   row.querySelector(".instance-edit").classList.toggle("hidden", selectedItem?.type !== "service");
   row.querySelector('input[name="instanceName"]').required = selectedItem?.type === "service";
   row.querySelector('input[name="instancePrice"]').required = selectedItem?.type === "service";
-  row.querySelector(".staff-area").classList.toggle("hidden", selectedItem?.type === "product");
-  if (selectedItem?.type === "product") row.querySelector(".selected-staff").innerHTML = "";
+  row.querySelector(".staff-area").classList.toggle("hidden", !selectedItem);
+  row.querySelector(".staff-area .field-label").textContent = selectedItem?.type === "product" ? "Sold by" : "Staff involved";
+  syncStaffDollarAmounts(row);
   updateAllocationSummary(row);
   renderCartSummary();
 }
 function allocationTotals(row) {
   const chips = [...row.querySelectorAll(".staff-chip")];
-  return chips.reduce((totals, chip) => { totals.percent += Number(chip.querySelector('input[name="staffPercent"]').value || 0); totals.amount += Number(chip.querySelector('input[name="staffAmount"]').value || 0); return totals; }, { percent:0, amount:0 });
+  return chips.reduce((totals, chip) => { if(chip.dataset.allocationMode==="amount")totals.amount += Number(chip.querySelector('input[name="staffAmount"]').value || 0);else totals.percent += Number(chip.querySelector('input[name="staffPercent"]').value || 0); return totals; }, { percent:0, amount:0 });
 }
 function allocationError(row) {
   const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
-  if (!item || item.type !== "service") return "";
+  if (!item) return "";
   const totals = allocationTotals(row);
-  const serviceAmount = Number(row.querySelector('input[name="instancePrice"]').value || 0);
+  const serviceAmount = saleRowAmount(row);
   if (totals.percent > 100) return "Staff percentages for " + (row.querySelector('input[name="instanceName"]').value || item.name) + " cannot exceed 100%.";
-  if (totals.amount > serviceAmount) return "Staff dollar allocations cannot exceed the service amount of " + money(Math.round(serviceAmount * 100)) + ".";
-  if (totals.amount + (serviceAmount * totals.percent / 100) > serviceAmount + 0.001) return "Combined staff percentage and dollar allocations cannot exceed the service amount.";
+  if (totals.amount > serviceAmount) return "Staff dollar allocations cannot exceed the item amount of " + money(Math.round(serviceAmount * 100)) + ".";
+  if (totals.amount + (serviceAmount * totals.percent / 100) > serviceAmount + 0.001) return "Combined staff percentage and dollar allocations cannot exceed the item amount.";
   return "";
 }
+function saleRowAmount(row){const item=findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);if(!item)return 0;return item.type==="service"?Number(row.querySelector('input[name="instancePrice"]').value||item.priceCents/100):item.priceCents/100;}
+function syncStaffDollarAmounts(row){const amount=saleRowAmount(row);row.querySelectorAll(".staff-chip").forEach((chip)=>{if(chip.dataset.allocationMode!=="amount")chip.querySelector('input[name="staffAmount"]').value=(amount*Number(chip.querySelector('input[name="staffPercent"]').value||0)/100).toFixed(2);});}
+function rebalanceStaffAllocations(row){const chips=[...row.querySelectorAll(".staff-chip")];if(!chips.length){updateAllocationSummary(row);renderCartSummary();return;}let used=0;chips.forEach((chip,index)=>{chip.dataset.allocationMode="percent";const percent=index===chips.length-1?Number((100-used).toFixed(2)):Number((100/chips.length).toFixed(2));used+=percent;chip.querySelector('input[name="staffPercent"]').value=percent;});syncStaffDollarAmounts(row);updateAllocationSummary(row);renderCartSummary();}
 function updateAllocationSummary(row) {
   const totals = allocationTotals(row);
   const summary = row.querySelector(".allocation-summary");
   if (!summary) return;
   const error = allocationError(row);
-  summary.textContent = error || ("Staff percentages: " + totals.percent + "% · Staff dollars: $" + totals.amount.toFixed(2));
+  const credited=[...row.querySelectorAll(".staff-chip")].reduce((sum,chip)=>sum+Number(chip.querySelector('input[name="staffAmount"]').value||0),0);
+  summary.textContent = error || ("Staff allocation: " + totals.percent.toFixed(2).replace(/\.00$/,'') + "% · Calculated value: $" + credited.toFixed(2));
   summary.classList.toggle("allocation-error", Boolean(error));
 }
 function staffCheckboxes() { return state.staff.map((s) => '<label class="mini-check"><input type="checkbox" name="saleStaffIds" value="' + s.id + '">' + esc(s.name) + '</label>').join(""); }
@@ -3046,12 +3070,14 @@ function addStaffToSaleItem(row) {
   if (row.querySelector('input[name="saleStaffIds"][value="' + cssEsc(staff.id) + '"]')) { input.value = ""; return; }
   const chip = document.createElement("label");
   chip.className = "staff-chip";
-  chip.innerHTML = '<input type="checkbox" name="saleStaffIds" value="' + esc(staff.id) + '" checked><span>' + esc(staff.name) + '</span><label>%<input name="staffPercent" type="number" min="0" max="100" step="1" placeholder="%"></label><label>$<input name="staffAmount" type="number" min="0" step="0.01" placeholder="$"></label><button type="button" aria-label="Remove staff">x</button>';
-  chip.querySelectorAll('input[type="number"]').forEach((field) => field.addEventListener("input", () => updateAllocationSummary(row)));
-  chip.querySelector("button").addEventListener("click", () => { chip.remove(); updateAllocationSummary(row); });
+  chip.dataset.allocationMode = "percent";
+  chip.innerHTML = '<input type="checkbox" name="saleStaffIds" value="' + esc(staff.id) + '" checked><span>' + esc(staff.name) + '</span><label>%<input name="staffPercent" type="number" min="0" max="100" step="0.01" placeholder="%"></label><label>$<input name="staffAmount" type="number" min="0" step="0.01" placeholder="$"></label><button type="button" aria-label="Remove staff">x</button>';
+  chip.querySelector('input[name="staffPercent"]').addEventListener("input",()=>{chip.dataset.allocationMode="percent";syncStaffDollarAmounts(row);updateAllocationSummary(row);renderCartSummary();});
+  chip.querySelector('input[name="staffAmount"]').addEventListener("input",()=>{chip.dataset.allocationMode="amount";chip.querySelector('input[name="staffPercent"]').value="";updateAllocationSummary(row);renderCartSummary();});
+  chip.querySelector("button").addEventListener("click", () => { chip.remove(); rebalanceStaffAllocations(row); });
   row.querySelector(".selected-staff").append(chip);
   input.value = "";
-  updateAllocationSummary(row);
+  rebalanceStaffAllocations(row);
 }
 function findCustomerId(value) { return state.customers.find((c) => customerLabel(c) === value)?.id || ""; }
 function findSaleItem(value) { return saleCatalog().find((item) => item.label === value); }
@@ -3383,11 +3409,18 @@ legend { grid-column:1/-1; }
 .sale-items-list { display:grid; gap:12px; margin:18px 0 12px; }
 .sale-item { position:relative; margin:0; padding:18px; background:#fcfbfd; border-color:#e2dbe6; border-radius:12px; }
 .sale-line-heading { margin-bottom:12px; }
+.sale-quick-search { display:block; color:var(--ink); font-weight:800; }
+.sale-quick-search input { margin-bottom:8px; background:#fff; }
+.sale-picker-divider { display:flex; align-items:center; gap:10px; margin:4px 0 10px; color:var(--muted); font-size:11px; font-weight:800; text-transform:uppercase; }
+.sale-picker-divider::before,.sale-picker-divider::after { flex:1; height:1px; content:""; background:var(--line); }
 .remove-sale-line { display:grid; place-items:center; width:32px; min-height:32px; padding:0; color:#9b3444; background:#fff3f4; border:1px solid #efdadd; border-radius:8px; font-size:21px; }
 .sale-catalogue-picker { display:grid; grid-template-columns:.62fr 1fr 1fr 1.35fr; gap:10px; }
 .sale-catalogue-picker label { color:var(--muted); font-size:12px; font-weight:800; }
 .sale-catalogue-picker select { margin-bottom:8px; color:var(--ink); font-size:14px; }
 .add-sale-line { width:100%; margin-bottom:18px; border-style:dashed; }
+.payment-balance { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:0 0 14px; padding:13px 15px; color:var(--brand); background:var(--brand-soft); border:1px solid #e2d0e8; border-radius:10px; font-weight:800; }
+.payment-balance strong { font-size:21px; }
+.payment-balance.change-due { color:#087f5b; background:#e9f8f2; border-color:#c9eadc; }
 .line-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin:-4px 0 10px; }
 .line-meta strong { font-size:18px; }
 .cart-panel { position:sticky; top:20px; padding:24px; border-top:4px solid var(--brand); }
