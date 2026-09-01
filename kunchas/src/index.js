@@ -72,6 +72,12 @@ export default {
         return response;
       }
 
+      if (request.method === "PATCH" && url.pathname.startsWith("/api/sales/")) {
+        const auth = await authorizeBranch(request, env);
+        if (auth) return auth;
+        return updateBranchSale(request, env, clean(url.pathname.replace("/api/sales/", "")));
+      }
+
       if (request.method === "POST" && url.pathname === "/api/daily-closing") {
         const auth = await authorizeBranch(request, env);
         if (auth) return auth;
@@ -348,7 +354,7 @@ async function listPublicBranches(env) {
 
 async function getPosData(request, env) {
   const branchId = request.headers.get("x-branch-id");
-  const [branch, staff, services, products, customers, bookings, sales, branchHours, closedDates, dailyClosings, timeEntries] = await Promise.all([
+  const [branch, staff, services, products, customers, bookings, sales, saleItems, branchHours, closedDates, dailyClosings, timeEntries] = await Promise.all([
     all(env, "SELECT id, name, address, phone, post_code FROM branches WHERE id = ?", [branchId]),
     all(env, `SELECT st.*, br.name AS branch_name
       FROM staff st
@@ -372,6 +378,8 @@ async function getPosData(request, env) {
       WHERE s.branch_id = ?
       ORDER BY s.created_at DESC
       LIMIT 50`, [branchId]),
+    all(env, `SELECT si.* FROM sale_items si JOIN sales s ON s.id = si.sale_id
+      WHERE s.branch_id = ? ORDER BY s.created_at DESC, si.id LIMIT 300`, [branchId]),
     all(env, "SELECT * FROM branch_hours WHERE branch_id = ? ORDER BY day_of_week", [branchId]),
     all(env, "SELECT * FROM branch_closed_dates WHERE branch_id = ? ORDER BY closed_date DESC LIMIT 100", [branchId]),
     all(env, `SELECT dc.*, br.name AS branch_name
@@ -398,11 +406,40 @@ async function getPosData(request, env) {
       customer_name: `${booking.first_name || ""} ${booking.last_name || ""}`.trim()
     })),
     sales,
+    saleItems,
     branchHours,
     closedDates,
     dailyClosings,
     timeEntries
   });
+}
+
+async function updateBranchSale(request, env, saleId) {
+  const branchId = clean(request.headers.get("x-branch-id"));
+  const body = await request.json();
+  const sale = await env.DB.prepare("SELECT id FROM sales WHERE id = ? AND branch_id = ?").bind(saleId, branchId).first();
+  if (!sale) return jsonResponse({ error:"Sale was not found for this branch." }, 404);
+  const existingItems = await all(env, "SELECT id, staff_allocations FROM sale_items WHERE sale_id = ? ORDER BY id", [saleId]);
+  const suppliedItems = Array.isArray(body.items) ? body.items : [];
+  if (!suppliedItems.length || suppliedItems.length !== existingItems.length) return jsonResponse({ error:"Every existing sale item must be kept when correcting a sale." }, 400);
+  const existingIds = new Set(existingItems.map((item) => item.id));
+  const correctedItems = suppliedItems.map((item) => ({ id:clean(item.id), name:clean(item.name), priceCents:Math.round(Number(item.price || 0) * 100) }));
+  if (new Set(correctedItems.map((item) => item.id)).size !== correctedItems.length || correctedItems.some((item) => !existingIds.has(item.id) || !item.name || !Number.isFinite(item.priceCents) || item.priceCents <= 0)) return jsonResponse({ error:"Each sale item needs a valid name and positive amount." }, 400);
+  for (const item of correctedItems) {
+    const stored = existingItems.find((entry) => entry.id === item.id);
+    let allocations = [];
+    try { allocations = JSON.parse(stored?.staff_allocations || "[]"); } catch { allocations = []; }
+    const credited = (Array.isArray(allocations) ? allocations : []).reduce((sum, allocation) => sum + Number(allocation.amountCents || 0) + Math.round(item.priceCents * Number(allocation.percent || 0) / 100), 0);
+    if (credited > item.priceCents) return jsonResponse({ error:`The corrected amount for ${item.name} is lower than its existing staff allocation.` }, 400);
+  }
+  const paymentMethod = clean(body.paymentMethod);
+  if (!paymentMethod) return jsonResponse({ error:"Payment method is required." }, 400);
+  const totalCents = correctedItems.reduce((sum, item) => sum + item.priceCents, 0);
+  await env.DB.batch([
+    ...correctedItems.map((item) => env.DB.prepare("UPDATE sale_items SET item_name = ?, price_cents = ? WHERE id = ? AND sale_id = ?").bind(item.name, item.priceCents, item.id, saleId)),
+    env.DB.prepare("UPDATE sales SET total_cents = ?, payment_method = ?, status = 'Paid' WHERE id = ? AND branch_id = ?").bind(totalCents, paymentMethod, saleId, branchId)
+  ]);
+  return jsonResponse({ ok:true, totalCents });
 }
 
 async function createCustomer(request, env) {
@@ -1519,8 +1556,10 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <button class="nav" data-tab="access">${appIcon("access")}<span>Access</span></button>` : `
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">${appIcon("pos")}<span>POS</span></button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">${appIcon("bookings")}<span>Bookings</span></button>
-      <button class="nav" data-tab="closing">${appIcon("closing")}<span>Daily Closing</span></button>`}
-      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">${appIcon("sales")}<span>Recent Sales</span></button>`}
+      <button class="nav" data-tab="clock">${appIcon("staff")}<span>Clock In / Out</span></button>
+      <button class="nav" data-tab="recent-sales">${appIcon("sales")}<span>Recent Sales</span></button>
+      <span class="nav-spacer"></span>
+      <button class="nav closing-nav" data-tab="closing">${appIcon("closing")}<span>Daily Closing</span></button>`}
     </nav>
   </aside>
 
@@ -1581,10 +1620,9 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         </div>
         <button class="secondary" id="switchBranch" type="button">Switch branch</button>
       </div>
-      <div class="panel time-clock-panel"><div><p class="eyebrow">Staff time clock</p><h2>Clock in, break or out</h2><p class="hint" id="timeClockStatus">Actual hours feed the payroll report.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button">Clock in</button><button class="secondary" id="breakStartButton" type="button">Start break</button><button class="secondary" id="breakEndButton" type="button">End break</button><button class="secondary" id="clockOutButton" type="button">Clock out</button></div></div>
-      <div class="split">
-        <form class="panel" id="saleForm">
-          <h2>New POS sale</h2>
+      <div class="pos-checkout-grid">
+        <form class="panel pos-sale-panel" id="saleForm">
+          <div class="pos-section-heading"><div><p class="eyebrow">New transaction</p><h2>Build the sale</h2></div><span class="pos-step">Checkout</span></div>
           <input name="branchId" type="hidden">
           <input name="bookingId" type="hidden">
           <label>Checkout a booking<select id="bookingCheckout"><option value="">New walk-in sale</option></select></label>
@@ -1602,8 +1640,8 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
           <datalist id="customerList"></datalist>
           <datalist id="itemList"></datalist>
           <datalist id="staffList"></datalist>
-          <div id="saleItems"></div>
-          <button class="secondary" id="addSaleItem" type="button">Add item</button>
+          <div id="saleItems" class="sale-items-list"></div>
+          <button class="secondary add-sale-line" id="addSaleItem" type="button">+ Add another item</button>
           <div class="grid">
             <label>Cash amount $<input name="cashAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
             <label>Card amount $<input name="cardAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
@@ -1613,13 +1651,17 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
           <button class="secondary full hidden" id="printReceipt" type="button">Print receipt / open cash drawer</button>
           <p class="hint">Cash drawer opens only when it is connected to the receipt printer and configured to open on receipt print.</p>
         </form>
-        <div class="panel cart-panel"><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total</span><strong id="cartTotal">$0.00</strong></div></div>
+        <div class="panel cart-panel"><p class="eyebrow">Order overview</p><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total due</span><strong id="cartTotal">$0.00</strong></div><p class="cart-footnote">Prices shown here are the amounts charged for this transaction.</p></div>
       </div>
       </div>
     </section>
 
+    <section class="tab staff-only" id="clock">
+      <div class="panel clock-page-panel"><div class="clock-page-intro"><p class="eyebrow">Staff time clock</p><h2>Clock in, take a break, or finish your shift</h2><p class="hint">Choose your name below. Actual hours feed the payroll report.</p></div><div class="clock-control-card"><label>Staff member<select id="timeClockStaff" data-staff-select></select></label><p class="clock-status" id="timeClockStatus">Choose a staff member to see their current status.</p><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button">Clock in</button><button class="secondary" id="breakStartButton" type="button">Start break</button><button class="secondary" id="breakEndButton" type="button">End break</button><button class="secondary" id="clockOutButton" type="button">Clock out</button></div></div></div>
+    </section>
+
     <section class="tab staff-only" id="recent-sales">
-      <div class="panel"><h2>Recent sales</h2><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Total</th><th>Method</th><th>Status</th></tr></thead><tbody id="salesTable"></tbody></table></div></div>
+      <div class="panel recent-sales-panel"><div class="section-heading"><div><p class="eyebrow">Corrections</p><h2>Recent sales</h2><p class="hint">Correct an item name, charged amount, or payment method. All changes are limited to this branch.</p></div></div><div id="salesTable" class="recent-sales-list"></div></div>
     </section>
 
     <section class="tab staff-only ${initialTab === "bookings" ? "active" : ""}" id="bookings">
@@ -1885,7 +1927,7 @@ if (appMode === "admin") loadData();
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (selectedPosBranchId && (path === "/api/pos-data" || path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/"))) {
+  if (selectedPosBranchId && (path === "/api/pos-data" || path.startsWith("/api/sales") || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/"))) {
     headers["x-branch-id"] = selectedPosBranchId;
     headers["x-branch-pin"] = selectedPosPin;
   }
@@ -2048,6 +2090,7 @@ function fillSelects() {
   document.querySelector("#customerList").innerHTML = state.customers.map((c) => '<option value="' + esc(customerLabel(c)) + '"></option>').join("");
   document.querySelector("#itemList").innerHTML = saleCatalog().map((item) => '<option value="' + esc(item.label) + '"></option>').join("");
   document.querySelector("#staffList").innerHTML = state.staff.map((s) => '<option value="' + esc(staffLabel(s)) + '"></option>').join("");
+  document.querySelectorAll("#saleItems .sale-item").forEach((row) => initialiseSaleItemPicker(row, findSaleItem(row.querySelector('input[name="saleItemSearch"]').value)));
   renderBookingCheckoutOptions();
   renderBookingServiceCategories();
   document.querySelectorAll(".staff-checks").forEach((box) => box.innerHTML = staffCheckboxes());
@@ -2595,7 +2638,7 @@ function showTab(tabId) {
   document.querySelector('.nav[data-tab="' + cssEsc(tabId) + '"]')?.classList.add("active");
   document.querySelector("#" + tabId)?.classList.add("active");
   document.querySelector(".branch-switcher")?.classList.toggle("hidden", tabId !== "overview");
-  const titles = { overview:"Dashboard", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Access", pos:"POS", bookings:"Bookings", closing:"Daily closing", "recent-sales":"Recent sales" };
+  const titles = { overview:"Dashboard", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Access", pos:"Point of sale", bookings:"Bookings", clock:"Clock in / out", closing:"Daily closing", "recent-sales":"Recent sales" };
   if (document.querySelector("#appTitle")) document.querySelector("#appTitle").textContent = titles[tabId] || "Kunchas";
 }
 function canCheckoutBooking(booking) {
@@ -2652,7 +2695,22 @@ function renderBookings() {
   document.querySelectorAll(".save-booking").forEach((button) => button.addEventListener("click", saveBookingRow));
   document.querySelectorAll(".checkout-booking").forEach((button) => button.addEventListener("click", checkoutBookingFromRow));
 }
-function renderSales() { document.querySelector("#salesTable").innerHTML = state.sales.map((s) => '<tr><td>' + esc(s.branch_name) + '</td><td>' + money(s.total_cents) + '</td><td>' + esc(s.payment_method) + '</td><td><span class="pill">' + esc(s.status) + '</span></td></tr>').join(""); }
+function renderSales() {
+  const box = document.querySelector("#salesTable");
+  box.innerHTML = state.sales.length ? state.sales.map((sale) => {
+    const items = (state.saleItems || []).filter((item) => item.sale_id === sale.id);
+    return '<article class="recent-sale-card" data-sale-id="' + esc(sale.id) + '"><div class="recent-sale-heading"><div><strong>' + esc(new Date(sale.created_at).toLocaleString("en-AU", { day:"numeric", month:"short", hour:"numeric", minute:"2-digit" })) + '</strong><span>' + esc(sale.id.slice(0,8).toUpperCase()) + ' · ' + esc(sale.branch_name || "Branch") + '</span></div><b class="recent-sale-total">' + money(sale.total_cents) + '</b></div><div class="recent-sale-items">' + items.map((item) => '<div class="recent-sale-item" data-sale-item-id="' + esc(item.id) + '"><label>Item<input name="saleItemName" value="' + esc(item.item_name) + '" required></label><label>Amount $<input name="saleItemPrice" type="number" min="0.01" step="0.01" value="' + dollars(item.price_cents) + '" required></label></div>').join("") + '</div><div class="recent-sale-footer"><label>Payment details<input name="paymentMethod" value="' + esc(sale.payment_method) + '" required></label><button class="primary save-recent-sale" type="button">Save correction</button></div><p class="hint sale-correction-message"></p></article>';
+  }).join("") : '<div class="empty-cell">No recent sales for this branch.</div>';
+  box.querySelectorAll(".recent-sale-card input").forEach((input) => input.addEventListener("input", () => updateRecentSaleTotal(input.closest(".recent-sale-card"))));
+  box.querySelectorAll(".save-recent-sale").forEach((button) => button.addEventListener("click", () => saveRecentSale(button.closest(".recent-sale-card"))));
+}
+function updateRecentSaleTotal(card) { const total=[...card.querySelectorAll('input[name="saleItemPrice"]')].reduce((sum,input)=>sum+Math.round(Number(input.value||0)*100),0);card.querySelector(".recent-sale-total").textContent=money(total); }
+async function saveRecentSale(card) {
+  const messageBox=card.querySelector(".sale-correction-message");
+  const items=[...card.querySelectorAll(".recent-sale-item")].map((row)=>({id:row.dataset.saleItemId,name:row.querySelector('input[name="saleItemName"]').value,price:row.querySelector('input[name="saleItemPrice"]').value}));
+  if(items.some((item)=>!item.name||Number(item.price)<=0)){messageBox.textContent="Every item needs a name and positive amount.";return;}
+  try{messageBox.textContent="Saving correction...";await api("/api/sales/"+encodeURIComponent(card.dataset.saleId),{method:"PATCH",body:JSON.stringify({items,paymentMethod:card.querySelector('input[name="paymentMethod"]').value})});await refreshPosData();showTab("recent-sales");message.textContent="Sale correction saved.";}catch(error){messageBox.textContent=error.message;}
+}
 function inventoryRows() {
   return state.branches.flatMap((branch) => (state.products || []).map((product) => {
     const stock = (state.inventoryStock || []).find((item) => item.branch_id === branch.id && item.product_id === product.id);
@@ -2705,14 +2763,17 @@ function renderReports() {
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
   row.className = "sale-item";
-  row.innerHTML = '<label>Service / product search<input name="saleItemSearch" list="itemList" required placeholder="Type service or product"></label><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">Only this sale and receipt change. The master service stays the same.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
+  row.innerHTML = '<div class="sale-line-heading"><strong>Service or product</strong><button class="remove-sale-line" type="button" aria-label="Remove item">×</button></div><input name="saleItemSearch" type="hidden"><div class="sale-catalogue-picker"><label>Type<select name="saleItemType"><option value="service">Service</option><option value="product">Product</option></select></label><label>Category<select name="saleItemCategory"></select></label><label>Subcategory<select name="saleItemSubcategory"></select></label><label>Item<select name="saleItemId" required></select></label></div><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">This changes only this checkout and receipt, not the master service.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Search staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
   document.querySelector("#saleItems").append(row);
   row.querySelector(".add-staff").addEventListener("click", () => addStaffToSaleItem(row));
-  row.querySelector('input[name="saleItemSearch"]').addEventListener("input", () => updateSaleItemRow(row));
+  row.querySelector(".remove-sale-line").addEventListener("click",()=>{row.remove();renderCartSummary();});
+  row.querySelector('select[name="saleItemType"]').addEventListener("change",()=>populateSaleItemCategories(row));
+  row.querySelector('select[name="saleItemCategory"]').addEventListener("change",()=>populateSaleItemSubcategories(row));
+  row.querySelector('select[name="saleItemSubcategory"]').addEventListener("change",()=>populateSaleItemChoices(row));
+  row.querySelector('select[name="saleItemId"]').addEventListener("change",()=>selectSaleCatalogueItem(row));
   row.querySelector('input[name="instanceName"]').addEventListener("input", renderCartSummary);
   row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { updateAllocationSummary(row); renderCartSummary(); });
-  if (selectedItem) row.querySelector('input[name="saleItemSearch"]').value = selectedItem.label;
-  updateSaleItemRow(row);
+  initialiseSaleItemPicker(row,selectedItem);
   if (selectedStaffId && selectedItem?.type === "service") {
     const staff = state.staff.find((item) => item.id === selectedStaffId);
     if (staff) {
@@ -2721,6 +2782,13 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
     }
   }
 }
+function saleItemsByType(row){return saleCatalog().filter((item)=>item.type===row.querySelector('select[name="saleItemType"]').value);}
+function saleOptions(values,label){return '<option value="">'+label+'</option>'+[...new Set(values.filter(Boolean))].sort((a,b)=>a.localeCompare(b)).map((value)=>'<option value="'+esc(value)+'">'+esc(value)+'</option>').join("");}
+function initialiseSaleItemPicker(row,item){if(item)row.querySelector('select[name="saleItemType"]').value=item.type;populateSaleItemCategories(row,item?.category);populateSaleItemSubcategories(row,item?.subcategory);populateSaleItemChoices(row,item?.id);selectSaleCatalogueItem(row);}
+function populateSaleItemCategories(row,value=""){const select=row.querySelector('select[name="saleItemCategory"]');select.innerHTML=saleOptions(saleItemsByType(row).map((item)=>item.category),"Choose category");select.value=value;populateSaleItemSubcategories(row);}
+function populateSaleItemSubcategories(row,value=""){const category=row.querySelector('select[name="saleItemCategory"]').value;const select=row.querySelector('select[name="saleItemSubcategory"]');select.innerHTML=saleOptions(saleItemsByType(row).filter((item)=>!category||item.category===category).map((item)=>item.subcategory),"Choose subcategory");select.value=value;populateSaleItemChoices(row);}
+function populateSaleItemChoices(row,value=""){const category=row.querySelector('select[name="saleItemCategory"]').value,subcategory=row.querySelector('select[name="saleItemSubcategory"]').value;const items=saleItemsByType(row).filter((item)=>(!category||item.category===category)&&(!subcategory||item.subcategory===subcategory));const select=row.querySelector('select[name="saleItemId"]');select.innerHTML='<option value="">Choose item</option>'+items.map((item)=>'<option value="'+esc(item.id)+'">'+esc(item.name)+' · '+money(item.priceCents)+'</option>').join("");select.value=value;selectSaleCatalogueItem(row);}
+function selectSaleCatalogueItem(row){const type=row.querySelector('select[name="saleItemType"]').value,id=row.querySelector('select[name="saleItemId"]').value;const item=saleCatalog().find((entry)=>entry.type===type&&entry.id===id);row.querySelector('input[name="saleItemSearch"]').value=item?.label||"";updateSaleItemRow(row);}
 function toggleBookingServiceMenu() {
   const menu = document.querySelector("#bookingServiceMenu");
   const open = menu.classList.toggle("hidden");
@@ -2991,8 +3059,8 @@ function findStaff(value) { return state.staff.find((s) => staffLabel(s) === val
 function customerLabel(c) { return (c.first_name + " " + c.last_name + " | " + c.phone + " | " + c.email).trim(); }
 function saleCatalog() {
   return [
-    ...state.services.map((s) => ({ type:"service", typeLabel:"Service", id:s.id, name:s.name, priceCents:Number(s.price_cents || 0), label:"Service | " + s.name + " | " + s.category + " | " + money(s.price_cents) })),
-    ...(state.products || []).map((p) => ({ type:"product", typeLabel:"Product", id:p.id, name:p.name, priceCents:Number(p.price_cents || 0), label:"Product | " + p.name + " | " + (p.brand || p.category) + " | " + money(p.price_cents) }))
+    ...state.services.map((s) => ({ type:"service", typeLabel:"Service", id:s.id, name:s.name, category:s.category||"General", subcategory:s.sub_category||"General", priceCents:Number(s.price_cents || 0), label:"Service | " + s.name + " | " + s.category + " | " + money(s.price_cents) })),
+    ...(state.products || []).map((p) => ({ type:"product", typeLabel:"Product", id:p.id, name:p.name, category:p.category||"General", subcategory:p.brand||"General", priceCents:Number(p.price_cents || 0), label:"Product | " + p.name + " | " + (p.brand || p.category) + " | " + money(p.price_cents) }))
   ];
 }
 function staffLabel(s) { return s.name + " | " + (s.phone || "No phone") + " | " + (s.email || "No email") + " | " + (s.branch_name || branchName(s.branch_id)); }
@@ -3019,10 +3087,12 @@ function styles() {
 :root { --ink:#1c1724; --muted:#716b79; --line:#e7e1ea; --soft:#f8f6f9; --brand:#5b1b6f; --brand-dark:#3b1048; --brand-soft:#f3eaf6; --gold:#d59b48; --surface:#fff; --success:#087f5b; }
 * { box-sizing:border-box; }
 body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; }
-.sidebar { position:sticky; top:0; height:100vh; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
+.sidebar { position:sticky; top:0; display:flex; flex-direction:column; height:100vh; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
 .brand { display:flex; align-items:center; gap:10px; margin-bottom:30px; font-size:22px; }
 .brand span { display:grid; place-items:center; width:38px; height:38px; border-radius:11px; background:rgba(255,255,255,.14); font-weight:800; }
-nav { display:grid; gap:8px; }
+nav { display:flex; flex:1; flex-direction:column; gap:8px; }
+.nav-spacer { flex:1; }
+.closing-nav { margin-top:auto; border-top:1px solid rgba(255,255,255,.12); border-radius:0 0 9px 9px; }
 .nav { display:flex; align-items:center; gap:12px; min-height:44px; padding:0 14px; color:#e6dbe9; background:transparent; border:0; border-radius:9px; text-align:left; font:inherit; font-weight:700; cursor:pointer; }
 .nav.active,.nav:hover { color:#fff; background:rgba(255,255,255,.12); }
 .ui-icon { width:20px; height:20px; flex:0 0 auto; }
@@ -3298,9 +3368,29 @@ legend { grid-column:1/-1; }
 .permission.no { color:#7a6670; background:#f1edf0; }
 .permission.limited { color:#9a6013; background:#fff3dd; }
 .sale-item { padding:14px; margin-bottom:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
+.staff-mode #pos { margin-top:8px; }
+.pos-workspace { max-width:1480px; margin:0 auto; }
+.pos-branch-bar { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:18px; padding:16px 20px; color:#fff; background:linear-gradient(120deg,#461254,#6a2678); border-radius:14px; box-shadow:0 12px 28px rgba(57,18,67,.16); }
+.pos-branch-bar h2,.pos-branch-bar .eyebrow { color:#fff; margin-bottom:0; }
+.pos-branch-bar .eyebrow { opacity:.72; }
+.pos-branch-bar .secondary { color:#fff; background:rgba(255,255,255,.12); border-color:rgba(255,255,255,.28); }
+.pos-checkout-grid { display:grid; grid-template-columns:minmax(0,1.55fr) minmax(300px,.65fr); align-items:start; gap:18px; }
+.pos-sale-panel { padding:26px; }
+.pos-section-heading,.sale-line-heading,.recent-sale-heading,.recent-sale-footer { display:flex; align-items:center; justify-content:space-between; gap:14px; }
+.pos-section-heading { margin-bottom:20px; padding-bottom:18px; border-bottom:1px solid var(--line); }
+.pos-section-heading h2 { margin:0; }
+.pos-step { padding:7px 11px; color:var(--brand); background:var(--brand-soft); border-radius:999px; font-size:12px; font-weight:850; }
+.sale-items-list { display:grid; gap:12px; margin:18px 0 12px; }
+.sale-item { position:relative; margin:0; padding:18px; background:#fcfbfd; border-color:#e2dbe6; border-radius:12px; }
+.sale-line-heading { margin-bottom:12px; }
+.remove-sale-line { display:grid; place-items:center; width:32px; min-height:32px; padding:0; color:#9b3444; background:#fff3f4; border:1px solid #efdadd; border-radius:8px; font-size:21px; }
+.sale-catalogue-picker { display:grid; grid-template-columns:.62fr 1fr 1fr 1.35fr; gap:10px; }
+.sale-catalogue-picker label { color:var(--muted); font-size:12px; font-weight:800; }
+.sale-catalogue-picker select { margin-bottom:8px; color:var(--ink); font-size:14px; }
+.add-sale-line { width:100%; margin-bottom:18px; border-style:dashed; }
 .line-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin:-4px 0 10px; }
 .line-meta strong { font-size:18px; }
-.cart-panel { position:sticky; top:20px; }
+.cart-panel { position:sticky; top:20px; padding:24px; border-top:4px solid var(--brand); }
 .cart-summary { display:grid; gap:10px; min-height:120px; }
 .cart-line { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .cart-line strong,.cart-line em { display:block; }
@@ -3308,6 +3398,25 @@ legend { grid-column:1/-1; }
 .cart-total { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
 .cart-total span { color:var(--muted); font-weight:800; }
 .cart-total strong { font-size:30px; }
+.cart-footnote { margin:14px 0 0; color:var(--muted); font-size:11px; line-height:1.45; }
+.clock-page-panel { display:grid; grid-template-columns:minmax(0,1fr) minmax(340px,.85fr); gap:36px; align-items:center; max-width:1040px; min-height:440px; margin:20px auto; padding:42px; background:linear-gradient(135deg,#fff 55%,#faf3fc); }
+.clock-page-intro h2 { max-width:560px; margin-bottom:10px; font-size:clamp(28px,4vw,42px); }
+.clock-control-card { padding:24px; background:#fff; border:1px solid var(--line); border-radius:14px; box-shadow:0 14px 35px rgba(56,24,66,.08); }
+.clock-status { min-height:48px; margin:0 0 16px; padding:13px; color:var(--brand); background:var(--brand-soft); border-radius:9px; font-weight:800; }
+.clock-control-card .time-clock-actions { display:grid; grid-template-columns:repeat(2,1fr); }
+.recent-sales-panel { max-width:1120px; margin:0 auto; }
+.recent-sales-list { display:grid; gap:14px; margin-top:20px; }
+.recent-sale-card { padding:18px; background:#fcfbfd; border:1px solid var(--line); border-radius:12px; }
+.recent-sale-heading { padding-bottom:13px; border-bottom:1px solid var(--line); }
+.recent-sale-heading strong,.recent-sale-heading span { display:block; }
+.recent-sale-heading span { margin-top:3px; color:var(--muted); font-size:12px; }
+.recent-sale-total { font-size:23px; }
+.recent-sale-items { display:grid; gap:9px; margin:14px 0; }
+.recent-sale-item { display:grid; grid-template-columns:minmax(0,1fr) 160px; gap:10px; }
+.recent-sale-item input,.recent-sale-footer input { margin-bottom:0; }
+.recent-sale-footer { align-items:end; }
+.recent-sale-footer label { flex:1; margin:0; }
+.sale-correction-message { min-height:18px; color:var(--brand); font-weight:800; }
 .closing-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:10px 0 14px; }
 .closing-summary article { padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .closing-summary span { display:block; color:var(--muted); font-size:12px; font-weight:800; }
@@ -3353,7 +3462,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
-@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.time-clock-panel,.report-filters,.access-role-grid{grid-template-columns:1fr}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none}.access-role-heading{grid-template-columns:auto 1fr}.access-level{grid-column:1/-1;justify-self:start} }
+@media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.sidebar nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.nav-spacer{display:none}.closing-nav{margin-top:0;border-top:0}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column,.pos-checkout-grid{grid-template-columns:1fr}.cart-panel{position:static}.sale-catalogue-picker{grid-template-columns:repeat(2,minmax(0,1fr))}.clock-page-panel{grid-template-columns:1fr;min-height:0}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (max-width:700px){ .sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.recent-sale-footer{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.sale-catalogue-picker,.recent-sale-item,.clock-control-card .time-clock-actions,.time-clock-panel,.report-filters,.access-role-grid{grid-template-columns:1fr}.clock-page-panel{padding:24px}.time-clock-actions{grid-column:auto}.report-filters button,.recent-sale-footer button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none}.access-role-heading{grid-template-columns:auto 1fr}.access-level{grid-column:1/-1;justify-self:start} }
 `;
 }
