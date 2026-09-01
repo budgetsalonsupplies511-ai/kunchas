@@ -1556,9 +1556,34 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel"><h2>All branches</h2><div class="cards" id="branchCards"></div></div>
     </section>
     <section class="tab admin-only" id="access">
-      <div class="section-heading page-heading"><div><p class="eyebrow">Security &amp; entry</p><h2>Branch access</h2><p class="hint">Access is managed separately from branch operations.</p></div></div>
+      <div class="section-heading page-heading"><div><p class="eyebrow">Security &amp; entry</p><h2>Roles &amp; access</h2><p class="hint">Use these recommended permissions when giving staff and managers access.</p></div></div>
+      <div class="access-role-grid">
+        <article class="panel access-role-card">
+          <div class="access-role-heading"><span class="access-role-icon">${appIcon("staff")}</span><div><p class="eyebrow">Day-to-day access</p><h3>Staff</h3></div><span class="access-level">Branch only</span></div>
+          <p class="hint">Give team members access only to the branch workspace they work in.</p>
+          <ul class="access-list">
+            <li>Use POS and take payments</li>
+            <li>Create and update bookings</li>
+            <li>View recent branch sales</li>
+            <li>Clock in, take breaks, and complete daily closing</li>
+          </ul>
+          <p class="access-avoid"><strong>Do not give:</strong> reports, staff management, inventory setup, branch settings, or PIN administration.</p>
+        </article>
+        <article class="panel access-role-card manager-role-card">
+          <div class="access-role-heading"><span class="access-role-icon">${appIcon("access")}</span><div><p class="eyebrow">Operational access</p><h3>Manager</h3></div><span class="access-level">Assigned branches</span></div>
+          <p class="hint">Give managers staff access plus the tools needed to run their assigned branches.</p>
+          <ul class="access-list">
+            <li>Manage staff details and rosters</li>
+            <li>View branch dashboards and reports</li>
+            <li>Manage services, products, and inventory</li>
+            <li>Review sales, payroll hours, and daily closings</li>
+          </ul>
+          <p class="access-avoid"><strong>Keep owner-only:</strong> role and PIN administration, deleting branches, and business-wide access unless required.</p>
+        </article>
+      </div>
+      <div class="panel access-matrix-panel"><div class="section-heading"><div><h2>Recommended permission matrix</h2><p class="hint">Start with the minimum access needed and review access when responsibilities change.</p></div><span class="access-note">Least privilege</span></div><div class="table-wrap"><table class="access-matrix"><thead><tr><th>Area</th><th>Staff</th><th>Manager</th></tr></thead><tbody><tr><td><strong>POS, bookings &amp; time clock</strong><div class="hint">Everyday customer and shift tasks</div></td><td><span class="permission yes">Allowed</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Recent sales &amp; daily closing</strong><div class="hint">For assigned branches only</div></td><td><span class="permission yes">Allowed</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Staff, roster &amp; payroll review</strong></td><td><span class="permission no">No access</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Products, services &amp; inventory</strong></td><td><span class="permission no">No access</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Branch dashboards &amp; reports</strong></td><td><span class="permission no">No access</span></td><td><span class="permission yes">Allowed</span></td></tr><tr><td><strong>Roles, PINs &amp; business-wide settings</strong><div class="hint">Reserve for the owner or administrator</div></td><td><span class="permission no">No access</span></td><td><span class="permission limited">Owner approval</span></td></tr></tbody></table></div></div>
       <div class="split"><form class="panel" id="managerAssignmentForm"><h2>Manager branch access</h2><div class="grid"><label>Manager<select name="staffId" data-staff-select required></select></label><label>Manager PIN<input name="pin" type="password" minlength="4" required></label></div><fieldset><legend>Authorized branches</legend><div class="staff-checks" id="managerBranchChecks"></div></fieldset><button class="primary full" type="submit">Save branch access</button><p class="hint">The PIN is stored securely as a one-way hash.</p></form><div class="panel"><h2>Current manager access</h2><div id="managerAccessList" class="manager-access-list"></div></div></div>
-      <div class="panel"><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Branch workspace</th><th>Current PIN</th><th>Status</th></tr></thead><tbody id="accessTable"></tbody></table></div></div>
+      <div class="panel branch-access-panel"><div class="section-heading"><div><h2>Branch workspace access</h2><p class="hint">Share each workspace and PIN only with people assigned to that branch.</p></div></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Branch workspace</th><th>Current PIN</th><th>Status</th></tr></thead><tbody id="accessTable"></tbody></table></div></div>
     </section>
   </main>
   <script>window.initialBranchId = ${JSON.stringify(initialBranchId)}; window.appMode = ${JSON.stringify(mode)}; window.uiIconPaths = ${JSON.stringify(UI_ICON_PATHS)}; ${clientScript()}</script>
@@ -2962,6 +2987,31 @@ legend { grid-column:1/-1; }
 .closure-list { display:flex; flex-wrap:wrap; gap:8px; }
 .closure-chip,.pin-code { display:inline-flex; padding:7px 10px; color:var(--brand); background:var(--brand-soft); border:1px solid #e3d3e8; border-radius:8px; font-weight:800; }
 .page-heading { margin-bottom:14px; }
+.access-role-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+.access-role-card { position:relative; overflow:hidden; }
+.access-role-card::after { position:absolute; right:-46px; bottom:-62px; width:150px; height:150px; content:""; background:var(--brand-soft); border-radius:50%; opacity:.7; pointer-events:none; }
+.manager-role-card { background:linear-gradient(145deg,#fff 55%,#faf3fc); }
+.access-role-heading { position:relative; z-index:1; display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:12px; }
+.access-role-heading h3 { margin:0; font-size:24px; }
+.access-role-heading .eyebrow { margin-bottom:1px; }
+.access-role-icon { display:grid; place-items:center; width:46px; height:46px; color:#fff; background:var(--brand); border-radius:12px; }
+.access-role-icon .ui-icon { width:22px; height:22px; }
+.access-level,.access-note { display:inline-flex; padding:5px 9px; color:var(--brand); background:var(--brand-soft); border:1px solid #e3d3e8; border-radius:999px; font-size:11px; font-weight:800; white-space:nowrap; }
+.access-list { position:relative; z-index:1; display:grid; gap:9px; margin:18px 0; padding:0; list-style:none; }
+.access-list li { position:relative; padding-left:27px; font-weight:700; }
+.access-list li::before { position:absolute; left:0; top:1px; display:grid; place-items:center; width:19px; height:19px; content:"✓"; color:#fff; background:var(--success); border-radius:50%; font-size:11px; }
+.access-avoid { position:relative; z-index:1; margin:0; padding:11px 13px; color:#70434d; background:#fff5f6; border:1px solid #efd7db; border-radius:9px; font-size:12px; }
+.access-matrix-panel,.branch-access-panel { margin-top:18px; padding:0; overflow:hidden; }
+.access-matrix-panel>.section-heading,.branch-access-panel>.section-heading { padding:18px 22px; background:#faf8fb; border-bottom:1px solid var(--line); }
+.access-matrix-panel h2,.branch-access-panel h2 { font-size:20px; }
+.access-matrix { min-width:680px; }
+.access-matrix th:first-child,.access-matrix td:first-child,.branch-access-panel th:first-child,.branch-access-panel td:first-child { padding-left:22px; }
+.access-matrix th:last-child,.access-matrix td:last-child,.branch-access-panel th:last-child,.branch-access-panel td:last-child { padding-right:22px; }
+.permission { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border-radius:999px; font-size:11px; font-weight:800; white-space:nowrap; }
+.permission::before { width:6px; height:6px; content:""; background:currentColor; border-radius:50%; }
+.permission.yes { color:#087f5b; background:#e9f8f2; }
+.permission.no { color:#7a6670; background:#f1edf0; }
+.permission.limited { color:#9a6013; background:#fff3dd; }
 .sale-item { padding:14px; margin-bottom:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .line-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin:-4px 0 10px; }
 .line-meta strong { font-size:18px; }
@@ -3019,6 +3069,6 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.time-clock-panel,.report-filters{grid-template-columns:1fr}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
+@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.time-clock-panel,.report-filters,.access-role-grid{grid-template-columns:1fr}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none}.access-role-heading{grid-template-columns:auto 1fr}.access-level{grid-column:1/-1;justify-self:start} }
 `;
 }
