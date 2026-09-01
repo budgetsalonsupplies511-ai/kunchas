@@ -9,6 +9,18 @@ export default {
         return htmlResponse(renderApp("", "overview", "admin"));
       }
 
+      if (request.method === "GET" && url.pathname === "/manager") {
+        return htmlResponse(renderManagerApp());
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/manager-login-options") {
+        return getManagerLoginOptions(env);
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/manager-data") {
+        return getManagerData(request, env);
+      }
+
       if (request.method === "GET" && url.pathname === "/pos") {
         return htmlResponse(renderApp("", "pos", "staff"));
       }
@@ -183,6 +195,83 @@ async function getAppData(env) {
     timeEntries,
     managerAssignments
   });
+}
+
+async function getManagerLoginOptions(env) {
+  const assignments = await all(env, `SELECT DISTINCT mba.staff_id, st.name AS staff_name, mba.branch_id, br.name AS branch_name
+    FROM manager_branch_assignments mba
+    JOIN staff st ON st.id = mba.staff_id AND st.status = 'Active'
+    JOIN branches br ON br.id = mba.branch_id AND br.status = 'Open'
+    ORDER BY st.name, br.name`);
+  return jsonResponse({ assignments });
+}
+
+async function getManagerData(request, env) {
+  const auth = await authenticateManager(request, env);
+  if (auth.error) return auth.error;
+  const { staffId, branchId, permissions } = auth;
+  const permissionSet = new Set(permissions);
+  const needsActivity = ["dashboard","reports"].some((permission) => permissionSet.has(permission));
+  const [branchRows, sales, saleItems, bookings, customers, staff, roster, services, products, inventory, closings] = await Promise.all([
+    all(env, "SELECT id, name, address, phone, status FROM branches WHERE id = ?", [branchId]),
+    needsActivity || permissionSet.has("customers") ? all(env, `SELECT s.id, s.created_at, s.customer_id, s.total_cents, s.payment_method, s.status
+      FROM sales s WHERE s.branch_id = ? ORDER BY s.created_at DESC LIMIT 500`, [branchId]) : [],
+    needsActivity || permissionSet.has("customers") ? all(env, `SELECT si.*, s.customer_id, s.created_at
+      FROM sale_items si JOIN sales s ON s.id = si.sale_id
+      WHERE s.branch_id = ? ORDER BY s.created_at DESC LIMIT 1500`, [branchId]) : [],
+    permissionSet.has("bookings") || needsActivity ? all(env, `SELECT b.*, c.first_name, c.last_name, st.name AS staff_name
+      FROM bookings b
+      LEFT JOIN customers c ON c.id = b.customer_id
+      LEFT JOIN staff st ON st.id = b.staff_id
+      WHERE b.branch_id = ? ORDER BY b.booking_date DESC, b.booking_time DESC LIMIT 500`, [branchId]) : [],
+    permissionSet.has("customers") ? all(env, `SELECT DISTINCT c.* FROM customers c
+      LEFT JOIN sales s ON s.customer_id = c.id AND s.branch_id = ?
+      LEFT JOIN bookings b ON b.customer_id = c.id AND b.branch_id = ?
+      WHERE c.branch_id = ? OR s.id IS NOT NULL OR b.id IS NOT NULL
+      ORDER BY c.updated_at DESC LIMIT 500`, [branchId, branchId, branchId]) : [],
+    permissionSet.has("staff") || permissionSet.has("roster") || needsActivity ? all(env, `SELECT DISTINCT st.id, st.name, st.email, st.phone, st.role, st.status, st.hourly_rate_cents
+      FROM staff st LEFT JOIN staff_roster sr ON sr.staff_id = st.id AND sr.branch_id = ?
+      WHERE st.status = 'Active' AND (st.branch_id = ? OR sr.id IS NOT NULL)
+      ORDER BY st.name`, [branchId, branchId]) : [],
+    permissionSet.has("roster") || needsActivity ? all(env, `SELECT sr.*, st.name AS staff_name
+      FROM staff_roster sr LEFT JOIN staff st ON st.id = sr.staff_id
+      WHERE sr.branch_id = ? ORDER BY sr.roster_date DESC, sr.start_time LIMIT 1000`, [branchId]) : [],
+    permissionSet.has("services") ? all(env, "SELECT id, name, category, subcategory, price_cents, duration_minutes, status FROM services WHERE status = 'Active' ORDER BY category, subcategory, name") : [],
+    permissionSet.has("products") ? all(env, "SELECT id, name, sku, barcode, category, price_cents, status FROM products WHERE status = 'Active' ORDER BY category, name") : [],
+    permissionSet.has("inventory") ? all(env, `SELECT inv.*, p.name AS product_name, p.sku
+      FROM inventory_stock inv LEFT JOIN products p ON p.id = inv.product_id
+      WHERE inv.branch_id = ? ORDER BY p.name`, [branchId]) : [],
+    permissionSet.has("closing") ? all(env, "SELECT * FROM daily_closings WHERE branch_id = ? ORDER BY closing_date DESC LIMIT 200", [branchId]) : []
+  ]);
+  const branch = branchRows[0];
+  if (!branch) return jsonResponse({ error:"Assigned branch is unavailable." }, 404);
+  return jsonResponse({
+    manager:{ staffId, branchId, permissions }, branch,
+    sales, saleItems,
+    bookings:bookings.map((booking) => ({ ...booking, customer_name:`${booking.first_name || ""} ${booking.last_name || ""}`.trim() })),
+    customers, staff, roster, services, products, inventory, closings
+  });
+}
+
+async function authenticateManager(request, env) {
+  const staffId = clean(request.headers.get("x-manager-id"));
+  const branchId = clean(request.headers.get("x-branch-id"));
+  const pin = clean(request.headers.get("x-manager-pin"));
+  if (!staffId || !branchId || pin.length < 4) return { error:jsonResponse({ error:"Manager, branch, and PIN are required." }, 401) };
+  const assignment = await env.DB.prepare("SELECT pin_hash, permissions FROM manager_branch_assignments WHERE staff_id = ? AND branch_id = ?").bind(staffId, branchId).first();
+  if (!assignment) return { error:jsonResponse({ error:"You are not assigned to this branch." }, 403) };
+  const suppliedHash = await managerPinHash(staffId, branchId, pin);
+  if (!safeHashEqual(String(assignment.pin_hash || ""), suppliedHash)) return { error:jsonResponse({ error:"Incorrect manager PIN." }, 401) };
+  let permissions = [];
+  try { permissions = JSON.parse(assignment.permissions || "[]"); } catch (_) { permissions = []; }
+  return { staffId, branchId, permissions:Array.isArray(permissions) ? permissions : [] };
+}
+
+function safeHashEqual(left, right) {
+  if (left.length !== right.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  return mismatch === 0;
 }
 
 async function listPublicBranches(env) {
@@ -1558,7 +1647,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel"><h2>All branches</h2><div class="cards" id="branchCards"></div></div>
     </section>
     <section class="tab admin-only" id="access">
-      <div class="section-heading page-heading"><div><p class="eyebrow">Security &amp; entry</p><h2>Roles &amp; access</h2><p class="hint">Use these recommended permissions when giving staff and managers access.</p></div></div>
+      <div class="section-heading page-heading"><div><p class="eyebrow">Security &amp; entry</p><h2>Roles &amp; access</h2><p class="hint">Use these recommended permissions when giving staff and managers access.</p></div><a class="secondary button-link" href="/manager">Open manager login</a></div>
       <div class="access-role-grid">
         <article class="panel access-role-card">
           <div class="access-role-heading"><span class="access-role-icon">${appIcon("staff")}</span><div><p class="eyebrow">Day-to-day access</p><h3>Staff</h3></div><span class="access-level">Branch only</span></div>
@@ -1591,6 +1680,47 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
   <script>window.initialBranchId = ${JSON.stringify(initialBranchId)}; window.appMode = ${JSON.stringify(mode)}; window.uiIconPaths = ${JSON.stringify(UI_ICON_PATHS)}; ${clientScript()}</script>
 </body>
 </html>`;
+}
+
+function renderManagerApp() {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kunchas Manager Dashboard</title><style>${styles()}
+.manager-login-shell{min-height:100vh;display:grid;place-items:center;padding:24px;background:linear-gradient(145deg,#f8f1fa,#f7fbfc)}.manager-login{width:min(460px,100%)}.manager-shell.hidden,.manager-login-shell.hidden{display:none!important}.manager-nav button.hidden{display:none!important}.manager-section{display:none}.manager-section.active{display:block}.manager-identity{display:grid;gap:2px;text-align:right}.manager-identity span{color:var(--muted);font-size:12px}.manager-table-title{margin:0 0 14px}.manager-summary{margin-bottom:18px}.manager-logout{margin-top:16px;width:100%}.manager-branch-badge{display:inline-flex;padding:6px 10px;color:var(--brand);background:var(--brand-soft);border-radius:999px;font-weight:800}.manager-empty{padding:22px;color:var(--muted);text-align:center}.manager-permission-note{margin-top:12px;padding:11px;background:#faf8fb;border:1px solid var(--line);border-radius:8px}
+</style></head><body>
+<div class="manager-login-shell" id="managerLoginShell"><form class="panel manager-login" id="managerLoginForm"><div class="brand"><span>K</span><strong>Kunchas</strong></div><p class="eyebrow">Manager workspace</p><h1>Manager login</h1><p class="hint">Choose your name and assigned branch, then enter your manager PIN.</p><label>Manager<select name="staffId" id="managerLoginStaff" required><option value="">Choose manager</option></select></label><label>Branch<select name="branchId" id="managerLoginBranch" required><option value="">Choose branch</option></select></label><label>PIN<input name="pin" type="password" minlength="4" inputmode="numeric" required></label><button class="primary full" type="submit">Open manager dashboard</button><p class="message" id="managerLoginMessage"></p></form></div>
+<div class="manager-shell hidden" id="managerShell"><aside class="sidebar"><div class="brand"><span>K</span><strong>Kunchas</strong></div><nav class="manager-nav" id="managerNav">
+<button class="nav" data-manager-tab="dashboard" data-permission="dashboard">${appIcon("dashboard")}<span>Dashboard</span></button><button class="nav" data-manager-tab="customers" data-permission="customers">${appIcon("customers")}<span>Customers</span></button><button class="nav" data-manager-tab="staff" data-permission="staff">${appIcon("staff")}<span>Staff</span></button><button class="nav" data-manager-tab="roster" data-permission="roster">${appIcon("roster")}<span>Roster</span></button><button class="nav" data-manager-tab="services" data-permission="services">${appIcon("services")}<span>Services</span></button><button class="nav" data-manager-tab="products" data-permission="products">${appIcon("products")}<span>Products</span></button><button class="nav" data-manager-tab="inventory" data-permission="inventory">${appIcon("inventory")}<span>Inventory</span></button><button class="nav" data-manager-tab="reports" data-permission="reports">${appIcon("reports")}<span>Reports &amp; sales</span></button><button class="nav" data-manager-tab="bookings" data-permission="bookings">${appIcon("bookings")}<span>Bookings</span></button><button class="nav" data-manager-tab="closing" data-permission="closing">${appIcon("closing")}<span>Daily closing</span></button></nav><button class="secondary manager-logout" id="managerLogout" type="button">Log out</button></aside>
+<main class="app"><header class="topbar"><div><p class="eyebrow">Manager dashboard</p><h1 id="managerPageTitle">Dashboard</h1></div><div class="manager-identity"><strong id="managerName"></strong><span id="managerBranch"></span></div></header><p class="message" id="managerMessage"></p>
+<section class="manager-section" id="manager-dashboard"><div class="metrics manager-summary" id="managerMetrics"></div><div class="split"><div class="panel"><h2>Today's bookings</h2><div id="managerTodayBookings"></div></div><div class="panel"><h2>Today's roster</h2><div id="managerTodayRoster"></div></div></div></section>
+<section class="manager-section" id="manager-customers"><div class="panel"><h2 class="manager-table-title">Branch customers</h2><div class="table-wrap"><table><thead><tr><th>Customer</th><th>Phone</th><th>Email</th><th>Notes</th></tr></thead><tbody id="managerCustomersTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-staff"><div class="panel"><h2 class="manager-table-title">Branch staff</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Email</th><th>Status</th></tr></thead><tbody id="managerStaffTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-roster"><div class="panel"><h2 class="manager-table-title">Branch roster</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Time</th><th>Status</th><th>Notes</th></tr></thead><tbody id="managerRosterTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-services"><div class="panel"><h2 class="manager-table-title">Services</h2><div class="table-wrap"><table><thead><tr><th>Category</th><th>Subcategory</th><th>Service</th><th>Duration</th><th>Price</th></tr></thead><tbody id="managerServicesTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-products"><div class="panel"><h2 class="manager-table-title">Products</h2><div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU</th><th>Category</th><th>Price</th></tr></thead><tbody id="managerProductsTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-inventory"><div class="panel"><h2 class="manager-table-title">Branch inventory</h2><div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU</th><th>Quantity</th><th>Low-stock level</th></tr></thead><tbody id="managerInventoryTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-reports"><div class="metrics manager-summary" id="managerReportMetrics"></div><div class="panel"><h2 class="manager-table-title">Recent branch sales</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Total</th><th>Payment</th><th>Status</th></tr></thead><tbody id="managerSalesTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-bookings"><div class="panel"><h2 class="manager-table-title">Branch bookings</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Service</th><th>Staff</th><th>Status</th><th>Total</th></tr></thead><tbody id="managerBookingsTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-closing"><div class="panel"><h2 class="manager-table-title">Daily closings</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Expected cash</th><th>Actual cash</th><th>Expected card</th><th>Actual card</th><th>Closed by</th></tr></thead><tbody id="managerClosingTable"></tbody></table></div></div></section>
+</main></div><script>${managerClientScript()}</script></body></html>`;
+}
+
+function managerClientScript() {
+  return `
+let managerOptions=[];let managerData=null;let managerCredentials=null;
+const loginShell=document.querySelector("#managerLoginShell"),shell=document.querySelector("#managerShell"),loginMessage=document.querySelector("#managerLoginMessage"),managerMessage=document.querySelector("#managerMessage");
+document.querySelector("#managerLoginForm").addEventListener("submit",managerLogin);document.querySelector("#managerLoginStaff").addEventListener("change",renderManagerBranches);document.querySelector("#managerLogout").addEventListener("click",managerLogout);document.querySelectorAll("[data-manager-tab]").forEach((button)=>button.addEventListener("click",()=>showManagerTab(button.dataset.managerTab)));
+loadManagerOptions();
+async function loadManagerOptions(){try{const response=await fetch("/api/manager-login-options");const result=await response.json();if(!response.ok)throw new Error(result.error||"Unable to load managers.");managerOptions=result.assignments||[];const unique=[...new Map(managerOptions.map((item)=>[item.staff_id,item])).values()];document.querySelector("#managerLoginStaff").innerHTML='<option value="">Choose manager</option>'+unique.map((item)=>'<option value="'+managerEsc(item.staff_id)+'">'+managerEsc(item.staff_name)+'</option>').join("");}catch(error){loginMessage.textContent=error.message;}}
+function renderManagerBranches(){const staffId=document.querySelector("#managerLoginStaff").value;const rows=managerOptions.filter((item)=>item.staff_id===staffId);document.querySelector("#managerLoginBranch").innerHTML='<option value="">Choose branch</option>'+rows.map((item)=>'<option value="'+managerEsc(item.branch_id)+'">'+managerEsc(item.branch_name)+'</option>').join("");}
+async function managerLogin(event){event.preventDefault();const data=new FormData(event.currentTarget);managerCredentials={staffId:data.get("staffId"),branchId:data.get("branchId"),pin:data.get("pin")};loginMessage.textContent="Checking access...";try{const response=await fetch("/api/manager-data",{headers:{"x-manager-id":managerCredentials.staffId,"x-branch-id":managerCredentials.branchId,"x-manager-pin":managerCredentials.pin}});const result=await response.json();if(!response.ok)throw new Error(result.error||"Login failed.");managerData=result;openManagerWorkspace();}catch(error){loginMessage.textContent=error.message;managerCredentials=null;}}
+function openManagerWorkspace(){const option=managerOptions.find((item)=>item.staff_id===managerCredentials.staffId&&item.branch_id===managerCredentials.branchId);document.querySelector("#managerName").textContent=option?.staff_name||"Manager";document.querySelector("#managerBranch").textContent=managerData.branch.name;const allowed=new Set(managerData.manager.permissions||[]);document.querySelectorAll("[data-permission]").forEach((button)=>button.classList.toggle("hidden",!allowed.has(button.dataset.permission)));loginShell.classList.add("hidden");shell.classList.remove("hidden");renderManagerWorkspace();const first=document.querySelector("[data-manager-tab]:not(.hidden)");if(first)showManagerTab(first.dataset.managerTab);}
+function managerLogout(){managerCredentials=null;managerData=null;document.querySelector("#managerLoginForm").reset();renderManagerBranches();shell.classList.add("hidden");loginShell.classList.remove("hidden");loginMessage.textContent="";}
+function showManagerTab(tab){document.querySelectorAll("[data-manager-tab],.manager-section").forEach((item)=>item.classList.remove("active"));document.querySelector('[data-manager-tab="'+managerCss(tab)+'"]')?.classList.add("active");document.querySelector("#manager-"+tab)?.classList.add("active");const titles={dashboard:"Dashboard",customers:"Customers",staff:"Staff",roster:"Roster",services:"Services",products:"Products",inventory:"Inventory",reports:"Reports & sales",bookings:"Bookings",closing:"Daily closing"};document.querySelector("#managerPageTitle").textContent=titles[tab]||"Manager";}
+function renderManagerWorkspace(){const today=new Date().toISOString().slice(0,10);const todaySales=(managerData.sales||[]).filter((sale)=>String(sale.created_at).slice(0,10)===today);const todayBookings=(managerData.bookings||[]).filter((booking)=>booking.booking_date===today);const todayRoster=(managerData.roster||[]).filter((entry)=>entry.roster_date===today);const todayTotal=todaySales.reduce((sum,sale)=>sum+Number(sale.total_cents||0),0);setHtml("managerMetrics",metric("Today's sales",managerMoney(todayTotal))+metric("Transactions",todaySales.length)+metric("Bookings",todayBookings.length)+metric("Rostered staff",todayRoster.length));setHtml("managerTodayBookings",todayBookings.length?todayBookings.map((booking)=>'<article class="sale-item"><strong>'+managerEsc(booking.booking_time+" · "+booking.customer_name)+'</strong><span>'+managerEsc(booking.service_names||"")+" · "+managerMoney(booking.total_cents)+'</span></article>').join(""):empty("No bookings today."));setHtml("managerTodayRoster",todayRoster.length?todayRoster.map((entry)=>'<article class="sale-item"><strong>'+managerEsc(entry.staff_name||"Staff")+'</strong><span>'+managerEsc((entry.start_time||"")+"–"+(entry.end_time||"")+" · "+(entry.status||"Working"))+'</span></article>').join(""):empty("No staff rostered today."));
+setRows("managerCustomersTable",managerData.customers,(item)=>'<tr><td><strong>'+managerEsc((item.first_name||"")+" "+(item.last_name||""))+'</strong></td><td>'+managerEsc(item.phone||"")+'</td><td>'+managerEsc(item.email||"")+'</td><td>'+managerEsc(item.notes||"")+'</td></tr>',4);setRows("managerStaffTable",managerData.staff,(item)=>'<tr><td><strong>'+managerEsc(item.name)+'</strong></td><td>'+managerEsc(item.role||"Staff")+'</td><td>'+managerEsc(item.phone||"")+'</td><td>'+managerEsc(item.email||"")+'</td><td>'+managerEsc(item.status||"")+'</td></tr>',5);setRows("managerRosterTable",managerData.roster,(item)=>'<tr><td>'+managerEsc(item.roster_date)+'</td><td><strong>'+managerEsc(item.staff_name||"Staff")+'</strong></td><td>'+managerEsc((item.start_time||"")+"–"+(item.end_time||""))+'</td><td>'+managerEsc(item.status||"")+'</td><td>'+managerEsc(item.notes||"")+'</td></tr>',5);setRows("managerServicesTable",managerData.services,(item)=>'<tr><td>'+managerEsc(item.category||"")+'</td><td>'+managerEsc(item.subcategory||"")+'</td><td><strong>'+managerEsc(item.name)+'</strong></td><td>'+Number(item.duration_minutes||0)+' min</td><td>'+managerMoney(item.price_cents)+'</td></tr>',5);setRows("managerProductsTable",managerData.products,(item)=>'<tr><td><strong>'+managerEsc(item.name)+'</strong></td><td>'+managerEsc(item.sku||"")+'</td><td>'+managerEsc(item.category||"")+'</td><td>'+managerMoney(item.price_cents)+'</td></tr>',4);setRows("managerInventoryTable",managerData.inventory,(item)=>'<tr><td><strong>'+managerEsc(item.product_name||"Product")+'</strong></td><td>'+managerEsc(item.sku||"")+'</td><td>'+Number(item.quantity||0)+'</td><td>'+Number(item.low_stock_level||0)+'</td></tr>',4);
+const allSales=managerData.sales||[];const total=allSales.reduce((sum,sale)=>sum+Number(sale.total_cents||0),0);setHtml("managerReportMetrics",metric("Recorded sales",managerMoney(total))+metric("Transactions",allSales.length)+metric("Average sale",managerMoney(allSales.length?Math.round(total/allSales.length):0))+metric("Branch",managerEsc(managerData.branch.name)));setRows("managerSalesTable",allSales,(item)=>'<tr><td>'+managerDate(item.created_at)+'</td><td><strong>'+managerMoney(item.total_cents)+'</strong></td><td>'+managerEsc(item.payment_method||"")+'</td><td>'+managerEsc(item.status||"")+'</td></tr>',4);setRows("managerBookingsTable",managerData.bookings,(item)=>'<tr><td>'+managerEsc(item.booking_date+" "+item.booking_time)+'</td><td><strong>'+managerEsc(item.customer_name||"")+'</strong></td><td>'+managerEsc(item.service_names||"")+'</td><td>'+managerEsc(item.staff_name||"")+'</td><td>'+managerEsc(item.status||"")+'</td><td>'+managerMoney(item.total_cents)+'</td></tr>',6);setRows("managerClosingTable",managerData.closings,(item)=>'<tr><td>'+managerEsc(item.closing_date)+'</td><td>'+managerMoney(item.expected_cash_cents)+'</td><td>'+managerMoney(item.actual_cash_cents)+'</td><td>'+managerMoney(item.expected_card_cents)+'</td><td>'+managerMoney(item.actual_card_cents)+'</td><td>'+managerEsc(item.closed_by||"")+'</td></tr>',6);managerMessage.textContent="Showing "+managerData.branch.name+" only.";}
+function metric(label,value){return '<article><span>'+managerEsc(label)+'</span><strong>'+value+'</strong></article>';}function setHtml(id,value){const node=document.querySelector("#"+id);if(node)node.innerHTML=value;}function setRows(id,rows,render,columns){const node=document.querySelector("#"+id);if(node)node.innerHTML=(rows||[]).length?rows.map(render).join(""):'<tr><td colspan="'+columns+'" class="empty-cell">No records available.</td></tr>';}function empty(text){return '<p class="manager-empty">'+managerEsc(text)+'</p>';}function managerMoney(cents){return new Intl.NumberFormat("en-AU",{style:"currency",currency:"AUD"}).format(Number(cents||0)/100);}function managerDate(value){return value?new Date(value).toLocaleString("en-AU",{dateStyle:"medium",timeStyle:"short"}):"";}function managerEsc(value){return String(value??"").replace(/[&<>\"']/g,(character)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;","'":"&#039;"})[character]);}function managerCss(value){return String(value||"").replace(/[^a-z0-9_-]/gi,"");}
+`;
 }
 
 function clientScript() {
