@@ -302,7 +302,7 @@ async function createBooking(request, env) {
     return jsonResponse({ error: "Bookings must start at or after 10:00 am and finish by 7:00 pm." }, 400);
   }
   if (await exceedsBookingCapacity(env, branchId, bookingDate, startMinutes, startMinutes + totalMinutes)) {
-    return jsonResponse({ error: "This time overlaps two existing bookings. Please select another time." }, 409);
+    return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
   }
 
   await env.DB.prepare(
@@ -376,7 +376,8 @@ async function exceedsBookingCapacity(env, branchId, bookingDate, startMinutes, 
     const existingEnd = existingStart + Math.max(15, Number(booking.duration_minutes || 15));
     return startMinutes < existingEnd && endMinutes > existingStart ? [{ start: existingStart, end: existingEnd }] : [];
   });
-  return overlapping.some((booking, index) => overlapping.slice(index + 1).some((other) => Math.max(startMinutes, booking.start, other.start) < Math.min(endMinutes, booking.end, other.end)));
+  const checkpoints = [startMinutes, ...overlapping.map((booking) => Math.max(startMinutes, booking.start))];
+  return checkpoints.some((minute) => overlapping.filter((booking) => minute >= booking.start && minute < booking.end).length >= 4);
 }
 
 async function createBranchBooking(request, env) {
@@ -425,7 +426,7 @@ async function updateBooking(request, env, bookingId) {
     const startMinutes = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
     if (startMinutes < 600 || startMinutes + totalMinutes > 1140) return jsonResponse({ error: "Bookings must start at or after 10:00 am and finish by 7:00 pm." }, 400);
     const nextStatus = clean(body.status) || existing.status;
-    if (!['Cancelled', 'No show'].includes(nextStatus) && await exceedsBookingCapacity(env, existing.branch_id, bookingDate, startMinutes, startMinutes + totalMinutes, bookingId)) return jsonResponse({ error: "This time overlaps two existing bookings. Please select another time." }, 409);
+    if (!['Cancelled', 'No show'].includes(nextStatus) && await exceedsBookingCapacity(env, existing.branch_id, bookingDate, startMinutes, startMinutes + totalMinutes, bookingId)) return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
   }
 
   await env.DB.prepare(
@@ -1442,7 +1443,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       </div>
       <div class="panel time-clock-panel"><div><p class="eyebrow">Staff time clock</p><h2>Clock in, break or out</h2><p class="hint" id="timeClockStatus">Actual hours feed the payroll report.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button">Clock in</button><button class="secondary" id="breakStartButton" type="button">Start break</button><button class="secondary" id="breakEndButton" type="button">End break</button><button class="secondary" id="clockOutButton" type="button">Clock out</button></div></div>
       <div class="split">
-        <form class="panel" id="saleForm">
+        <form class="panel" id="saleForm" novalidate>
           <h2>New POS sale</h2>
           <input name="branchId" type="hidden">
           <input name="bookingId" type="hidden">
@@ -1468,7 +1469,8 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
             <label>Card amount $<input name="cardAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
           </div>
           <p class="hint">Use one box for full cash/card, or both boxes for split payment.</p>
-          <button class="primary full" type="submit">Complete sale</button>
+          <button class="primary full" id="completeSale" type="submit">Complete purchase</button>
+          <p class="sale-message" id="saleMessage" aria-live="polite"></p>
           <button class="secondary full hidden" id="printReceipt" type="button">Print receipt / open cash drawer</button>
           <p class="hint">Cash drawer opens only when it is connected to the receipt printer and configured to open on receipt print.</p>
         </form>
@@ -1494,7 +1496,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
           <label>Notes<textarea name="notes" rows="3"></textarea></label>
           <button class="primary full" type="submit">Save booking</button>
         </form>
-        <div class="panel diary-panel"><div class="booking-date-heading"><div><h2>Booking diary</h2><p class="hint">Four booking columns · maximum two concurrent bookings · no visual overlap · 15-minute intervals · 10:00 am–7:00 pm.</p></div><div class="diary-date-controls"><button class="secondary" id="bookingToday" type="button">Today</button><button class="secondary" id="bookingPreviousDay" type="button" aria-label="Previous day">Previous</button><button class="secondary" id="bookingNextDay" type="button" aria-label="Next day">Next</button><label>Date<input id="bookingDisplayDate" type="date"></label></div></div><div class="booking-legend"><span><i class="online"></i>Online</span><span><i class="manual"></i>Manual</span></div><div class="booking-diary" id="bookingsTable"></div><div class="booking-detail hidden" id="bookingDetail"></div></div>
+        <div class="panel diary-panel"><div class="booking-date-heading"><div><h2>Booking diary</h2><p class="hint">Four booking columns · maximum four concurrent bookings per branch · 15-minute intervals · 10:00 am–7:00 pm.</p></div><div class="diary-date-controls"><button class="secondary" id="bookingToday" type="button">Today</button><button class="secondary" id="bookingPreviousDay" type="button" aria-label="Previous day">Previous</button><button class="secondary" id="bookingNextDay" type="button" aria-label="Next day">Next</button><label>Date<input id="bookingDisplayDate" type="date"></label></div></div><div class="booking-legend"><span><i class="online"></i>Online</span><span><i class="manual"></i>Manual</span></div><div class="booking-diary" id="bookingsTable"></div><div class="booking-detail hidden" id="bookingDetail"></div></div>
       </div>
     </section>
 
@@ -1802,7 +1804,7 @@ function fillSelects() {
   document.querySelectorAll('select[name="customerId"]').forEach((select) => select.innerHTML = customerOptions);
   document.querySelectorAll('select[name="productId"]').forEach((select) => select.innerHTML = productOptions);
   document.querySelector("#customerList").innerHTML = state.customers.map((c) => '<option value="' + esc(customerLabel(c)) + '"></option>').join("");
-  document.querySelector("#itemList").innerHTML = saleCatalog().map((item) => '<option value="' + esc(item.label) + '"></option>').join("");
+  document.querySelector("#itemList").innerHTML = "";
   document.querySelector("#staffList").innerHTML = state.staff.map((s) => '<option value="' + esc(staffLabel(s)) + '"></option>').join("");
   renderBookingCheckoutOptions();
   document.querySelectorAll(".staff-checks").forEach((box) => box.innerHTML = staffCheckboxes());
@@ -2389,11 +2391,11 @@ function openBookingDetail(bookingId) {
   const customer = state.customers.find((item) => item.id === booking.customer_id);
   const detail = document.querySelector("#bookingDetail");
   const source = booking.source === 'Online' ? 'Online' : 'Manual';
-  detail.innerHTML = '<div class="profile-heading"><div><span class="source-badge ' + source.toLowerCase() + '">' + source + '</span><h3>' + esc(booking.customer_name) + '</h3><p class="hint">Select this booking to reschedule or cancel it.</p></div><button class="secondary close-booking-detail" type="button">Close</button></div><div class="booking-detail-grid"><article><span>Phone</span><strong>' + esc(customer?.phone || "Not supplied") + '</strong></article><article><span>Services</span><strong>' + esc(booking.service_names) + '</strong></article><article><span>Staff</span><strong>' + esc(booking.staff_name || "Unassigned") + '</strong></article><article><span>Status</span><strong>' + esc(booking.status) + '</strong></article></div><div class="grid"><label>Booking date<input name="bookingDetailDate" type="date" value="' + esc(booking.booking_date) + '" required></label><label>Booking time<select name="bookingDetailTime" required>' + bookingTimeSelectOptions(booking.booking_time) + '</select></label></div><label>Special note<textarea name="bookingDetailNote">' + esc(booking.notes || "") + '</textarea></label><div class="form-actions booking-edit-actions"><button class="primary save-booking-detail" type="button">Save changes</button>' + (canCheckoutBooking(booking) ? '<button class="secondary checkout-booking-detail" type="button">Checkout in POS</button>' : '') + (!['Cancelled','Completed'].includes(booking.status) ? '<button class="danger cancel-booking-detail" type="button">Cancel booking</button>' : '') + '</div>';
+  detail.innerHTML = '<div class="profile-heading"><div><span class="source-badge ' + source.toLowerCase() + '">' + source + '</span><h3>' + esc(booking.customer_name) + '</h3><p class="hint">Edit, reschedule, cancel, or send this booking to POS checkout.</p></div><button class="secondary close-booking-detail" type="button">Close</button></div><div class="booking-detail-grid"><article><span>Phone</span><strong>' + esc(customer?.phone || "Not supplied") + '</strong></article><article><span>Services</span><strong>' + esc(booking.service_names) + '</strong></article><article><span>Staff</span><strong>' + esc(booking.staff_name || "Unassigned") + '</strong></article><article><span>Status</span><strong>' + esc(booking.status) + '</strong></article></div><div class="grid"><label>Booking date<input name="bookingDetailDate" type="date" value="' + esc(booking.booking_date) + '" required></label><label>Booking time<select name="bookingDetailTime" required>' + bookingTimeSelectOptions(booking.booking_time) + '</select></label></div><label>Assigned staff<select name="bookingDetailStaff">' + staffSelectOptions(booking.staff_id) + '</select></label><label>Special note<textarea name="bookingDetailNote">' + esc(booking.notes || "") + '</textarea></label><div class="form-actions booking-edit-actions"><button class="primary save-booking-detail" type="button">Save changes</button>' + (canCheckoutBooking(booking) ? '<button class="secondary checkout-booking-detail" type="button">Checkout in POS</button>' : '') + (!['Cancelled','Completed'].includes(booking.status) ? '<button class="danger cancel-booking-detail" type="button">Cancel booking</button>' : '') + '</div>';
   detail.classList.remove("hidden");
   detail.scrollIntoView({ behavior:"smooth", block:"start" });
   detail.querySelector(".close-booking-detail").addEventListener("click", () => detail.classList.add("hidden"));
-  detail.querySelector(".save-booking-detail").addEventListener("click", async () => { const bookingDate = detail.querySelector('[name="bookingDetailDate"]').value; const bookingTime = detail.querySelector('[name="bookingDetailTime"]').value; try { await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ bookingDate, bookingTime, notes:detail.querySelector('textarea').value }) }); await refreshPosData(); document.querySelector("#bookingDisplayDate").value = bookingDate; renderBookings(); detail.classList.add("hidden"); message.textContent = 'Booking date and time updated.'; } catch (error) { message.textContent = error.message; } });
+  detail.querySelector(".save-booking-detail").addEventListener("click", async () => { const bookingDate = detail.querySelector('[name="bookingDetailDate"]').value; const bookingTime = detail.querySelector('[name="bookingDetailTime"]').value; const staffId = detail.querySelector('[name="bookingDetailStaff"]').value; try { await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ bookingDate, bookingTime, staffId, notes:detail.querySelector('textarea').value }) }); await refreshPosData(); document.querySelector("#bookingDisplayDate").value = bookingDate; renderBookings(); detail.classList.add("hidden"); message.textContent = 'Booking details updated.'; } catch (error) { message.textContent = error.message; } });
   detail.querySelector(".cancel-booking-detail")?.addEventListener("click", async () => { if (!window.confirm('Cancel this booking?')) return; try { await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ status:'Cancelled' }) }); await refreshPosData(); detail.classList.add("hidden"); message.textContent = 'Booking cancelled.'; } catch (error) { message.textContent = error.message; } });
   detail.querySelector(".checkout-booking-detail")?.addEventListener("click", () => { document.querySelector("#bookingCheckout").value = booking.id; selectBookingForCheckout(); showTab("pos"); });
 }
@@ -2450,10 +2452,12 @@ function renderReports() {
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
   row.className = "sale-item";
-  row.innerHTML = '<label>Service / product search<input name="saleItemSearch" list="itemList" required placeholder="Type service or product"></label><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">Only this sale and receipt change. The master service stays the same.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
+  row.innerHTML = '<label>Quick find service / product<input name="saleItemSearch" list="itemList" autocomplete="off" required placeholder="Type at least 2 letters"></label><p class="hint quick-find-hint">Suggestions appear after 2 letters, ranked by closest match.</p><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">Only this sale and receipt change. The master service stays the same.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
   document.querySelector("#saleItems").append(row);
   row.querySelector(".add-staff").addEventListener("click", () => addStaffToSaleItem(row));
-  row.querySelector('input[name="saleItemSearch"]').addEventListener("input", () => updateSaleItemRow(row));
+  const quickFind = row.querySelector('input[name="saleItemSearch"]');
+  quickFind.addEventListener("input", () => { updateSaleQuickFind(quickFind.value); updateSaleItemRow(row); });
+  quickFind.addEventListener("focus", () => updateSaleQuickFind(quickFind.value));
   row.querySelector('input[name="instanceName"]').addEventListener("input", renderCartSummary);
   row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { updateAllocationSummary(row); renderCartSummary(); });
   if (selectedItem) row.querySelector('input[name="saleItemSearch"]').value = selectedItem.label;
@@ -2467,14 +2471,15 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
   }
 }
 function toggleBookingServiceMenu() { const menu = document.querySelector("#bookingServiceMenu"); const opening = menu.classList.contains("hidden"); menu.classList.toggle("hidden", !opening); document.querySelector("#bookingServiceSearch").setAttribute("aria-expanded", String(opening)); if (opening) renderBookingServiceCategories(); }
+function availableBookingServices() { return state.services.filter((service) => service.status !== "Inactive"); }
 function renderBookingServiceCategories() {
-  const categories = [...new Set(state.services.map((service) => service.category || "General"))].sort();
+  const categories = [...new Set(availableBookingServices().map((service) => service.category || "General"))].sort();
   document.querySelector("#bookingServiceCategories").innerHTML = '<p class="booking-picker-title">Choose a category</p>' + categories.map((category) => '<button class="booking-category-option" type="button" data-category="' + esc(category) + '">' + esc(category) + '</button>').join("");
   document.querySelector("#bookingCategoryServices").classList.add("hidden");
   document.querySelectorAll(".booking-category-option").forEach((button) => button.addEventListener("click", () => renderBookingSubCategories(button.dataset.category)));
 }
 function renderBookingSubCategories(category) {
-  const subCategories = [...new Set(state.services.filter((service) => (service.category || "General") === category).map((service) => service.sub_category || "General"))].sort();
+  const subCategories = [...new Set(availableBookingServices().filter((service) => (service.category || "General") === category).map((service) => service.sub_category || "General"))].sort();
   const box = document.querySelector("#bookingCategoryServices");
   box.innerHTML = '<div class="booking-picker-heading"><button class="secondary booking-category-back" type="button">Categories</button><strong>' + esc(category) + '</strong></div><p class="booking-picker-title">Choose a sub-category</p><div class="booking-service-categories">' + subCategories.map((subCategory) => '<button class="booking-category-option" type="button" data-sub-category="' + esc(subCategory) + '">' + esc(subCategory) + '</button>').join('') + '</div>';
   box.classList.remove("hidden");
@@ -2482,7 +2487,7 @@ function renderBookingSubCategories(category) {
   box.querySelectorAll("[data-sub-category]").forEach((button) => button.addEventListener("click", () => renderBookingCategoryServices(category, button.dataset.subCategory)));
 }
 function renderBookingCategoryServices(category, subCategory) {
-  const services = state.services.filter((service) => (service.category || "General") === category && (service.sub_category || "General") === subCategory);
+  const services = availableBookingServices().filter((service) => (service.category || "General") === category && (service.sub_category || "General") === subCategory);
   const box = document.querySelector("#bookingCategoryServices");
   box.innerHTML = '<div class="booking-picker-heading"><button class="secondary booking-category-back" type="button">Sub-categories</button><strong>' + esc(category) + ' · ' + esc(subCategory) + '</strong></div>' + services.map((service) => '<button class="booking-service-option" type="button" data-service-id="' + esc(service.id) + '"><span><strong>' + esc(service.name) + '</strong><em>' + esc(service.duration_minutes + ' min') + '</em></span><b>' + money(service.price_cents) + '</b></button>').join('');
   box.classList.remove("hidden");
@@ -2490,7 +2495,7 @@ function renderBookingCategoryServices(category, subCategory) {
   box.querySelectorAll(".booking-service-option").forEach((button) => button.addEventListener("click", () => addBookingService(button.dataset.serviceId)));
 }
 function addBookingService(serviceId) {
-  const service = state.services.find((item) => item.id === serviceId);
+  const service = availableBookingServices().find((item) => item.id === serviceId);
   if (!service || document.querySelector('#bookingSelectedServices input[value="' + cssEsc(service.id) + '"]')) return;
   const row = document.createElement("div");
   row.className = "booking-service-row";
@@ -2526,18 +2531,22 @@ async function submitBooking(event) {
 async function submitAdminForm(event, path) { event.preventDefault(); await submitJson(path, Object.fromEntries(new FormData(event.target)), event.target); }
 async function submitSale(event) {
   event.preventDefault();
-  const data = new FormData(event.target);
+  const form = event.target;
+  const submitButton = document.querySelector("#completeSale");
+  const data = new FormData(form);
+  setSaleMessage("");
   const customerMode = data.get("customerMode");
   const customerId = customerMode === "existing" ? findCustomerId(data.get("customerSearch")) : "";
   if (customerMode === "existing" && !customerId) {
-    message.textContent = "Select an existing customer from the dropdown, or choose walking customer.";
+    setSaleMessage("Select an existing customer from the dropdown, or choose walking customer.", true);
     return;
   }
   if (customerMode === "new" && (!data.get("newFirstName") || !data.get("newLastName") || (!data.get("newPhone") && !data.get("newEmail")))) {
-    message.textContent = "New customer needs first name, last name, and phone or email.";
+    setSaleMessage("New customer needs first name, last name, and phone or email.", true);
     return;
   }
-  const items = [...event.target.querySelectorAll(".sale-item")].map((row) => {
+  const saleRows = [...form.querySelectorAll(".sale-item")];
+  const items = saleRows.map((row) => {
     const selectedItem = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
     if (!selectedItem) return null;
     return {
@@ -2553,10 +2562,33 @@ async function submitSale(event) {
       })) : []
     };
   }).filter(Boolean);
-  for (const row of event.target.querySelectorAll(".sale-item")) {
-    const error = allocationError(row);
-    if (error) { message.textContent = error; return; }
+  if (!items.length || items.length !== saleRows.length) {
+    setSaleMessage("Select a valid service or product for every sale item.", true);
+    return;
   }
+  if (saleRows.some((row) => {
+    const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
+    return item?.type === "service" && (!row.querySelector('input[name="instanceName"]').value.trim() || Number(row.querySelector('input[name="instancePrice"]').value) <= 0);
+  })) {
+    setSaleMessage("Each service needs a name and an amount greater than $0.00.", true);
+    return;
+  }
+  for (const row of saleRows) {
+    const error = allocationError(row);
+    if (error) { setSaleMessage(error, true); return; }
+  }
+  const saleTotal = saleRows.reduce((total, row) => {
+    const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
+    const amount = item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value) * 100) : item.priceCents;
+    return total + amount;
+  }, 0);
+  const paymentTotal = Math.round((Number(data.get("cashAmount") || 0) + Number(data.get("cardAmount") || 0)) * 100);
+  if (paymentTotal < saleTotal) {
+    setSaleMessage("Enter cash and/or card payment covering the " + money(saleTotal) + " sale total.", true);
+    return;
+  }
+  submitButton.disabled = true;
+  submitButton.textContent = "Processing purchase...";
   await submitJson("/api/sales", {
     branchId:data.get("branchId"),
     bookingId:data.get("bookingId"),
@@ -2567,22 +2599,31 @@ async function submitSale(event) {
     cashAmount:data.get("cashAmount"),
     cardAmount:data.get("cardAmount"),
     items
-  }, event.target);
+  }, form);
+  submitButton.disabled = false;
+  submitButton.textContent = "Complete purchase";
+}
+function setSaleMessage(text, isError = false) {
+  const saleMessage = document.querySelector("#saleMessage");
+  if (!saleMessage) return;
+  saleMessage.textContent = text;
+  saleMessage.classList.toggle("error", isError);
 }
 async function submitJson(path, payload, form) {
   try {
     message.textContent = "Saving...";
+    if (form.id === "saleForm") setSaleMessage("Processing purchase...");
     const result = await api(path, { method:"POST", body:JSON.stringify(payload) });
     if (result.receipt) {
       lastReceipt = result.receipt;
       document.querySelector("#printReceipt").classList.remove("hidden");
     }
     form.reset();
-    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; addSaleItem(); updateCustomerMode(); }
+    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; addSaleItem(); updateCustomerMode(); setSaleMessage(result.receipt?.changeCents ? "Purchase complete. Return " + money(result.receipt.changeCents) + " change." : "Purchase completed successfully."); }
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
-  } catch (error) { message.textContent = error.message; }
+  } catch (error) { message.textContent = error.message; if (form.id === "saleForm") setSaleMessage(error.message, true); }
 }
 function updateCustomerMode() {
   const mode = document.querySelector('select[name="customerMode"]').value;
@@ -2717,6 +2758,27 @@ function saleCatalog() {
     ...(state.products || []).map((p) => ({ type:"product", typeLabel:"Product", id:p.id, name:p.name, priceCents:Number(p.price_cents || 0), label:"Product | " + p.name + " | " + (p.brand || p.category) + " | " + money(p.price_cents) }))
   ];
 }
+function saleQuickFindScore(item, query) {
+  const name = item.name.toLowerCase();
+  const label = item.label.toLowerCase();
+  if (name === query) return 0;
+  if (name.startsWith(query)) return 1;
+  if (name.includes(query)) return 2;
+  if (label.startsWith(query)) return 3;
+  if (label.includes(query)) return 4;
+  return Number.POSITIVE_INFINITY;
+}
+function updateSaleQuickFind(value) {
+  const list = document.querySelector("#itemList");
+  const query = String(value || "").trim().toLowerCase();
+  if (query.length < 2) { list.innerHTML = ""; return; }
+  const matches = saleCatalog()
+    .map((item) => ({ item, score:saleQuickFindScore(item, query) }))
+    .filter((match) => Number.isFinite(match.score))
+    .sort((a, b) => a.score - b.score || a.item.name.localeCompare(b.item.name))
+    .slice(0, 6);
+  list.innerHTML = matches.map(({ item }) => '<option value="' + esc(item.label) + '"></option>').join("");
+}
 function staffLabel(s) { return s.name + " | " + (s.phone || "No phone") + " | " + (s.email || "No email") + " | " + (s.branch_name || branchName(s.branch_id)); }
 function cssEsc(value) { return String(value).replace(/"/g, '\\"'); }
 function selected(value, expected) { return value === expected ? " selected" : ""; }
@@ -2764,6 +2826,10 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .hidden { display:none; }
 .admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
 .hint { margin:8px 0 0; color:var(--muted); font-size:13px; }
+.sale-message { min-height:22px; margin:10px 0 0; color:#087f5b; font-size:13px; font-weight:800; }
+.sale-message:empty { display:none; }
+.sale-message.error { color:#b42318; }
+button:disabled { cursor:wait; opacity:.65; }
 .load-row { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
 .admin-mode .load-row { display:none; }
 .message { min-height:28px; color:var(--brand); font-weight:800; }
