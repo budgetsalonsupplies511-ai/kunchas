@@ -4,6 +4,11 @@ export default {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
+      if (["POST", "PATCH"].includes(request.method) && url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/branches/")) {
+        const body = await request.clone().json();
+        const branchId = clean(body.branchId) || clean(request.headers.get("x-branch-id"));
+        if (branchId && (await all(env, "SELECT id FROM branches WHERE id = ? AND status = 'Archived'", [branchId])).length) return jsonResponse({ error: "This branch is archived. Restore it before making changes." }, 409);
+      }
 
       if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/admin")) {
         return htmlResponse(renderApp("", "overview", "admin"));
@@ -85,7 +90,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/staff-roster") return saveStaffRoster(request, env);
       if (request.method === "DELETE" && url.pathname === "/api/staff-roster") return deleteStaffRoster(request, env, url);
       if (request.method === "POST" && url.pathname === "/api/staff-regular-days-off") return saveStaffRegularDaysOff(request, env);
-      if (request.method === "POST" && url.pathname === "/api/branches") return createBranch(request, env);
+      if (request.method === "POST" && url.pathname === "/api/branches") return saveBranch(request, env);
+      if (request.method === "POST" && url.pathname.startsWith("/api/branches/") && url.pathname.endsWith("/restore")) return restoreBranch(request, env, clean(url.pathname.split("/")[3]));
+      if (request.method === "PATCH" && url.pathname.startsWith("/api/branches/")) return saveBranch(request, env, clean(url.pathname.replace("/api/branches/", "")));
       if (request.method === "DELETE" && url.pathname.startsWith("/api/branches/")) return deleteBranch(request, env, clean(url.pathname.replace("/api/branches/", "")));
       if (request.method === "POST" && url.pathname === "/api/stock-movements") return createStockMovement(request, env);
       if (request.method === "POST" && url.pathname === "/api/branch-hours") return saveBranchHours(request, env);
@@ -845,47 +852,81 @@ async function saveStaffRegularDaysOff(request, env) {
   return jsonResponse({ ok: true });
 }
 
-async function createBranch(request, env) {
+async function saveBranch(request, env, branchId = "") {
   const body = await request.json();
-  const name = clean(body.name);
-  const address = clean(body.address);
-  const phone = clean(body.phone);
-  const postCode = clean(body.postCode);
+  const name = clean(body.name), address = clean(body.address), phone = clean(body.phone);
+  const postCode = clean(body.postCode), status = clean(body.status) || "Open";
   if (!name || !address || !phone) return jsonResponse({ error: "Branch name, address, and phone are required." }, 400);
-  const id = `branch-${crypto.randomUUID()}`;
-  await env.DB.prepare("INSERT INTO branches (id, name, address, phone, post_code, pin_code, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(id, name, address, phone, postCode, postCode, clean(body.status) || "Open")
-    .run();
-  return jsonResponse({ ok: true, id }, 201);
+  if (!["Open", "Closed"].includes(status)) return jsonResponse({ error: "Invalid branch status." }, 400);
+  const hours = body.hours || [], closedDates = body.closedDates || [], removedDates = body.removedDates || [];
+  if (!Array.isArray(hours) || !Array.isArray(closedDates) || !Array.isArray(removedDates) || hours.length > 7) return jsonResponse({ error: "Invalid branch schedule." }, 400);
+  const timePattern = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+  const seenDays = new Set();
+  for (const hour of hours) {
+    if (!hour || !Number.isInteger(hour.dayOfWeek) || hour.dayOfWeek < 0 || hour.dayOfWeek > 6 || seenDays.has(hour.dayOfWeek) || (!hour.isClosed && (!timePattern.test(hour.openTime) || !timePattern.test(hour.closeTime) || hour.openTime >= hour.closeTime))) return jsonResponse({ error: "Each open day needs valid opening and closing times, with closing after opening." }, 400);
+    seenDays.add(hour.dayOfWeek);
+  }
+  for (const date of closedDates) {
+    const value = clean(date?.closedDate);
+    const parsed = new Date(value + "T00:00:00Z");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) return jsonResponse({ error: "Enter a valid closed date." }, 400);
+  }
+  if (branchId && !(await all(env, "SELECT id FROM branches WHERE id = ? AND status != 'Archived'", [branchId])).length) return jsonResponse({ error: "Branch not found." }, 404);
+  const id = branchId || 'branch-' + crypto.randomUUID();
+  const statements = [branchId
+    ? env.DB.prepare("UPDATE branches SET name = ?, address = ?, phone = ?, post_code = ?, pin_code = ?, status = ? WHERE id = ?").bind(name, address, phone, postCode, postCode, status, id)
+    : env.DB.prepare("INSERT INTO branches (id, name, address, phone, post_code, pin_code, status) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, name, address, phone, postCode, postCode, status)];
+  for (const hour of hours) statements.push(env.DB.prepare("INSERT INTO branch_hours (branch_id, day_of_week, open_time, close_time, is_closed) VALUES (?, ?, ?, ?, ?) ON CONFLICT(branch_id, day_of_week) DO UPDATE SET open_time = excluded.open_time, close_time = excluded.close_time, is_closed = excluded.is_closed").bind(id, hour.dayOfWeek, clean(hour.openTime) || "09:00", clean(hour.closeTime) || "17:30", hour.isClosed ? 1 : 0));
+  for (const dateId of removedDates) statements.push(env.DB.prepare("DELETE FROM branch_closed_dates WHERE id = ? AND branch_id = ?").bind(clean(dateId), id));
+  for (const date of closedDates) statements.push(date.id
+    ? env.DB.prepare("UPDATE branch_closed_dates SET closed_date = ?, reason = ? WHERE id = ? AND branch_id = ?").bind(clean(date.closedDate), clean(date.reason) || "Closed", clean(date.id), id)
+    : env.DB.prepare("INSERT INTO branch_closed_dates (id, branch_id, closed_date, reason) VALUES (?, ?, ?, ?)").bind('closed-' + crypto.randomUUID(), id, clean(date.closedDate), clean(date.reason) || "Closed"));
+  await env.DB.batch(statements);
+  return jsonResponse({ ok: true, id }, branchId ? 200 : 201);
 }
 
+async function confirmBranchAction(request, env, branchId) {
+  const body = await request.json();
+  const branch = (await all(env, "SELECT * FROM branches WHERE id = ?", [branchId]))[0];
+  if (!branch) return { error: jsonResponse({ error: "Branch not found." }, 404) };
+  const expected = clean(env.BRANCH_ADMIN_PIN);
+  const supplied = clean(body.pin);
+  if (!expected) return { error: jsonResponse({ error: "The admin PIN has not been configured. Contact the administrator." }, 503) };
+  if (!supplied) return { error: jsonResponse({ error: "Enter the admin PIN to continue." }, 403) };
+  const encoder = new TextEncoder();
+  const [left, right] = await Promise.all([crypto.subtle.digest("SHA-256", encoder.encode(expected)), crypto.subtle.digest("SHA-256", encoder.encode(supplied))]);
+  let different = 0;
+  const x = new Uint8Array(left), y = new Uint8Array(right);
+  for (let i = 0; i < x.length; i++) different |= x[i] ^ y[i];
+  if (different) return { error: jsonResponse({ error: "Incorrect PIN. Nothing has been changed." }, 403) };
+  return { body, branch };
+}
 async function deleteBranch(request, env, branchId) {
-  if (!branchId) return jsonResponse({ error: "Branch is required." }, 400);
-  const branch = (await all(env, "SELECT id FROM branches WHERE id = ?", [branchId]))[0];
-  if (!branch) return jsonResponse({ error: "Branch not found." }, 404);
-  const dependencies = await Promise.all([
-    countBranchRows(env, "customers", branchId),
-    countBranchRows(env, "bookings", branchId),
-    countBranchRows(env, "sales", branchId),
-    countBranchRows(env, "stock_movements", branchId),
-    countBranchRows(env, "daily_closings", branchId),
-    countBranchRows(env, "staff_roster", branchId),
-    countBranchRows(env, "time_entries", branchId)
-  ]);
-  if (dependencies.some(Boolean)) return jsonResponse({ error: "This branch has business records and cannot be deleted. Set it to closed instead." }, 409);
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM inventory_stock WHERE branch_id = ?").bind(branchId),
-    env.DB.prepare("DELETE FROM branch_hours WHERE branch_id = ?").bind(branchId),
-    env.DB.prepare("DELETE FROM branch_closed_dates WHERE branch_id = ?").bind(branchId),
-    env.DB.prepare("UPDATE staff SET branch_id = '' WHERE branch_id = ?").bind(branchId),
-    env.DB.prepare("DELETE FROM branches WHERE id = ?").bind(branchId)
-  ]);
-  return jsonResponse({ ok: true });
+  const { body, branch, error } = await confirmBranchAction(request, env, branchId);
+  if (error) return error;
+  if (body.mode === "archive") {
+    await env.DB.prepare("UPDATE branches SET status = 'Archived' WHERE id = ?").bind(branchId).run();
+    return jsonResponse({ ok: true, archived: true });
+  }
+  if (body.mode !== "permanent" || body.confirmName !== branch.name) return jsonResponse({ error: "To permanently delete, enter the branch name exactly." }, 400);
+  if (branch.status !== "Archived") return jsonResponse({ error: "Archive this branch before permanently deleting it." }, 409);
+  const statements = [
+    env.DB.prepare("DELETE FROM customers WHERE branch_id = ? AND NOT EXISTS (SELECT 1 FROM bookings WHERE customer_id = customers.id AND branch_id != ?) AND NOT EXISTS (SELECT 1 FROM sales WHERE customer_id = customers.id AND branch_id != ?)").bind(branchId, branchId, branchId),
+    env.DB.prepare("UPDATE customers SET branch_id = '' WHERE branch_id = ?").bind(branchId),
+    env.DB.prepare("DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE branch_id = ?)").bind(branchId)
+  ];
+  for (const table of ["bookings", "sales", "inventory_stock", "stock_movements", "daily_closings", "staff_roster", "time_entries", "branch_hours", "branch_closed_dates"]) statements.push(env.DB.prepare("DELETE FROM " + table + " WHERE branch_id = ?").bind(branchId));
+  statements.push(env.DB.prepare("UPDATE staff SET branch_id = '' WHERE branch_id = ?").bind(branchId));
+  statements.push(env.DB.prepare("DELETE FROM branches WHERE id = ?").bind(branchId));
+  await env.DB.batch(statements);
+  return jsonResponse({ ok: true, deleted: true });
 }
-
-async function countBranchRows(env, table, branchId) {
-  const result = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE branch_id = ?`).bind(branchId).first();
-  return Number(result?.count || 0);
+async function restoreBranch(request, env, branchId) {
+  const { branch, error } = await confirmBranchAction(request, env, branchId);
+  if (error) return error;
+  if (branch.status !== "Archived") return jsonResponse({ error: "This branch is not archived." }, 409);
+  await env.DB.prepare("UPDATE branches SET status = 'Closed' WHERE id = ?").bind(branchId).run();
+  return jsonResponse({ ok: true });
 }
 
 async function createStockMovement(request, env) {
@@ -1567,15 +1608,20 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel"><h2>Admin closing review</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Actual cash</th><th>Cash taken</th><th>Actual card</th><th>Status</th><th>Approved by</th><th></th></tr></thead><tbody id="adminClosingTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="branches">
-      <div class="split">
-        <form class="panel" id="branchForm"><h2>Create branch</h2><label>Name<input name="name" required></label><label>Address<input name="address" required></label><div class="grid"><label>Phone<input name="phone" required></label><label>Postcode / PIN<input name="postCode" inputmode="numeric"></label></div><button class="primary full" type="submit">Create branch</button></form>
-        <div class="panel"><h2>Branch details</h2><label>Choose branch<select id="branchDetailSelect"></select></label><div id="branchDetail"></div></div>
-      </div>
-      <div class="split">
-        <form class="panel" id="hoursForm"><h2>Branch timetable</h2><label>Branch<select name="branchId" required></select></label><label>Day<select name="dayOfWeek"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></label><div class="grid"><label>Open<input name="openTime" type="time" value="09:00"></label><label>Close<input name="closeTime" type="time" value="17:30"></label></div><label class="check"><input name="isClosed" type="checkbox">Closed every week on this day</label><button class="primary full" type="submit">Save timetable</button></form>
-        <form class="panel" id="closedDateForm"><h2>Closed date</h2><label>Branch<select name="branchId" required></select></label><label>Date<input name="closedDate" type="date" required></label><label>Reason<input name="reason" placeholder="Public holiday"></label><button class="primary full" type="submit">Add closed date</button></form>
-      </div>
-      <div class="panel"><h2>All branches</h2><div class="cards" id="branchCards"></div></div>
+      <div class="panel"><div class="section-heading"><div><p class="eyebrow">Locations</p><h2>Branches</h2><p class="hint">Manage your locations, opening hours and holidays.</p></div><button class="primary" id="createBranchButton" type="button">Create branch</button></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Address</th><th>Phone</th><th>Status</th><th>Actions</th></tr></thead><tbody id="branchTable"></tbody></table></div></div>
+      <details class="panel branch-archive"><summary>Archived branches <span id="branchArchiveCount" class="pill">0</span></summary><p class="hint">All records are retained. Restore a branch here, or permanently erase it.</p><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Address</th><th>Actions</th></tr></thead><tbody id="branchArchiveTable"></tbody></table></div></details>
+      <dialog id="branchEditor" class="branch-dialog" aria-labelledby="branchEditorTitle">
+        <form id="branchForm">
+          <div class="branch-dialog-header"><div><p class="eyebrow">Branch settings</p><h2 id="branchEditorTitle">Create branch</h2><p class="hint">Keep details, hours and holidays in one place.</p></div><button class="secondary branch-icon-button" id="closeBranchEditor" type="button" aria-label="Close branch editor">✕</button></div>
+          <div class="branch-dialog-body"><section class="branch-form-section"><h3>Branch details</h3><p class="hint">The information your team uses to identify this location.</p><input name="id" type="hidden"><label>Branch name<input name="name" required></label><label>Address<input name="address" required></label><div class="grid"><label>Phone<input name="phone" required></label><label>Postcode / PIN<input name="postCode" inputmode="numeric"></label></div><label>Status<select name="status"><option>Open</option><option>Closed</option></select></label></section>
+          <section class="branch-form-section"><div class="section-heading"><div><h3>Weekly timetable</h3><p class="hint">Set regular opening hours, or mark a day as closed.</p></div><button type="button" class="secondary small" id="copyBranchHours">Copy Monday to weekdays</button></div><div class="table-wrap"><table class="branch-hours-table"><thead><tr><th>Day</th><th>Open</th><th>Close</th><th>Closed</th></tr></thead><tbody id="branchHoursEditor"></tbody></table></div></section>
+          <section class="branch-form-section"><div class="section-heading"><div><h3>Closed dates</h3><p class="hint">Add public holidays and one-off closures.</p></div><button class="secondary" id="addBranchClosedDate" type="button">Add closed date</button></div><div id="branchClosedDatesEditor"></div></section></div>
+          <div class="branch-dialog-footer"><p id="branchEditorMessage" role="alert"></p><div class="section-heading"><button class="secondary" id="cancelBranchEditor" type="button">Cancel</button><button class="primary" id="saveBranchButton" type="submit">Create branch</button></div></div>
+        </form>
+      </dialog>
+      <dialog id="branchActionDialog" class="branch-dialog branch-action-dialog" aria-labelledby="branchActionTitle">
+        <form id="branchActionForm"><div class="branch-dialog-header"><div><p class="eyebrow">Confirm branch action</p><h2 id="branchActionTitle"></h2></div></div><div class="branch-dialog-body"><input name="branchId" type="hidden"><input name="mode" type="hidden"><div class="branch-action-warning" id="branchActionWarning"></div><label id="branchActionNameLabel" hidden>Type the branch name to confirm<input name="confirmName" autocomplete="off"></label><label>Admin PIN<input name="pin" type="password" inputmode="numeric" autocomplete="off" required placeholder="Enter PIN"></label><p class="hint">The separate admin PIN is required. Branch login PINs cannot approve this action.</p><p id="branchActionError" role="alert"></p></div><div class="branch-dialog-footer"><div class="section-heading"><button type="button" class="secondary" id="cancelBranchAction">Cancel</button><button type="submit" class="danger" id="confirmBranchAction"></button></div></div></form>
+      </dialog>
     </section>
     <section class="tab admin-only" id="access">
       <div class="section-heading page-heading"><div><p class="eyebrow">Security &amp; entry</p><h2>Branch access</h2><p class="hint">Access is managed separately from branch operations.</p></div></div>
@@ -1640,8 +1686,22 @@ document.querySelector("#rosterDay").addEventListener("change", () => { renderRo
 document.querySelector("#rosterBranchSelect").addEventListener("change", (event) => { selectedRosterBranchId = event.currentTarget.value; renderRosterMonthCalendar(); renderRosterBranchBoard(); });
 document.querySelector("#globalBranchFilter")?.addEventListener("change", (event) => { selectedGlobalBranchId = event.currentTarget.value; renderMetrics(); });
 document.querySelectorAll(".period-tab").forEach((button) => button.addEventListener("click", () => { selectedDashboardPeriod = button.dataset.period; document.querySelectorAll(".period-tab").forEach((item) => item.classList.toggle("active", item === button)); renderMetrics(); }));
-document.querySelector("#branchForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branches"));
-document.querySelector("#branchDetailSelect").addEventListener("change", renderBranchDetail);
+document.querySelector("#copyBranchHours").addEventListener("click", () => {
+  const rows = document.querySelectorAll("#branchHoursEditor tr"), first = rows[0];
+  for (let i = 1; i < 5; i++) {
+    for (const selector of [".branch-open", ".branch-close"]) rows[i].querySelector(selector).value = first.querySelector(selector).value;
+    rows[i].querySelector(".branch-closed").checked = first.querySelector(".branch-closed").checked;
+    rows[i].querySelector(".branch-closed").dispatchEvent(new Event("change"));
+  }
+});
+document.querySelector("#branchActionForm").addEventListener("submit", submitBranchAction);
+document.querySelector("#cancelBranchAction").addEventListener("click", () => document.querySelector("#branchActionDialog").close());
+document.querySelector("#branchActionDialog").addEventListener("close", () => document.querySelector("#branchActionForm").reset());
+document.querySelector("#branchForm").addEventListener("submit", submitBranchForm);
+document.querySelector("#createBranchButton").addEventListener("click", () => openBranchEditor());
+document.querySelector("#closeBranchEditor").addEventListener("click", () => document.querySelector("#branchEditor").close());
+document.querySelector("#cancelBranchEditor").addEventListener("click", () => document.querySelector("#branchEditor").close());
+document.querySelector("#addBranchClosedDate").addEventListener("click", () => addBranchClosedDate());
 document.querySelector("#serviceForm").addEventListener("submit", submitServiceForm);
 document.querySelector("#cancelServiceEdit").addEventListener("click", resetServiceForm);
 document.querySelector("#productForm").addEventListener("submit", submitProductForm);
@@ -1652,8 +1712,8 @@ document.querySelector("#importProductsButton").addEventListener("click", () => 
 document.querySelector("#productImportFile").addEventListener("change", importProductsWorkbook);
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
 document.querySelector("#closingForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/daily-closing"));
-document.querySelector("#hoursForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branch-hours"));
-document.querySelector("#closedDateForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/closed-dates"));
+
+
 document.querySelector("#applyReportFilters").addEventListener("click", loadReports);
 document.querySelector("#reportBranch").addEventListener("change", loadReports);
 addSaleItem();
@@ -1761,6 +1821,8 @@ function normalizeState(data = {}) {
   const arrayKeys = ["branches","staff","services","products","customers","bookings","sales","saleItems","branchHours","closedDates","discounts","inventoryStock","stockMovements","dailyClosings","staffRoster","staffRegularDaysOff","timeEntries"];
   const normalized = { ...data };
   arrayKeys.forEach((key) => { if (!Array.isArray(normalized[key])) normalized[key] = []; });
+  normalized.archivedBranches = normalized.branches.filter((b) => b.status === "Archived");
+  normalized.branches = normalized.branches.filter((b) => b.status !== "Archived");
   return normalized;
 }
 function renderAll() { fillSelects(); renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); }
@@ -1883,36 +1945,97 @@ function renderMetrics() {
   }).join("") || '<p class="empty-state">No activity in this period.</p>';
 }
 function renderBranches() {
-  document.querySelector("#branchCards").innerHTML = state.branches.map((b) => '<article><div class="branch-card-top"><div class="branch-icon">' + esc(b.name.slice(0, 1)) + '</div><span class="pill">' + esc(b.status) + '</span></div><strong>' + esc(b.name) + '</strong><span>' + esc(b.address) + '</span><span>' + esc(b.phone) + '</span><button class="danger delete-branch" data-branch-id="' + esc(b.id) + '" type="button">Delete branch</button></article>').join("");
+  document.querySelector("#branchTable").innerHTML = state.branches.map((b) => '<tr><td><strong>' + esc(b.name) + '</strong></td><td>' + esc(b.address) + '</td><td>' + esc(b.phone) + '</td><td><span class="pill">' + esc(b.status) + '</span></td><td><button class="secondary branch-icon-button edit-branch" data-branch-id="' + esc(b.id) + '" type="button" aria-label="Edit ' + esc(b.name) + '" title="Edit branch">✎</button> <button class="danger branch-icon-button delete-branch" data-branch-id="' + esc(b.id) + '" type="button" aria-label="Archive branch" title="Archive branch">' + branchTrashIcon() + '</button></td></tr>').join("") || '<tr><td colspan="5" class="empty-cell">No branches yet. Create your first branch.</td></tr>';
+  const archived = state.archivedBranches || [];
+  document.querySelector("#branchArchiveCount").textContent = archived.length;
+  document.querySelector("#branchArchiveTable").innerHTML = archived.map((b) => '<tr><td><strong>' + esc(b.name) + '</strong></td><td>' + esc(b.address) + '</td><td><button class="secondary small restore-branch" type="button" data-branch-id="' + esc(b.id) + '">Restore</button> <button class="danger branch-icon-button purge-branch" type="button" data-branch-id="' + esc(b.id) + '" aria-label="Permanently delete branch" title="Permanently delete">' + branchTrashIcon() + '</button></td></tr>').join("") || '<tr><td colspan="3" class="empty-cell">No archived branches.</td></tr>';
+  document.querySelectorAll(".restore-branch").forEach((button) => button.addEventListener("click", () => openBranchAction(button.dataset.branchId, "restore")));
+  document.querySelectorAll(".purge-branch").forEach((button) => button.addEventListener("click", () => openBranchAction(button.dataset.branchId, "permanent")));
+  document.querySelectorAll(".edit-branch").forEach((button) => button.addEventListener("click", () => openBranchEditor(button.dataset.branchId)));
   document.querySelectorAll(".delete-branch").forEach((button) => button.addEventListener("click", deleteBranch));
-  const detailSelect = document.querySelector("#branchDetailSelect");
-  const current = detailSelect.value;
-  detailSelect.innerHTML = state.branches.map((b) => '<option value="' + esc(b.id) + '">' + esc(b.name) + '</option>').join("");
-  if (state.branches.some((b) => b.id === current)) detailSelect.value = current;
-  renderBranchDetail();
+}
+function openBranchEditor(branchId = "") {
+  const branch = state.branches.find((b) => b.id === branchId);
+  const form = document.querySelector("#branchForm");
+  form.reset();
+  form.elements.id.value = branchId;
+  for (const key of ["name", "address", "phone", "status"]) form.elements[key].value = branch?.[key] || (key === "status" ? "Open" : "");
+  form.elements.postCode.value = branch?.post_code || "";
+  document.querySelector("#branchEditorTitle").textContent = branch ? "Edit branch" : "Create branch";
+  document.querySelector("#saveBranchButton").textContent = branch ? "Save branch" : "Create branch";
+  document.querySelector("#branchEditorMessage").textContent = "";
+  document.querySelector("#branchHoursEditor").innerHTML = [1,2,3,4,5,6,0].map((day) => {
+    const hour = state.branchHours.find((h) => h.branch_id === branchId && Number(h.day_of_week) === day);
+    return '<tr data-day="' + day + '"><td>' + dayName(day) + '</td><td><input aria-label="' + dayName(day) + ' opening time" class="branch-open" type="time" required value="' + esc(hour?.open_time || '09:00') + '"></td><td><input aria-label="' + dayName(day) + ' closing time" class="branch-close" type="time" required value="' + esc(hour?.close_time || '17:30') + '"></td><td><input aria-label="' + dayName(day) + ' closed" class="branch-closed" type="checkbox"' + (hour?.is_closed ? ' checked' : '') + '></td></tr>';
+  }).join("");
+  document.querySelectorAll("#branchHoursEditor tr").forEach((row) => {
+    const toggle = () => row.querySelectorAll('input[type="time"]').forEach((input) => { input.disabled = row.querySelector(".branch-closed").checked; });
+    row.querySelector(".branch-closed").addEventListener("change", toggle); toggle();
+  });
+  document.querySelector("#branchClosedDatesEditor").replaceChildren();
+  state.closedDates.filter((d) => d.branch_id === branchId).forEach(addBranchClosedDate);
+  document.querySelector("#branchEditor").showModal();
+}
+function addBranchClosedDate(date = {}) {
+  const row = document.createElement("div");
+  row.className = "grid branch-closure-row";
+  row.dataset.id = date.id || "";
+  row.innerHTML = '<label>Date<input class="closure-date" type="date" required value="' + esc(date.closed_date || '') + '"></label><label>Reason<input class="closure-reason" placeholder="Public holiday" value="' + esc(date.reason || '') + '"></label><button class="secondary" type="button" aria-label="Remove closed date">Remove</button>';
+  row.querySelector("button").addEventListener("click", () => row.remove());
+  document.querySelector("#branchClosedDatesEditor").append(row);
+}
+async function submitBranchForm(event) {
+  event.preventDefault();
+  const form = event.currentTarget, button = document.querySelector("#saveBranchButton");
+  const body = Object.fromEntries(new FormData(form));
+  body.hours = Array.from(document.querySelectorAll("#branchHoursEditor tr"), (row) => ({ dayOfWeek:Number(row.dataset.day), openTime:row.querySelector(".branch-open").value, closeTime:row.querySelector(".branch-close").value, isClosed:row.querySelector(".branch-closed").checked }));
+  body.closedDates = Array.from(document.querySelectorAll(".branch-closure-row"), (row) => ({ id:row.dataset.id, closedDate:row.querySelector(".closure-date").value, reason:row.querySelector(".closure-reason").value }));
+  body.removedDates = state.closedDates.filter((d) => d.branch_id === body.id && !body.closedDates.some((date) => date.id === d.id)).map((d) => d.id);
+  if (body.hours.some((h) => !h.isClosed && h.openTime >= h.closeTime)) { document.querySelector("#branchEditorMessage").textContent = "Closing time must be after opening time."; return; }
+  button.disabled = true;
+  try {
+    await api(body.id ? "/api/branches/" + encodeURIComponent(body.id) : "/api/branches", { method:body.id ? "PATCH" : "POST", body:JSON.stringify(body) });
+    document.querySelector("#branchEditor").close();
+    await loadData();
+  } catch (error) { document.querySelector("#branchEditorMessage").textContent = error.message; }
+  finally { button.disabled = false; }
 }
 function renderAccess() {
   const table = document.querySelector("#accessTable");
   if (!table) return;
   table.innerHTML = state.branches.map((branch) => '<tr><td><strong>' + esc(branch.name) + '</strong><div class="hint">' + esc(branch.address) + '</div></td><td><a class="branch-pos" href="/pos/' + esc(branch.id) + '">Open workspace</a></td><td><span class="pin-code">' + esc(branch.post_code || "Not set") + '</span></td><td><span class="pill">' + esc(branch.status) + '</span></td></tr>').join("") || '<tr><td colspan="4" class="empty-cell">No branches available.</td></tr>';
 }
-function renderBranchDetail() {
-  const branchId = document.querySelector("#branchDetailSelect").value;
-  const branch = state.branches.find((item) => item.id === branchId);
-  const box = document.querySelector("#branchDetail");
-  if (!branch) { box.innerHTML = '<p class="hint">Create or select a branch.</p>'; return; }
-  const hours = (state.branchHours || []).filter((item) => item.branch_id === branchId).sort((a, b) => Number(a.day_of_week) - Number(b.day_of_week));
-  const closedDates = (state.closedDates || []).filter((item) => item.branch_id === branchId).sort((a, b) => String(a.closed_date).localeCompare(String(b.closed_date)));
-  box.innerHTML = '<div class="branch-detail-heading"><div class="branch-icon">' + esc(branch.name.slice(0, 1)) + '</div><div><strong>' + esc(branch.name) + '</strong><span>' + esc(branch.address) + '</span><span>' + esc(branch.phone) + '</span></div><span class="pill">' + esc(branch.status) + '</span></div>' +
-    '<h3>Opening timetable</h3><div class="timetable-list">' + (hours.length ? hours.map((item) => '<div><strong>' + dayName(item.day_of_week) + '</strong><span>' + (item.is_closed ? 'Closed' : esc(item.open_time + '–' + item.close_time)) + '</span></div>').join('') : '<p class="hint">No timetable saved.</p>') + '</div>' +
-    '<h3>Upcoming closures</h3><div class="closure-list">' + (closedDates.length ? closedDates.map((item) => '<span class="closure-chip">' + esc(formatDashboardDate(item.closed_date)) + (item.reason ? ' · ' + esc(item.reason) : '') + '</span>').join('') : '<p class="hint">No closure dates set.</p>') + '</div>';
+function branchTrashIcon() { return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>'; }
+function deleteBranch(event) { openBranchAction(event.currentTarget.dataset.branchId, "archive"); }
+function openBranchAction(branchId, mode) {
+  const branch = [...state.branches, ...(state.archivedBranches || [])].find((b) => b.id === branchId);
+  if (!branch) return;
+  const form = document.querySelector("#branchActionForm"); form.reset();
+  form.elements.branchId.value = branchId; form.elements.mode.value = mode;
+  const permanent = mode === "permanent", restore = mode === "restore";
+  document.querySelector("#branchActionTitle").textContent = (permanent ? "Permanently delete " : restore ? "Restore " : "Archive ") + branch.name + "?";
+  document.querySelector("#branchActionWarning").textContent = permanent
+    ? "This permanently erases the branch, its bookings, sales, stock, schedules, payroll time entries, closing records and branch-only customer profiles. Shared customer and staff profiles remain. No archive copy is kept in this app and you cannot restore it here. Type “" + branch.name + "” to continue."
+    : restore ? "This restores the branch and all its retained records. It returns as Closed; use Edit branch to reopen it when you are ready."
+    : "This removes the branch from active locations and disables its workspace. All records are kept in Archived branches and can be restored later. Existing bookings are retained; review any upcoming appointments before archiving.";
+  document.querySelector("#branchActionNameLabel").hidden = !permanent;
+  form.elements.confirmName.required = permanent;
+  document.querySelector("#branchActionError").textContent = "";
+  document.querySelector("#confirmBranchAction").textContent = permanent ? "Delete permanently" : restore ? "Restore branch" : "Archive branch";
+  document.querySelector("#branchActionDialog").showModal();
 }
-async function deleteBranch(event) {
-  const branchId = event.currentTarget.dataset.branchId;
-  const branch = state.branches.find((item) => item.id === branchId);
-  if (!branch || !confirm('Delete ' + branch.name + '? Only branches without business records can be deleted.')) return;
-  try { await api('/api/branches/' + encodeURIComponent(branchId), { method:'DELETE' }); message.textContent = 'Branch deleted.'; await loadData(); }
-  catch (error) { message.textContent = error.message; }
+async function submitBranchAction(event) {
+  event.preventDefault();
+  const form = event.currentTarget, body = Object.fromEntries(new FormData(form));
+  const controls = [...form.querySelectorAll("input, button")]; controls.forEach((el) => el.disabled = true);
+  const dialog = document.querySelector("#branchActionDialog");
+  const preventCancel = (event) => event.preventDefault(); dialog.addEventListener("cancel", preventCancel);
+  try {
+    await api('/api/branches/' + encodeURIComponent(body.branchId) + (body.mode === "restore" ? '/restore' : ''), { method:body.mode === "restore" ? 'POST' : 'DELETE', body:JSON.stringify(body) });
+    dialog.close(); await loadData();
+    message.textContent = body.mode === "restore" ? "Branch restored. Edit it to reopen when ready." : body.mode === "permanent" ? "Branch permanently deleted." : "Branch archived. You can restore it from Archived branches.";
+  } catch (error) { document.querySelector("#branchActionError").textContent = error.message; form.elements.pin.value = ""; }
+  finally { controls.forEach((el) => el.disabled = false); dialog.removeEventListener("cancel", preventCancel); }
 }
 function dayName(day) { return ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][Number(day)] || ''; }
 function staffDaysOff(staffId) { return state.staffRegularDaysOff.filter((item) => item.staff_id === staffId).map((item) => Number(item.day_of_week)); }
@@ -2792,7 +2915,7 @@ function printLastReceipt() {
   receipt.focus();
   receipt.print();
 }
-function branchName(id) { return state.branches.find((branch) => branch.id === id)?.name || "No branch"; }
+function branchName(id) { return [...state.branches, ...(state.archivedBranches || [])].find((branch) => branch.id === id)?.name || "No branch"; }
 function money(cents) { return new Intl.NumberFormat("en-AU", { style:"currency", currency:"AUD" }).format(Number(cents || 0) / 100); }
 function dollars(cents) { return (Number(cents || 0) / 100).toFixed(2); }
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }`;
@@ -3134,5 +3257,26 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.time-clock-panel,.report-filters{grid-template-columns:1fr}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
+
+/* Branch management */
+.branch-hours-table { min-width:480px; width:100%; table-layout:fixed; }.branch-hours-table th:last-child { width:68px; }.branch-hours-table td,.branch-hours-table th { padding:10px 8px; }.branch-hours-table input { width:100%; }
+.branch-dialog { width:min(800px,calc(100vw - 32px)); max-height:90dvh; padding:0; border:1px solid #e1e6ed; border-radius:20px; color:var(--ink); background:#fff; box-shadow:0 24px 80px #18213438; }
+.branch-dialog::backdrop { background:#17213788; backdrop-filter:blur(3px); }
+.branch-dialog-header { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; padding:24px 28px; border-bottom:1px solid var(--line); background:#fff; }
+.branch-dialog h2,.branch-dialog h3 { margin:0; }.branch-dialog .hint { margin:6px 0 0; line-height:1.5; }
+.branch-dialog-body { padding:24px 28px; background:#f7f9fb; }
+.branch-form-section { padding:20px; margin-bottom:18px; background:#fff; border:1px solid var(--line); border-radius:12px; }.branch-form-section:last-child { margin-bottom:0; }
+.branch-dialog-footer { position:sticky; bottom:0; padding:16px 28px; border-top:1px solid var(--line); background:#fff; }.branch-dialog-footer p:empty { display:none; }.branch-dialog-footer .section-heading { margin:0; }
+.branch-dialog [role=alert] { color:#a32937; font-size:13px; }
+.branch-icon-button { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; min-height:32px; padding:0!important; border-radius:8px; vertical-align:middle; }
+.branch-icon-button.danger { background:#fff; color:#ad3c48; border:1px solid #efdae0; }.branch-icon-button.danger:hover { background:#fff0f2; }
+.branch-dialog .small,.branch-archive .small { padding:7px 10px; font-size:12px; }
+.branch-archive { margin-top:18px; }.branch-archive summary { cursor:pointer; font-weight:700; }.branch-archive summary .pill { margin-left:8px; }
+#branchHoursEditor input[type=time] { min-width:108px; padding:8px; margin:0; }#branchHoursEditor input[type=checkbox] { width:18px; height:18px; accent-color:#405e88; }#branchHoursEditor input:disabled { opacity:.45; }
+.branch-closure-row { grid-template-columns:1fr 1.4fr auto; align-items:end; gap:12px; }.branch-closure-row button { margin-bottom:14px; padding:9px 12px; font-size:12px; }
+#branchClosedDatesEditor:empty::after { content:"No closed dates added. Your weekly timetable applies every day."; display:block; padding:16px; border:1px dashed #d7dfe8; border-radius:8px; font-size:13px; color:#67758a; }
+.branch-action-dialog { width:min(520px,calc(100vw - 32px)); }.branch-action-warning { padding:16px; border:1px solid #eed7b4; background:#fff8eb; color:#715321; border-radius:10px; font-size:14px; line-height:1.6; margin-bottom:20px; }
+.branch-dialog [hidden] { display:none!important; }
+@media(max-width:700px){.branch-dialog-header,.branch-dialog-body{padding:18px}.branch-dialog-footer{padding:14px 18px}.branch-form-section{padding:14px}.branch-form-section .section-heading{flex-wrap:wrap;gap:12px}.branch-closure-row{grid-template-columns:1fr}.branch-closure-row button{justify-self:start}.branch-dialog .grid{gap:0}}
 `;
 }
