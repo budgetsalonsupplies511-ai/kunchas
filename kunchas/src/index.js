@@ -52,6 +52,12 @@ export default {
         return getPosData(request, env);
       }
 
+      if (request.method === "GET" && url.pathname === "/api/daily-sales") {
+        const auth = await authorizeBranch(request, env);
+        if (auth) return auth;
+        return getDailySales(request, env, url);
+      }
+
       if (request.method === "POST" && url.pathname === "/api/branch-bookings") {
         const auth = await authorizeBranch(request, env);
         if (auth) return auth;
@@ -412,6 +418,13 @@ async function getPosData(request, env) {
     dailyClosings,
     timeEntries
   });
+}
+
+async function getDailySales(request, env, url) {
+  const branchId = clean(request.headers.get("x-branch-id"));
+  const closingDate = clean(url.searchParams.get("date"));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(closingDate)) return jsonResponse({ error:"Choose a valid closing date." }, 400);
+  return jsonResponse({ date:closingDate, ...await expectedClosingTotals(env, branchId, closingDate) });
 }
 
 async function updateBranchSale(request, env, saleId) {
@@ -1067,15 +1080,17 @@ async function createDailyClosing(request, env) {
   const closingDate = clean(body.closingDate);
   if (!branchId || !closingDate) return jsonResponse({ error: "Branch and closing date are required." }, 400);
   const expected = await expectedClosingTotals(env, branchId, closingDate);
-  const previousCashCents = body.previousCash === undefined ? await previousRemainingCash(env, branchId, closingDate) : Math.round(Number(body.previousCash || 0) * 100);
-  const openingFloatCents = Math.round(Number(body.openingFloat || 0) * 100);
-  const actualCashCents = Math.round(Number(body.actualCash || 0) * 100);
-  const cashTakenCents = Math.round(Number(body.cashTaken || 0) * 100);
-  const remainingCashCents = Math.max(0, actualCashCents - cashTakenCents);
-  const actualCardCents = Math.round(Number(body.actualCard || 0) * 100);
-  const cashVarianceCents = actualCashCents - (previousCashCents + openingFloatCents + expected.cashCents);
-  const cardVarianceCents = actualCardCents - expected.cardCents;
-  const status = cashVarianceCents || cardVarianceCents ? "Variance" : "Balanced";
+  const previousCashCents = 0;
+  const openingFloatCents = 0;
+  const actualCash = Number(body.actualCash);
+  if (clean(body.actualCash) === "" || !Number.isFinite(actualCash) || actualCash < 0) return jsonResponse({ error: "Enter a valid cash counted amount." }, 400);
+  const actualCashCents = Math.round(actualCash * 100);
+  const cashTakenCents = 0;
+  const remainingCashCents = actualCashCents;
+  const actualCardCents = expected.cardCents;
+  const cashVarianceCents = actualCashCents - expected.cashCents;
+  const cardVarianceCents = 0;
+  const status = cashVarianceCents ? "Variance" : "Balanced";
   await env.DB.prepare(
     `INSERT INTO daily_closings (
       id, created_at, branch_id, closing_date, previous_cash_cents, opening_float_cents,
@@ -1280,13 +1295,26 @@ async function createSale(request, env) {
     if (combinedCredit > item.priceCents) return jsonResponse({ error: `Combined staff allocations for ${item.name} cannot exceed the item amount.` }, 400);
   }
   const totalCents = saleItems.reduce((total, item) => total + item.priceCents, 0);
-  const cashCents = Math.round(Number(body.cashAmount || 0) * 100);
-  const cardCents = Math.round(Number(body.cardAmount || 0) * 100);
-  if (cashCents + cardCents < totalCents) {
-    return jsonResponse({ error: "Payment total must cover the sale amount." }, 400);
+  const selectedPaymentMethod = clean(body.paymentMethod);
+  const paymentAmountCents = Math.round(Number(body.paymentAmount || 0) * 100);
+  const normalizedPaymentMethod = selectedPaymentMethod.toLowerCase();
+  if (!["cash", "card", "bank transfer"].includes(normalizedPaymentMethod)) {
+    return jsonResponse({ error: "Choose Cash, Card, or Bank Transfer." }, 400);
   }
-  const paymentMethod = paymentLabel(cashCents, cardCents, totalCents, clean(body.paymentMethod));
-  const changeCents = Math.max(0, cashCents + cardCents - totalCents);
+  if (!Number.isFinite(paymentAmountCents) || paymentAmountCents <= 0) {
+    return jsonResponse({ error: "Enter a valid payment amount." }, 400);
+  }
+  if (paymentAmountCents < totalCents) {
+    return jsonResponse({ error: "Payment amount must cover the sale total." }, 400);
+  }
+  if (normalizedPaymentMethod !== "cash" && paymentAmountCents !== totalCents) {
+    return jsonResponse({ error: `${selectedPaymentMethod} amount must match the sale total.` }, 400);
+  }
+  const cashCents = normalizedPaymentMethod === "cash" ? paymentAmountCents : 0;
+  const cardCents = normalizedPaymentMethod === "card" ? paymentAmountCents : 0;
+  const bankCents = normalizedPaymentMethod === "bank transfer" ? paymentAmountCents : 0;
+  const changeCents = normalizedPaymentMethod === "cash" ? Math.max(0, paymentAmountCents - totalCents) : 0;
+  const paymentMethod = paymentLabel(selectedPaymentMethod, paymentAmountCents, changeCents);
 
   const saleStatements = [env.DB.prepare(
     `INSERT INTO sales (id, created_at, branch_id, customer_id, staff_id, total_cents, payment_method, status)
@@ -1331,7 +1359,7 @@ async function createSale(request, env) {
   }
 
   const branch = (await all(env, "SELECT name, address, phone FROM branches WHERE id = ?", [branchId]))[0];
-  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod } });
+  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, bankCents, changeCents, paymentMethod } });
 }
 
 function parseIdList(value) {
@@ -1358,13 +1386,9 @@ async function ensureSaleCustomer(env, body, branchId) {
   return ensureBookingCustomer(env, body.newCustomer || {}, branchId, category);
 }
 
-function paymentLabel(cashCents, cardCents, totalCents, fallback) {
-  const changeCents = Math.max(0, cashCents + cardCents - totalCents);
+function paymentLabel(method, amountCents, changeCents) {
   const changeText = changeCents ? ` / change ${formatDollars(changeCents)}` : "";
-  if (cashCents > 0 && cardCents > 0) return `Split cash ${formatDollars(cashCents)} / card ${formatDollars(cardCents)}${changeText}`;
-  if (cashCents > 0) return `Cash ${formatDollars(cashCents)}${changeText}`;
-  if (cardCents > 0) return `Card ${formatDollars(cardCents)}`;
-  return fallback || "Pay at counter";
+  return `${method} ${formatDollars(amountCents)}${changeText}`;
 }
 
 function formatDollars(cents) {
@@ -1391,13 +1415,17 @@ async function expectedClosingTotals(env, branchId, closingDate) {
     const method = String(sale.payment_method || "");
     const cash = method.match(/Cash \$([0-9.]+)/i) || method.match(/cash \$([0-9.]+)/i);
     const card = method.match(/Card \$([0-9.]+)/i) || method.match(/card \$([0-9.]+)/i);
+    const bank = method.match(/Bank transfer \$([0-9.]+)/i);
     const change = method.match(/change \$([0-9.]+)/i);
     if (cash) totals.cashCents += Math.max(0, Math.round(Number(cash[1]) * 100) - (change ? Math.round(Number(change[1]) * 100) : 0));
     if (card) totals.cardCents += Math.round(Number(card[1]) * 100);
-    if (!cash && !card && method.toLowerCase().includes("cash")) totals.cashCents += Number(sale.total_cents || 0);
-    if (!cash && !card && method.toLowerCase().includes("card")) totals.cardCents += Number(sale.total_cents || 0);
+    if (bank) totals.bankCents += Math.round(Number(bank[1]) * 100);
+    if (!cash && !card && !bank && method.toLowerCase().includes("cash")) totals.cashCents += Number(sale.total_cents || 0);
+    if (!cash && !card && !bank && method.toLowerCase().includes("card")) totals.cardCents += Number(sale.total_cents || 0);
+    if (!cash && !card && !bank && method.toLowerCase().includes("bank transfer")) totals.bankCents += Number(sale.total_cents || 0);
+    totals.totalSalesCents += Number(sale.total_cents || 0);
     return totals;
-  }, { cashCents: 0, cardCents: 0 });
+  }, { cashCents: 0, cardCents: 0, bankCents: 0, totalSalesCents: 0 });
 }
 
 async function previousRemainingCash(env, branchId, closingDate) {
@@ -1642,12 +1670,12 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
           <datalist id="staffList"></datalist>
           <div id="saleItems" class="sale-items-list"></div>
           <button class="secondary add-sale-line" id="addSaleItem" type="button">+ Add another item</button>
-          <div class="grid">
-            <label>Cash amount $<input name="cashAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
-            <label>Card amount $<input name="cardAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
+          <div class="payment-entry">
+            <label>Payment method<select name="paymentMethod" required><option value="">Choose payment method</option><option>Cash</option><option>Card</option><option>Bank Transfer</option></select></label>
+            <label class="payment-amount-field hidden">Amount $<input name="paymentAmount" type="number" min="0.01" step="0.01" placeholder="0.00"></label>
           </div>
           <div class="payment-balance" id="paymentBalance"><span>Remaining to pay</span><strong>$0.00</strong></div>
-          <p class="hint">Use one box for full cash/card, or both boxes for split payment.</p>
+          <p class="hint payment-hint">Choose how the customer is paying, then enter the amount received.</p>
           <button class="primary full" type="submit">Complete sale</button>
           <button class="secondary full hidden" id="printReceipt" type="button">Print receipt / open cash drawer</button>
           <p class="hint">Cash drawer opens only when it is connected to the receipt printer and configured to open on receipt print.</p>
@@ -1731,8 +1759,8 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
     <section class="tab staff-only" id="closing">
       <div class="split">
-        <form class="panel" id="closingForm"><h2>Daily closing</h2><input name="branchId" type="hidden"><label>Date<input name="closingDate" type="date" required></label><div class="closing-summary" id="closingExpected"></div><div class="grid"><label>Yesterday cash $<input name="previousCash" type="number" min="0" step="0.01" readonly></label><label>Extra opening cash $<input name="openingFloat" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Actual cash counted $<input name="actualCash" type="number" min="0" step="0.01"></label><label>Cash taken $<input name="cashTaken" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Remaining cash $<input name="remainingCash" type="number" min="0" step="0.01" readonly></label><label>Actual card terminal total $<input name="actualCard" type="number" min="0" step="0.01"></label></div><div class="closing-summary" id="closingVariance"></div><label>Closed by<input name="closedBy" placeholder="Staff / manager name"></label><label>Notes<textarea name="notes"></textarea></label><button class="primary full" type="submit">Save daily closing</button></form>
-        <div class="panel"><h2>Closing records</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Cash taken</th><th>Remaining cash</th><th>Status</th></tr></thead><tbody id="closingTable"></tbody></table></div></div>
+        <form class="panel closing-panel" id="closingForm"><div class="section-heading"><div><p class="eyebrow">End of day</p><h2>Daily sales</h2></div><label class="closing-date">Date<input name="closingDate" type="date" required></label></div><input name="branchId" type="hidden"><div class="closing-sales-table table-wrap" id="closingExpected"></div><div class="closing-count-row"><label for="actualCash">Cash counted</label><div class="money-input"><span>$</span><input id="actualCash" name="actualCash" type="number" min="0" step="0.01" placeholder="0.00" required></div></div><div class="closing-balance" id="closingVariance"></div><div class="closing-details"><label>Closed by<input name="closedBy" placeholder="Staff / manager name"></label><label>Notes<textarea name="notes" rows="2"></textarea></label></div><button class="primary full" type="submit">Save daily closing</button></form>
+        <div class="panel"><h2>Closing records</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Cash counted</th><th>Difference</th><th>Status</th></tr></thead><tbody id="closingTable"></tbody></table></div></div>
       </div>
     </section>
     <section class="tab admin-only" id="reports">
@@ -1810,7 +1838,7 @@ function renderManagerApp() {
 <section class="manager-section" id="manager-inventory"><div class="split"><form class="panel" id="managerStockForm"><h2>Add product to branch</h2><label>Product<select name="productId" id="managerStockProduct" required></select></label><div class="grid"><label>Movement<select name="movementType"><option>Receive</option><option>Adjustment in</option><option>Adjustment out</option></select></label><label>Quantity<input name="quantity" type="number" min="1" step="1" required></label></div><label>Reason<input name="reason" placeholder="Delivery or stock correction"></label><button class="primary full" type="submit">Update branch inventory</button></form><div class="panel"><h2 class="manager-table-title">Branch inventory</h2><label>Search products<input id="managerInventorySearch" type="search" placeholder="Product or SKU"></label><div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU</th><th>Quantity</th><th>Low-stock level</th></tr></thead><tbody id="managerInventoryTable"></tbody></table></div></div></div></section>
 <section class="manager-section" id="manager-reports"><div class="panel report-filter-panel"><div><p class="eyebrow">Own branch only</p><h2>Sales report</h2></div><div class="report-filters"><label>From<input id="managerReportFrom" type="date"></label><label>To<input id="managerReportTo" type="date"></label><button class="secondary" id="managerExportReport" type="button">Download Excel</button></div></div><div class="metrics manager-summary" id="managerReportMetrics"></div><div class="panel"><h2 class="manager-table-title">Recent branch sales</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Total</th><th>Payment</th><th>Status</th></tr></thead><tbody id="managerSalesTable"></tbody></table></div></div></section>
 <section class="manager-section" id="manager-bookings"><div class="panel"><h2 class="manager-table-title">Branch bookings</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Service</th><th>Staff</th><th>Status</th><th>Total</th></tr></thead><tbody id="managerBookingsTable"></tbody></table></div></div></section>
-<section class="manager-section" id="manager-closing"><div class="panel"><h2 class="manager-table-title">Daily closings</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Expected cash</th><th>Actual cash</th><th>Expected card</th><th>Actual card</th><th>Closed by</th></tr></thead><tbody id="managerClosingTable"></tbody></table></div></div></section>
+<section class="manager-section" id="manager-closing"><div class="panel"><h2 class="manager-table-title">Daily closings</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Total cash sales</th><th>Cash counted</th><th>Total card sales</th><th>Card terminal</th><th>Closed by</th></tr></thead><tbody id="managerClosingTable"></tbody></table></div></div></section>
 </main></div><script>${managerClientScript()}</script></body></html>`;
 }
 
@@ -1852,6 +1880,7 @@ function metric(label,value){return '<article><span>'+managerEsc(label)+'</span>
 function clientScript() {
   return `
 let state = { branches: [], staff: [], services: [], products: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [], managerAssignments: [] };
+let closingSalesTotals = {};
 let editingBookingId = "";
 let reportData = null;
 let lastReceipt = null;
@@ -1887,13 +1916,10 @@ document.querySelector("#bookingForm").addEventListener("submit", submitBooking)
 document.querySelector("#bookingServiceSearch").addEventListener("click", toggleBookingServiceMenu);
 document.querySelector("#saleForm").addEventListener("submit", submitSale);
 document.querySelector('select[name="customerMode"]').addEventListener("change", updateCustomerMode);
-document.querySelector('#saleForm input[name="cashAmount"]').addEventListener("input", renderPaymentBalance);
-document.querySelector('#saleForm input[name="cardAmount"]').addEventListener("input", renderPaymentBalance);
-document.querySelector('#closingForm input[name="closingDate"]').addEventListener("input", renderClosingPreview);
-document.querySelector('#closingForm input[name="openingFloat"]').addEventListener("input", renderClosingPreview);
+document.querySelector('#saleForm select[name="paymentMethod"]').addEventListener("change", updatePaymentEntry);
+document.querySelector('#saleForm input[name="paymentAmount"]').addEventListener("input", renderPaymentBalance);
+document.querySelector('#closingForm input[name="closingDate"]').addEventListener("input", loadClosingSalesTotals);
 document.querySelector('#closingForm input[name="actualCash"]').addEventListener("input", renderClosingPreview);
-document.querySelector('#closingForm input[name="cashTaken"]').addEventListener("input", renderClosingPreview);
-document.querySelector('#closingForm input[name="actualCard"]').addEventListener("input", renderClosingPreview);
 document.querySelector("#staffForm").addEventListener("submit", submitStaffForm);
 document.querySelector("#staffProfileForm").addEventListener("submit", submitStaffProfile);
 document.querySelector("#closeStaffProfile").addEventListener("click", closeStaffProfile);
@@ -1929,7 +1955,7 @@ if (appMode === "admin") loadData();
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (selectedPosBranchId && (path === "/api/pos-data" || path.startsWith("/api/sales") || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/"))) {
+  if (selectedPosBranchId && (path === "/api/pos-data" || path.startsWith("/api/sales") || path.startsWith("/api/daily-sales") || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/"))) {
     headers["x-branch-id"] = selectedPosBranchId;
     headers["x-branch-pin"] = selectedPosPin;
   }
@@ -1985,7 +2011,6 @@ async function openPos(event) {
   document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
-  renderClosingPreview();
   document.querySelector("#posLogin").classList.add("hidden");
   document.querySelector("#posWorkspace").classList.remove("hidden");
   document.body.classList.remove("pos-locked");
@@ -2017,7 +2042,7 @@ async function refreshPosData() {
     document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
     document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
     document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
-    renderClosingPreview();
+    await loadClosingSalesTotals();
     message.textContent = "Workspace opened for " + (state.branch?.name || state.branches[0]?.name || "selected branch") + ".";
   } catch (error) {
     message.textContent = error.message;
@@ -2681,8 +2706,9 @@ function selectBookingForCheckout() {
     if (service) addSaleItem(service, booking.staff_id || "");
   });
   if (!document.querySelector("#saleItems").children.length) addSaleItem();
-  form.elements.cashAmount.value = "";
-  form.elements.cardAmount.value = "";
+  form.elements.paymentMethod.value = "";
+  form.elements.paymentAmount.value = "";
+  updatePaymentEntry();
   document.querySelector(".booking-checkout-hint").textContent = booking.customer_name + " — " + booking.service_names + " — " + money(booking.total_cents);
   renderCartSummary();
   message.textContent = "Booking loaded. Enter payment to complete checkout.";
@@ -2749,7 +2775,7 @@ function renderInventory() {
   document.querySelector("#inventoryTable").innerHTML = matrix.body;
 }
 function renderClosings() {
-  document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + '</div></td><td>' + money(c.cash_taken_cents || 0) + '</td><td>' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '<div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
+  document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '</td><td>' + money(c.actual_cash_cents) + '</td><td class="' + (Number(c.cash_variance_cents) === 0 ? 'closing-ok' : Number(c.cash_variance_cents) > 0 ? 'closing-over' : 'closing-short') + '">' + closingDifferenceLabel(Number(c.cash_variance_cents || 0)) + '</td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
   document.querySelector("#adminClosingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr data-closing-id="' + esc(c.id) + '"><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + ' / sales cash ' + money(c.expected_cash_cents) + ' / card ' + money(c.expected_card_cents) + '</div></td><td><input name="actualCash" type="number" min="0" step="0.01" value="' + dollars(c.actual_cash_cents) + '"><div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><input name="cashTaken" type="number" min="0" step="0.01" value="' + dollars(c.cash_taken_cents || 0) + '"><div class="hint">Remaining ' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '</div></td><td><input name="actualCard" type="number" min="0" step="0.01" value="' + dollars(c.actual_card_cents) + '"><div class="hint">Variance ' + money(c.card_variance_cents) + '</div></td><td><select name="status"><option' + selected(c.status, "Balanced") + '>Balanced</option><option' + selected(c.status, "Variance") + '>Variance</option><option' + selected(c.status, "Manager Review") + '>Manager Review</option><option' + selected(c.status, "Approved") + '>Approved</option></select></td><td><input name="approvedBy" value="' + esc(c.approved_by || "") + '" placeholder="Manager"><textarea name="notes" placeholder="Notes">' + esc(c.notes || "") + '</textarea></td><td><button class="secondary save-closing" type="button">Save</button></td></tr>').join("");
   document.querySelectorAll(".save-closing").forEach((button) => button.addEventListener("click", saveClosingRow));
 }
@@ -2932,8 +2958,8 @@ async function submitSale(event) {
     customerId,
     customerCategory:data.get("customerCategory"),
     newCustomer:{ firstName:data.get("newFirstName"), lastName:data.get("newLastName"), phone:data.get("newPhone"), email:data.get("newEmail") },
-    cashAmount:data.get("cashAmount"),
-    cardAmount:data.get("cardAmount"),
+    paymentMethod:data.get("paymentMethod"),
+    paymentAmount:data.get("paymentAmount"),
     items
   }, event.target);
 }
@@ -2946,7 +2972,7 @@ async function submitJson(path, payload, form) {
       document.querySelector("#printReceipt").classList.remove("hidden");
     }
     form.reset();
-    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; document.querySelector("#bookingCheckoutSearch").value = ""; addSaleItem(); updateCustomerMode(); renderPaymentBalance(); }
+    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; document.querySelector("#bookingCheckoutSearch").value = ""; addSaleItem(); updateCustomerMode(); updatePaymentEntry(); }
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
@@ -2971,26 +2997,41 @@ async function saveClosingRow(event) {
   message.textContent = "Daily closing updated.";
   await loadData();
 }
+async function loadClosingSalesTotals() {
+  const closingDate = document.querySelector('#closingForm input[name="closingDate"]')?.value;
+  if (!closingDate || !selectedPosBranchId) { renderClosingPreview(); return; }
+  try {
+    closingSalesTotals = await api('/api/daily-sales?date=' + encodeURIComponent(closingDate));
+    renderClosingPreview();
+  } catch (error) {
+    closingSalesTotals = {};
+    renderClosingPreview();
+    message.textContent = error.message;
+  }
+}
 function renderClosingPreview() {
-  const expectedBox = document.querySelector("#closingExpected");
-  const varianceBox = document.querySelector("#closingVariance");
-  if (!expectedBox || !varianceBox) return;
+  const salesBox = document.querySelector("#closingExpected");
+  const balanceBox = document.querySelector("#closingVariance");
+  if (!salesBox || !balanceBox) return;
   const form = document.querySelector("#closingForm");
   const closingDate = form.querySelector('input[name="closingDate"]').value;
-  const totals = expectedClosingPreview(closingDate);
-  const previousCash = previousClosingCashPreview(closingDate);
-  const openingFloat = Math.round(Number(form.querySelector('input[name="openingFloat"]').value || 0) * 100);
-  const actualCash = Math.round(Number(form.querySelector('input[name="actualCash"]').value || 0) * 100);
-  const cashTaken = Math.round(Number(form.querySelector('input[name="cashTaken"]').value || 0) * 100);
-  const remainingCash = Math.max(0, actualCash - cashTaken);
-  const actualCard = Math.round(Number(form.querySelector('input[name="actualCard"]').value || 0) * 100);
-  form.querySelector('input[name="previousCash"]').value = dollars(previousCash);
-  form.querySelector('input[name="remainingCash"]').value = dollars(remainingCash);
-  const expectedDrawerCash = previousCash + openingFloat + totals.cashCents;
-  expectedBox.innerHTML = '<article><span>Yesterday cash</span><strong>' + money(previousCash) + '</strong></article><article><span>Cash sales today</span><strong>' + money(totals.cashCents) + '</strong></article><article><span>Expected drawer cash</span><strong>' + money(expectedDrawerCash) + '</strong></article><article><span>Expected card sales</span><strong>' + money(totals.cardCents) + '</strong></article><article><span>Transactions</span><strong>' + totals.count + '</strong></article>';
-  const cashVariance = actualCash - expectedDrawerCash;
-  const cardVariance = actualCard - totals.cardCents;
-  varianceBox.innerHTML = '<article><span>Cash taken</span><strong>' + money(cashTaken) + '</strong></article><article><span>Remaining cash</span><strong>' + money(remainingCash) + '</strong></article><article><span>Cash variance</span><strong>' + money(cashVariance) + '</strong></article><article><span>Card variance</span><strong>' + money(cardVariance) + '</strong></article><article><span>Status</span><strong>' + (cashVariance || cardVariance ? "Variance" : "Balanced") + '</strong></article>';
+  const totals = closingSalesTotals.date === closingDate ? closingSalesTotals : expectedClosingPreview(closingDate);
+  const paymentRows = [
+    ["Total cash sales", totals.cashCents],
+    ["Total card sales", totals.cardCents],
+    ["Total bank transfer", totals.bankCents]
+  ].filter(([, amount]) => amount > 0);
+  salesBox.innerHTML = '<table class="daily-sales-summary"><tbody>' + paymentRows.map(([label, amount]) => '<tr><th>' + label + '</th><td>' + money(amount) + '</td></tr>').join("") + '<tr class="daily-sales-total"><th>Total sales</th><td>' + money(totals.totalSalesCents) + '</td></tr></tbody></table>';
+  const cashInput = form.querySelector('input[name="actualCash"]');
+  const hasCashCount = cashInput.value !== "";
+  const actualCash = Math.round(Number(cashInput.value || 0) * 100);
+  const cashDifference = actualCash - totals.cashCents;
+  balanceBox.className = 'closing-balance ' + (!hasCashCount ? 'pending' : cashDifference > 0 ? 'over' : cashDifference < 0 ? 'short' : 'balanced');
+  balanceBox.innerHTML = !hasCashCount ? '<span>Cash balance</span><strong>Enter the cash counted</strong>' : '<span>Cash balance</span><strong>' + closingDifferenceLabel(cashDifference) + '</strong>';
+}
+function closingDifferenceLabel(differenceCents) {
+  if (!differenceCents) return "OK — balanced";
+  return (differenceCents > 0 ? "+" : "−") + money(Math.abs(differenceCents));
 }
 function previousClosingCashPreview(date) {
   const branchId = selectedPosBranchId || document.querySelector('#closingForm input[name="branchId"]')?.value || "";
@@ -3000,18 +3041,22 @@ function previousClosingCashPreview(date) {
   return Number(previous?.remaining_cash_cents ?? previous?.actual_cash_cents ?? 0);
 }
 function expectedClosingPreview(date) {
-  return state.sales.filter((sale) => !date || String(sale.created_at || "").slice(0, 10) === date).reduce((totals, sale) => {
+  return state.sales.filter((sale) => sale.status === "Paid" && (!date || String(sale.created_at || "").slice(0, 10) === date)).reduce((totals, sale) => {
     const method = String(sale.payment_method || "");
     const cash = method.match(/cash \$([0-9.]+)/i);
     const card = method.match(/card \$([0-9.]+)/i);
+    const bank = method.match(/bank transfer \$([0-9.]+)/i);
     const change = method.match(/change \$([0-9.]+)/i);
     if (cash) totals.cashCents += Math.max(0, Math.round(Number(cash[1]) * 100) - (change ? Math.round(Number(change[1]) * 100) : 0));
     if (card) totals.cardCents += Math.round(Number(card[1]) * 100);
-    if (!cash && !card && method.toLowerCase().includes("cash")) totals.cashCents += Number(sale.total_cents || 0);
-    if (!cash && !card && method.toLowerCase().includes("card")) totals.cardCents += Number(sale.total_cents || 0);
+    if (bank) totals.bankCents += Math.round(Number(bank[1]) * 100);
+    if (!cash && !card && !bank && method.toLowerCase().includes("cash")) totals.cashCents += Number(sale.total_cents || 0);
+    if (!cash && !card && !bank && method.toLowerCase().includes("card")) totals.cardCents += Number(sale.total_cents || 0);
+    if (!cash && !card && !bank && method.toLowerCase().includes("bank transfer")) totals.bankCents += Number(sale.total_cents || 0);
+    totals.totalSalesCents += Number(sale.total_cents || 0);
     totals.count += 1;
     return totals;
-  }, { cashCents:0, cardCents:0, count:0 });
+  }, { cashCents:0, cardCents:0, bankCents:0, totalSalesCents:0, count:0 });
 }
 function renderCartSummary() {
   const selectedItems = [...document.querySelectorAll(".sale-item")].map((row) => {
@@ -3025,7 +3070,8 @@ function renderCartSummary() {
   renderPaymentBalance();
 }
 function currentSaleTotalCents(){return [...document.querySelectorAll("#saleItems .sale-item")].reduce((sum,row)=>{const item=findSaleItem(row.querySelector('input[name="saleItemSearch"]')?.value);if(!item)return sum;const price=item.type==="service"?Math.round(Number(row.querySelector('input[name="instancePrice"]').value||0)*100)||item.priceCents:item.priceCents;return sum+price;},0);}
-function renderPaymentBalance(){const box=document.querySelector("#paymentBalance");if(!box)return;const total=currentSaleTotalCents(),cash=Math.round(Number(document.querySelector('#saleForm input[name="cashAmount"]')?.value||0)*100),card=Math.round(Number(document.querySelector('#saleForm input[name="cardAmount"]')?.value||0)*100),difference=cash+card-total;box.classList.toggle("change-due",difference>0);box.innerHTML=difference>0?'<span>Change to return</span><strong>'+money(difference)+'</strong>':'<span>Remaining to pay</span><strong>'+money(Math.max(0,-difference))+'</strong>';}
+function updatePaymentEntry(){const form=document.querySelector("#saleForm"),method=form.querySelector('select[name="paymentMethod"]').value,field=form.querySelector(".payment-amount-field"),input=form.querySelector('input[name="paymentAmount"]');field.classList.toggle("hidden",!method);input.required=Boolean(method);if(!method)input.value="";renderPaymentBalance();}
+function renderPaymentBalance(){const box=document.querySelector("#paymentBalance");if(!box)return;const form=document.querySelector("#saleForm"),method=form.querySelector('select[name="paymentMethod"]')?.value||"",total=currentSaleTotalCents(),amount=Math.round(Number(form.querySelector('input[name="paymentAmount"]')?.value||0)*100),difference=amount-total;box.classList.toggle("change-due",method==="Cash"&&difference>0);box.classList.toggle("payment-error",method!=="Cash"&&difference>0);if(!method){box.innerHTML='<span>Amount due</span><strong>'+money(total)+'</strong>';return;}if(method!=="Cash"&&difference>0){box.innerHTML='<span>Amount must match total</span><strong>'+money(total)+'</strong>';return;}box.innerHTML=method==="Cash"&&difference>0?'<span>Change to return</span><strong>'+money(difference)+'</strong>':'<span>Remaining to pay</span><strong>'+money(Math.max(0,-difference))+'</strong>';}
 function updateSaleItemRow(row) {
   const selectedItem = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
   const itemKey = selectedItem ? selectedItem.type + ":" + selectedItem.id : "";
@@ -3105,7 +3151,7 @@ function printLastReceipt() {
   if (!lastReceipt) { message.textContent = "Complete a sale first."; return; }
   const drawerNote = "If your cash drawer is connected to the receipt printer, it should open when this receipt prints.";
   const receipt = window.open("", "kunchasReceipt", "width=380,height=640");
-  const paymentRows = (lastReceipt.cashCents ? '<div class="row"><span>Cash paid</span><strong>' + money(lastReceipt.cashCents) + '</strong></div>' : '') + (lastReceipt.cardCents ? '<div class="row"><span>Card paid</span><strong>' + money(lastReceipt.cardCents) + '</strong></div>' : '') + (lastReceipt.changeCents ? '<div class="row total"><span>Change to return</span><span>' + money(lastReceipt.changeCents) + '</span></div>' : '');
+  const paymentRows = (lastReceipt.cashCents ? '<div class="row"><span>Cash paid</span><strong>' + money(lastReceipt.cashCents) + '</strong></div>' : '') + (lastReceipt.cardCents ? '<div class="row"><span>Card paid</span><strong>' + money(lastReceipt.cardCents) + '</strong></div>' : '') + (lastReceipt.bankCents ? '<div class="row"><span>Bank transfer</span><strong>' + money(lastReceipt.bankCents) + '</strong></div>' : '') + (lastReceipt.changeCents ? '<div class="row total"><span>Change to return</span><span>' + money(lastReceipt.changeCents) + '</span></div>' : '');
   receipt.document.write('<!doctype html><html><head><title>Kunchas receipt</title><style>body{font-family:Arial,sans-serif;margin:18px;color:#111}.center{text-align:center}h1{font-size:20px;margin:0}.line{border-top:1px dashed #999;margin:12px 0}.row{display:flex;justify-content:space-between;gap:12px;margin:6px 0}.total{font-weight:800;font-size:18px}.note{font-size:12px;color:#555}</style></head><body><div class="center"><h1>Kunchas</h1><div>' + esc(lastReceipt.branch?.name || "") + '</div><div>' + esc(lastReceipt.branch?.phone || "") + '</div></div><div class="line"></div><div>Receipt: ' + esc(lastReceipt.saleId) + '</div><div>' + esc(new Date(lastReceipt.createdAt).toLocaleString("en-AU")) + '</div><div class="line"></div>' + lastReceipt.items.map((item) => '<div class="row"><span>' + esc(item.name) + '</span><strong>' + money(item.priceCents) + '</strong></div>').join("") + '<div class="line"></div><div class="row total"><span>Total</span><span>' + money(lastReceipt.totalCents) + '</span></div>' + paymentRows + '<p class="center">Thank you</p><p class="note">' + drawerNote + '</p></body></html>');
   receipt.document.close();
   receipt.focus();
@@ -3441,9 +3487,12 @@ legend { grid-column:1/-1; }
 .sale-catalogue-picker label>span { display:block; margin-bottom:6px; color:#725979; font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
 .sale-catalogue-picker select { margin:0; color:var(--ink); background:#fff; font-size:14px; }
 .add-sale-line { width:100%; margin-bottom:18px; border-style:dashed; }
+.payment-entry { display:grid; grid-template-columns:minmax(180px,.8fr) minmax(180px,1fr); gap:12px; align-items:end; }
+.payment-entry label { margin:0; }
 .payment-balance { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:0 0 14px; padding:13px 15px; color:var(--brand); background:var(--brand-soft); border:1px solid #e2d0e8; border-radius:10px; font-weight:800; }
 .payment-balance strong { font-size:21px; }
 .payment-balance.change-due { color:#087f5b; background:#e9f8f2; border-color:#c9eadc; }
+.payment-balance.payment-error { color:#9b3444; background:#fff1f3; border-color:#efd6db; }
 .line-meta { display:block; min-height:34px; margin:13px 0 10px; }
 .line-meta strong { font-size:18px; }
 .selected-catalogue-item { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:12px; padding:13px 15px; color:#fff; background:linear-gradient(120deg,#42144f,#64266f); border-radius:12px; box-shadow:0 10px 22px rgba(60,19,70,.14); }
@@ -3519,10 +3568,31 @@ legend { grid-column:1/-1; }
 .recent-sale-footer { align-items:end; }
 .recent-sale-footer label { flex:1; margin:0; }
 .sale-correction-message { min-height:18px; color:var(--brand); font-weight:800; }
-.closing-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:10px 0 14px; }
-.closing-summary article { padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
-.closing-summary span { display:block; color:var(--muted); font-size:12px; font-weight:800; }
-.closing-summary strong { display:block; margin-top:4px; font-size:20px; }
+.closing-panel { padding:24px; }
+.closing-panel>.section-heading { align-items:end; margin-bottom:16px; }
+.closing-date { min-width:170px; margin:0; }
+.closing-date input { margin:4px 0 0; }
+.closing-sales-table { margin-bottom:14px; border:1px solid var(--line); border-radius:10px; }
+.daily-sales-summary { min-width:0; }
+.daily-sales-summary th,.daily-sales-summary td { padding:11px 14px; }
+.daily-sales-summary th { color:var(--muted); background:#fff; text-align:left; font-size:13px; }
+.daily-sales-summary td { text-align:right; font-weight:850; white-space:nowrap; }
+.daily-sales-summary .daily-sales-total th,.daily-sales-summary .daily-sales-total td { color:var(--ink); background:#f6f0f8; border-top:2px solid #ddcfe1; font-size:16px; }
+.closing-count-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(150px,190px); align-items:center; gap:14px; margin-bottom:10px; padding:12px 14px; background:#faf8fb; border:1px solid var(--line); border-radius:10px; font-weight:850; }
+.closing-count-row>label { margin:0; }
+.money-input { display:grid; grid-template-columns:auto 1fr; align-items:center; overflow:hidden; background:#fff; border:1px solid #d7d1dc; border-radius:8px; }
+.money-input span { padding-left:12px; color:var(--muted); font-weight:800; }
+.money-input input { min-width:0; margin:0; padding-left:5px; border:0; box-shadow:none; }
+.closing-balance { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:16px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; font-weight:800; }
+.closing-balance span { color:var(--muted); }
+.closing-balance strong { font-size:18px; }
+.closing-balance.balanced { color:#087f5b; background:#e9f8f2; border-color:#c9eadc; }
+.closing-balance.over { color:#176855; background:#edf8f5; border-color:#c9eadc; }
+.closing-balance.short { color:#9b3444; background:#fff1f3; border-color:#efd6db; }
+.closing-balance.pending { color:var(--brand); background:var(--brand-soft); border-color:#e2d0e8; }
+.closing-details { display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); gap:12px; }
+.closing-ok,.closing-over { color:#087f5b; font-weight:850; }
+.closing-short { color:#9b3444; font-weight:850; }
 .field-label { display:block; margin-bottom:8px; font-weight:800; }
 .staff-checks { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .mini-check { display:flex; align-items:center; gap:8px; min-height:44px; padding:10px; margin:0; background:#fff; border:1px solid var(--line); border-radius:8px; font-weight:700; }
@@ -3565,6 +3635,6 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.sidebar nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.nav-spacer{display:none}.closing-nav{margin-top:0;border-top:0}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column,.pos-checkout-grid{grid-template-columns:1fr}.cart-panel{position:static}.sale-catalogue-picker,.booking-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.clock-page-panel{grid-template-columns:1fr;min-height:0}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:700px){ .sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.recent-sale-footer,.booking-form-footer{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.sale-catalogue-picker,.booking-form-grid,.recent-sale-item,.clock-control-card .time-clock-actions,.time-clock-panel,.report-filters,.access-role-grid{grid-template-columns:1fr}.clock-page-panel{padding:24px}.time-clock-actions{grid-column:auto}.report-filters button,.recent-sale-footer button,.booking-form-footer button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none}.access-role-heading{grid-template-columns:auto 1fr}.access-level{grid-column:1/-1;justify-self:start} }
+@media (max-width:700px){ .sidebar nav{grid-template-columns:repeat(2,minmax(0,1fr))}.topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.recent-sale-footer,.booking-form-footer{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.sale-catalogue-picker,.booking-form-grid,.recent-sale-item,.clock-control-card .time-clock-actions,.time-clock-panel,.report-filters,.access-role-grid,.payment-entry,.closing-details{grid-template-columns:1fr}.clock-page-panel{padding:24px}.time-clock-actions{grid-column:auto}.report-filters button,.recent-sale-footer button,.booking-form-footer button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none}.access-role-heading{grid-template-columns:auto 1fr}.access-level{grid-column:1/-1;justify-self:start}.closing-panel>.section-heading{align-items:stretch;flex-direction:column}.closing-date{width:100%}.closing-count-row{grid-template-columns:minmax(0,1fr) 145px} }
 `;
 }
