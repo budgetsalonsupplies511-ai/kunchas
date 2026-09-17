@@ -1,9 +1,12 @@
 import { verifyActor, closeWithCounts, saleDetails, editSale } from "./pos-accountability.mjs";
 import { posPinHtml, posPinScript } from "./pos-pin-ui.mjs";
+import { brandLogo } from "./brand-logo.mjs";
+import { publicBookingRoute } from "./public-booking.mjs";
+import { branchWindow, validDate, minutesOf } from "./booking-schedule.mjs";
 import { exportServices, importServices } from "./service-excel.mjs";
 function escapeAccessHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }
 import * as XLSX from "xlsx";
-import { accessGate, protectData, publicIdentity, staffRoles, setStaffRole, scopeReportSql, scopeReportParams } from "./staff-access.mjs";
+import { accessGate, protectData, publicIdentity, staffRoles, setStaffRole, scopeReportSql, scopeReportParams, can } from "./staff-access.mjs";
 import { accessPanelHtml, staffLoginPanelHtml, accessClientScript } from "./access-ui.mjs";
 
 const application = {
@@ -16,8 +19,8 @@ const application = {
         if (branchId && (await all(env, "SELECT id FROM branches WHERE id = ? AND status = 'Archived'", [branchId])).length) return jsonResponse({ error: "This branch is archived. Restore it before making changes." }, 409);
       }
 
-      if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/admin")) {
-        return htmlResponse(renderApp("", "overview", "admin", ctx.identity));
+      if (request.method === "GET" && ["/", "/owner", "/admin", "/manager"].includes(url.pathname)) {
+        return htmlResponse(renderApp(ctx.identity.managerBranchId || "", "overview", "admin", ctx.identity));
       }
 
       if (request.method === "GET" && url.pathname === "/pos") {
@@ -45,6 +48,21 @@ const application = {
         if (auth) return auth;
         return getPosData(request, env);
       }
+      if (request.method === 'GET' && url.pathname === '/api/closing-sales') {
+        const branchId = clean(request.headers.get('x-branch-id'));
+        const date = clean(url.searchParams.get('date'));
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return jsonResponse({error:'Choose a valid closing date.'},400);
+        const sales = await all(env,"SELECT s.*,b.name AS branch_name FROM sales s JOIN branches b ON b.id=s.branch_id WHERE s.branch_id=? AND substr(s.created_at,1,10)=? ORDER BY s.created_at DESC",[branchId,date]);
+        return jsonResponse({sales});
+      }
+      if (request.method === 'GET' && url.pathname === '/api/recent-sales') {
+        const branchId = clean(request.headers.get('x-branch-id'));
+        const from = new Date(url.searchParams.get('from'));
+        const to = new Date(url.searchParams.get('to'));
+        if (!Number.isFinite(+from) || !Number.isFinite(+to) || +to <= +from || +to - +from > 26*60*60*1000) return jsonResponse({error:'Choose a valid sales date.'},400);
+        const sales = await all(env,"SELECT s.*,b.name AS branch_name,trim(coalesce(c.first_name,'') || ' ' || coalesce(c.last_name,'')) AS customer_name,c.phone AS customer_phone,c.email AS customer_email FROM sales s JOIN branches b ON b.id=s.branch_id LEFT JOIN customers c ON c.id=s.customer_id WHERE s.branch_id=? AND s.created_at>=? AND s.created_at<? ORDER BY s.created_at DESC",[branchId,from.toISOString(),to.toISOString()]);
+        return jsonResponse({sales});
+      }
 
       if (request.method === "POST" && url.pathname === "/api/branch-bookings") {
         const auth = await authorizeBranch(request, env);
@@ -58,6 +76,12 @@ const application = {
         return updateBooking(request, env, clean(url.pathname.replace("/api/bookings/", "")));
       }
 
+      if (request.method === 'POST' && /^\/api\/sales\/[^/]+\/authorize$/.test(url.pathname)) {
+        const sale = await env.DB.prepare('SELECT branch_id FROM sales WHERE id=?').bind(decodeURIComponent(url.pathname.split('/')[3])).first();
+        if (!sale) return jsonResponse({error:'Sale not found.'},404);
+        const auth = await verifyActor(request,env,sale.branch_id,true,true,true);
+        return auth.response || jsonResponse({ok:true});
+      }
       if (request.method === "GET" && /^\/api\/sales\/[^/]+$/.test(url.pathname)) return saleDetails(request,env,decodeURIComponent(url.pathname.split("/")[3]));
       if (request.method === "PATCH" && /^\/api\/sales\/[^/]+$/.test(url.pathname)) return editSale(request,env,decodeURIComponent(url.pathname.split("/")[3]),paymentLabel);
       if (request.method === "POST" && url.pathname === "/api/sales") {
@@ -111,6 +135,7 @@ const application = {
 
       return new Response("Not found", { status: 404 });
     } catch (error) {
+      if (String(error.message).includes('BOOKING_CAPACITY')) return jsonResponse({error:'This branch already has four bookings at that time. Please choose another time.'},409);
       console.error(JSON.stringify({ level: "error", message: error.message }));
       return jsonResponse({ error: "Something went wrong. Please try again." }, 500);
     }
@@ -298,17 +323,17 @@ async function createBooking(request, env) {
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   const branchId = clean(body.branchId);
-  const customerId = clean(body.customerId) || await ensureBookingCustomer(env, body.customer || {}, branchId, "Online booking");
+  let customerId = clean(body.customerId);
   const staffId = clean(body.staffId);
   const serviceIds = Array.isArray(body.serviceIds) ? body.serviceIds.map(clean).filter(Boolean) : [];
   const bookingDate = clean(body.bookingDate);
   const bookingTime = clean(body.bookingTime);
 
-  if (!customerId || !branchId || !bookingDate || !bookingTime || !serviceIds.length) {
+  if (!branchId || !validDate(bookingDate) || !bookingTime || !serviceIds.length) {
     return jsonResponse({ error: "Customer, branch, date, time, and at least one service are required." }, 400);
   }
   const timeMatch = bookingTime.match(/^(\d{2}):(\d{2})$/);
-  if (!timeMatch || Number(timeMatch[2]) % 15 !== 0) {
+  if (!timeMatch || !Number.isFinite(minutesOf(bookingTime)) || Number(timeMatch[2]) % 15 !== 0) {
     return jsonResponse({ error: "Booking time must use a 15-minute interval." }, 400);
   }
 
@@ -316,14 +341,18 @@ async function createBooking(request, env) {
   const serviceRows = await all(env, `SELECT id, name, duration_minutes, price_cents FROM services WHERE id IN (${placeholders})`, serviceIds);
   const totalMinutes = serviceRows.reduce((total, service) => total + Number(service.duration_minutes || 0), 0);
   const totalCents = serviceRows.reduce((total, service) => total + Number(service.price_cents || 0), 0);
+  if(serviceRows.length!==serviceIds.length||!Number.isInteger(totalMinutes)||totalMinutes<=0)return jsonResponse({error:'Choose valid services with a duration.'},400);
   const startMinutes = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
-  if (startMinutes < 10 * 60 || startMinutes + totalMinutes > 19 * 60) {
-    return jsonResponse({ error: "Bookings must start at or after 10:00 am and finish by 7:00 pm." }, 400);
+  const window=await branchWindow(env,branchId,bookingDate);
+  if (!window || startMinutes < window.start || startMinutes + totalMinutes > window.end) {
+    return jsonResponse({ error: "Choose a time within the branch's opening hours and the 10 am–7 pm booking window." }, 400);
   }
   if (await exceedsBookingCapacity(env, branchId, bookingDate, startMinutes, startMinutes + totalMinutes)) {
     return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
   }
 
+  customerId ||= await ensureBookingCustomer(env, body.customer || {}, branchId, "Online booking");
+  if(!customerId)return jsonResponse({error:'Customer details are required.'},400);
   await env.DB.prepare(
     `INSERT INTO bookings (
       id, created_at, updated_at, customer_id, branch_id, staff_id, service_ids,
@@ -432,21 +461,24 @@ async function updateBooking(request, env, bookingId) {
   const body = await request.json();
   const existing = (await all(env, "SELECT * FROM bookings WHERE id = ?", [bookingId]))[0];
   if (!existing) return jsonResponse({ error: "Booking not found." }, 404);
+  if(body.status!==undefined&&!['Booked','Confirmed','Completed','Cancelled','No show'].includes(clean(body.status)))return jsonResponse({error:'Choose a valid booking status.'},400);
+  if((existing.sale_id||existing.status==='Completed')&&['Cancelled','No show'].includes(clean(body.status)))return jsonResponse({error:'A completed booking cannot be cancelled or marked no show. Use the sale refund workflow.'},409);
 
   const serviceIds = Array.isArray(body.serviceIds) && body.serviceIds.length
     ? body.serviceIds.map(clean).filter(Boolean)
     : JSON.parse(existing.service_ids || "[]");
   const placeholders = serviceIds.map(() => "?").join(",");
   const serviceRows = serviceIds.length ? await all(env, `SELECT id, name, duration_minutes, price_cents FROM services WHERE id IN (${placeholders})`, serviceIds) : [];
-  const totalMinutes = serviceRows.reduce((total, service) => total + Number(service.duration_minutes || 0), 0) || existing.duration_minutes;
-  const totalCents = serviceRows.reduce((total, service) => total + Number(service.price_cents || 0), 0) || existing.total_cents;
+  const totalMinutes = Array.isArray(body.serviceIds) ? serviceRows.reduce((total, service) => total + Number(service.duration_minutes || 0), 0) : existing.duration_minutes;
+  const totalCents = Array.isArray(body.serviceIds) ? serviceRows.reduce((total, service) => total + Number(service.price_cents || 0), 0) : existing.total_cents;
   const bookingDate = clean(body.bookingDate) || existing.booking_date;
   const bookingTime = clean(body.bookingTime) || existing.booking_time;
-  if (body.bookingDate !== undefined || body.bookingTime !== undefined || Array.isArray(body.serviceIds)) {
+  if (body.bookingDate !== undefined || body.bookingTime !== undefined || Array.isArray(body.serviceIds) || (['Cancelled','No show'].includes(existing.status)&&!['Cancelled','No show'].includes(clean(body.status)||existing.status))) {
     const timeMatch = bookingTime.match(/^(\d{2}):(\d{2})$/);
-    if (!timeMatch || Number(timeMatch[2]) % 15 !== 0) return jsonResponse({ error: "Booking time must use a 15-minute interval." }, 400);
+    if (!validDate(bookingDate) || !timeMatch || !Number.isFinite(minutesOf(bookingTime)) || Number(timeMatch[2]) % 15 !== 0) return jsonResponse({ error: "Choose a valid date and a 15-minute booking interval." }, 400);
     const startMinutes = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
-    if (startMinutes < 600 || startMinutes + totalMinutes > 1140) return jsonResponse({ error: "Bookings must start at or after 10:00 am and finish by 7:00 pm." }, 400);
+    const window=await branchWindow(env,existing.branch_id,bookingDate);
+    if (!window || startMinutes < window.start || startMinutes + totalMinutes > window.end) return jsonResponse({ error: "Choose a time within the branch's opening hours and the 10 am–7 pm booking window." }, 400);
     const nextStatus = clean(body.status) || existing.status;
     if (!['Cancelled', 'No show'].includes(nextStatus) && await exceedsBookingCapacity(env, existing.branch_id, bookingDate, startMinutes, startMinutes + totalMinutes, bookingId)) return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
   }
@@ -462,13 +494,13 @@ async function updateBooking(request, env, bookingId) {
       new Date().toISOString(),
       body.staffId !== undefined ? (clean(body.staffId) || null) : existing.staff_id,
       JSON.stringify(serviceIds),
-      serviceRows.map((service) => service.name).join(", ") || existing.service_names,
+      Array.isArray(body.serviceIds) ? serviceRows.map((service) => service.name).join(", ") : existing.service_names,
       bookingDate,
       bookingTime,
       totalMinutes,
       totalCents,
       clean(body.status) || existing.status,
-      body.notes !== undefined ? clean(body.notes) : existing.notes,
+      [body.notes !== undefined ? clean(body.notes) : existing.notes, body.status && body.status!==existing.status ? new Date().toISOString()+' — '+body.status+' by '+auth.actor.name+': '+auth.reason : ''].filter(Boolean).join('\n'),
       bookingId
     )
     .run();
@@ -835,7 +867,7 @@ async function exportReport(url, env, accessUser) {
   if (type === "products") return excelReportResponse("Products Sold", ["Product", "Quantity", "Sales"], report.productRows.map((row) => [row.name, row.quantity, row.revenueCents / 100]));
   if (type === "services") return excelReportResponse("Services Sold", ["Service", "Quantity", "Sales"], report.serviceRows.map((row) => [row.name, row.quantity, row.revenueCents / 100]));
   if (type === "bookings") return excelReportResponse("Booking Sources", ["Branch", "Source", "Bookings or Visits", "Value", "Completed"], report.bookingRows.map((row) => [row.branch, row.source, row.count, row.valueCents / 100, row.completed]));
-  if (type === "payroll") return excelReportResponse("Payroll Hours", ["Date", "Staff", "Role", "Branch", "Clock In", "Break Minutes", "Clock Out", "Net Hours", "Hourly Rate", "Gross Pay", "Status"], report.payrollRows.map((row) => [row.date, row.staff, row.role, row.branch, row.clockIn, row.breakMinutes, row.clockOut, Number(row.hours.toFixed(2)), row.hourlyRateCents / 100, row.grossPayCents / 100, row.status]));
+  if (type === "payroll") return excelReportResponse("Payroll Hours", ["Date", "Staff", "Role", "Branch", "Clock In", "Break Minutes", "Clock Out", "Net Hours", "Status"], report.payrollRows.map((row) => [row.date, row.staff, row.role, row.branch, row.clockIn, row.breakMinutes, row.clockOut, Number(row.hours.toFixed(2)), row.status]));
   if (type === "xero") {
     const headers = ["Date", "EmployeeID", "EmployeeName", "EarningsRateID", "NumberOfUnits", "Branch", "ClockIn", "ClockOut"];
     const rows = report.payrollRows.filter((row) => row.clockOut).map((row) => [row.date, row.xeroEmployeeId, row.staff, row.xeroEarningsRateId, row.hours.toFixed(2), row.branch, row.clockIn, row.clockOut]);
@@ -1147,7 +1179,7 @@ async function createDiscount(request, env) {
 
 async function createSale(request, env) {
   const body = await request.clone().json();
-  const auth=await verifyActor(request,env,clean(body.branchId));if(auth.response)return auth.response;
+  const auth=await verifyActor(request,env,clean(body.branchId),false,false,false,true);if(auth.response)return auth.response;
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   const branchId = clean(body.branchId);
@@ -1217,19 +1249,34 @@ async function createSale(request, env) {
     }
     const percentTotal = percentages.reduce((sum, value) => sum + value, 0);
     const amountTotal = amounts.reduce((sum, value) => sum + value, 0);
-    const combinedCredit = amountTotal + Math.round(item.priceCents * percentTotal / 100);
+    const creditedTotal = item.staffAllocations.reduce((sum, allocation) => sum + (allocation.amountCents || Math.round(item.priceCents * allocation.percent / 100)), 0);
     if (percentTotal > 100) return jsonResponse({ error: `Staff percentages for ${item.name} cannot exceed 100%.` }, 400);
     if (amountTotal > item.priceCents) return jsonResponse({ error: `Staff dollar allocations for ${item.name} cannot exceed ${formatDollars(item.priceCents)}.` }, 400);
-    if (combinedCredit > item.priceCents) return jsonResponse({ error: `Combined staff allocations for ${item.name} cannot exceed the service amount.` }, 400);
+    if (creditedTotal > item.priceCents + 1) return jsonResponse({ error: `Staff allocations for ${item.name} cannot exceed the service amount.` }, 400);
+    if (item.staffAllocations.some((allocation) => allocation.percent > 0 && allocation.amountCents > 0 && Math.abs(allocation.amountCents - Math.round(item.priceCents * allocation.percent / 100)) > 1)) {
+      return jsonResponse({ error: `Staff percentages and amounts for ${item.name} must match.` }, 400);
+    }
   }
   const totalCents = saleItems.reduce((total, item) => total + item.priceCents, 0);
-  const cashCents = Math.round(Number(body.cashAmount || 0) * 100);
-  const cardCents = Math.round(Number(body.cardAmount || 0) * 100);
-  if (![cashCents,cardCents,totalCents].every(Number.isSafeInteger) || cashCents<0 || cardCents<0 || cardCents>totalCents || cashCents + cardCents < totalCents) {
-    return jsonResponse({ error: "Payment total must cover the sale amount." }, 400);
+  const supportedPaymentMethods = ["Cash", "Card", "Bank Transfer", "Store Credit", "Gift Voucher", "Refund", "On Account"];
+  let submittedPayments = Array.isArray(body.payments) ? body.payments : [];
+  if (!submittedPayments.length && clean(body.paymentMethod)) submittedPayments = [{ method:clean(body.paymentMethod), amount:body.tenderAmount }];
+  if (!submittedPayments.length || submittedPayments.length > 20) return jsonResponse({ error: "Add at least one valid payment." }, 400);
+  const normalizedPayments = submittedPayments.map((payment) => ({ method:clean(payment?.method), amountCents:Math.round(Number(payment?.amount || 0) * 100) }));
+  if (normalizedPayments.some((payment) => !supportedPaymentMethods.includes(payment.method) || !Number.isSafeInteger(payment.amountCents) || payment.amountCents <= 0)) {
+    return jsonResponse({ error: "Every payment needs a valid method and positive amount." }, 400);
   }
-  const paymentMethod = paymentLabel(cashCents, cardCents, totalCents, clean(body.paymentMethod));
-  const changeCents = Math.max(0, cashCents + cardCents - totalCents);
+  const payments = supportedPaymentMethods.map((method) => ({
+    method,
+    amountCents:normalizedPayments.filter((payment) => payment.method === method).reduce((sum, payment) => sum + payment.amountCents, 0)
+  })).filter((payment) => payment.amountCents > 0);
+  const tenderedCents = payments.reduce((sum, payment) => sum + payment.amountCents, 0);
+  const cashCents = payments.filter((payment) => payment.method === "Cash").reduce((sum, payment) => sum + payment.amountCents, 0);
+  const cardCents = payments.filter((payment) => payment.method === "Card").reduce((sum, payment) => sum + payment.amountCents, 0);
+  const changeCents = Math.max(0, tenderedCents - totalCents);
+  if (!Number.isSafeInteger(tenderedCents) || tenderedCents < totalCents) return jsonResponse({ error: `Payment is short by ${formatDollars(totalCents - tenderedCents)}.` }, 400);
+  if (changeCents > cashCents) return jsonResponse({ error: "Only cash can exceed the remaining balance and produce change." }, 400);
+  const paymentMethod = payments.map((payment) => `${payment.method} ${formatDollars(payment.amountCents)}`).join(" / ") + (changeCents ? ` / change ${formatDollars(changeCents)}` : "");
 
   const saleStatements = [env.DB.prepare(
     `INSERT INTO sales (id, created_at, branch_id, customer_id, staff_id, total_cents, payment_method, status, recorded_by_id, recorded_by_name, cash_cents, card_cents, change_cents)
@@ -1274,7 +1321,7 @@ async function createSale(request, env) {
   }
 
   const branch = (await all(env, "SELECT name, address, phone FROM branches WHERE id = ?", [branchId]))[0];
-  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod } });
+  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod, payments } });
 }
 
 function parseIdList(value) {
@@ -1329,8 +1376,9 @@ async function applyStockMovement(env, branchId, productId, delta, movementType,
 }
 
 async function expectedClosingTotals(env, branchId, closingDate) {
-  const rows = await all(env, "SELECT total_cents, payment_method FROM sales WHERE branch_id = ? AND substr(created_at, 1, 10) = ? AND status = 'Paid'", [branchId, closingDate]);
+  const rows = await all(env, "SELECT total_cents, payment_method, cash_cents, card_cents, change_cents FROM sales WHERE branch_id = ? AND substr(created_at, 1, 10) = ? AND status = 'Paid'", [branchId, closingDate]);
   return rows.reduce((totals, sale) => {
+    if (sale.cash_cents != null && sale.card_cents != null) { totals.cashCents += Number(sale.cash_cents) - Number(sale.change_cents || 0); totals.cardCents += Number(sale.card_cents); return totals; }
     const method = String(sale.payment_method || "");
     const cash = method.match(/Cash \$([0-9.]+)/i) || method.match(/cash \$([0-9.]+)/i);
     const card = method.match(/Card \$([0-9.]+)/i) || method.match(/card \$([0-9.]+)/i);
@@ -1418,47 +1466,51 @@ function bookingTimeOptions() {
 
 function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
   const isAdmin = mode === "admin";
+  const dashboardTitle = accessUser.role === "owner" ? "SuperAdmin Dashboard (Owner)" : accessUser.role === "manager" ? "Manager Dashboard" : "Admin Dashboard";
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kunchas Cloud Software</title>
+  <title>${isAdmin ? dashboardTitle : "Branch POS"} · Kuncha’s</title>
   <style>${styles()}</style>
 </head>
-<body class="${isAdmin ? "admin-mode" : "staff-mode"}">
+<body class="${isAdmin ? "admin-mode" : "staff-mode pos-locked"}">
   <aside class="sidebar">
-    <div class="brand"><span>K</span><strong>Kunchas</strong></div>
+    <div class="brand"><img src="${brandLogo}" alt="Kuncha’s Hair & Beauty Art" width="2551" height="1189"></div>
     <nav>
       ${isAdmin ? `
-      <button class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">${appIcon("dashboard")}<span>Dashboard</span></button>
-      <button class="nav" data-tab="customers">${appIcon("customers")}<span>Customers</span></button>
-      <button class="nav" data-tab="staff">${appIcon("staff")}<span>Staff</span></button>
-      <button class="nav" data-tab="roster">${appIcon("roster")}<span>Roster</span></button>
-      <button class="nav" data-tab="services">${appIcon("services")}<span>Services</span></button>
-      <button class="nav" data-tab="products">${appIcon("products")}<span>Products</span></button>
-      <button class="nav" data-tab="inventory">${appIcon("inventory")}<span>Inventory</span></button>
-      <button class="nav" data-tab="reports">${appIcon("reports")}<span>Reports</span></button>
-      <button class="nav" data-tab="branches">${appIcon("branches")}<span>Branches</span></button>
-      <button class="nav" data-tab="access">${appIcon("access")}<span>Access</span></button>` : `
+      <button ${(can(accessUser, "dashboard")) ? "" : "hidden"} class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">${appIcon("dashboard")}<span>Dashboard</span></button>
+      <button ${(can(accessUser, "customers")) ? "" : "hidden"} class="nav" data-tab="customers">${appIcon("customers")}<span>Customers</span></button>
+      <button ${(can(accessUser, "staff")) ? "" : "hidden"} class="nav" data-tab="staff">${appIcon("staff")}<span>Staff</span></button>
+      <button ${(can(accessUser, "roster")) ? "" : "hidden"} class="nav" data-tab="roster">${appIcon("roster")}<span>Roster</span></button>
+      <button ${(can(accessUser, "services")) ? "" : "hidden"} class="nav" data-tab="services">${appIcon("services")}<span>Services</span></button>
+      <button ${(can(accessUser, "products")) ? "" : "hidden"} class="nav" data-tab="products">${appIcon("products")}<span>Products</span></button>
+      <button ${(can(accessUser, "inventory")) ? "" : "hidden"} class="nav" data-tab="inventory">${appIcon("inventory")}<span>Inventory</span></button>
+      <button ${(can(accessUser, "reports") || can(accessUser, "payroll")) ? "" : "hidden"} class="nav" data-tab="reports">${appIcon("reports")}<span>Reports</span></button>
+      <button ${(can(accessUser, "branches")) ? "" : "hidden"} class="nav" data-tab="branches">${appIcon("branches")}<span>Branches</span></button>
+      <button ${(["owner", "admin"].includes(accessUser.role) && can(accessUser, "access", true)) ? "" : "hidden"} class="nav" data-tab="access">${appIcon("access")}<span>Access</span></button>` : `
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">${appIcon("pos")}<span>POS</span></button>
+      <button class="nav" data-tab="staff-clock">${appIcon("staff")}<span>Staff</span></button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">${appIcon("bookings")}<span>Bookings</span></button>
       <button class="nav" data-tab="closing">${appIcon("closing")}<span>Daily Closing</span></button>`}
       ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">${appIcon("sales")}<span>Recent Sales</span></button>`}
     </nav>
+    <div class="sidebar-footer staff-only"><button class="nav" id="switchBranch" type="button">${appIcon("branches")}<span>Change branch</span></button></div>
   </aside>
 
   <main class="app">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Cloud software for SMBs</p>
-        <h1 id="appTitle">${isAdmin ? "Dashboard" : "Kunchas staff workspace"}</h1>
+        <p class="eyebrow">${isAdmin ? dashboardTitle : "Branch POS"}</p>
+        <h1 id="appTitle">${isAdmin ? dashboardTitle : "Kunchas branch"}</h1>
       </div>
       ${isAdmin ? `<div class="admin-controls"><label class="branch-switcher"><span>Viewing</span><select id="globalBranchFilter" aria-label="Choose branch"><option value="">All branches</option></select></label><div class="admin-avatar"><span>${escapeAccessHtml(accessUser.name.slice(0,2).toUpperCase())}</span><strong>${escapeAccessHtml(accessUser.name)}</strong></div></div>` : ""}
     </header>
-    <div class="account-tools"><span>${escapeAccessHtml(accessUser.name)}</span><a class="secondary button-link" href="${isAdmin ? "/pos" : "/admin"}">${isAdmin ? "Branch workspace" : "Dashboard"}</a><button class="secondary" type="button" id="changePinButton">Change my PIN</button><button class="secondary" type="button" id="signOutButton">Sign out</button></div>
+    <div class="account-tools"><span>${escapeAccessHtml(accessUser.name)}</span>${isAdmin ? '<a class="secondary button-link" href="/pos">Branch workspace</a>' : '<button class="secondary" type="button" id="managerDashboardButton">Manager dashboard</button>'}<button class="secondary" type="button" id="changePinButton">Change my PIN</button><button class="secondary" type="button" id="signOutButton">Sign out</button></div>
 
     <dialog id="changePinDialog" class="branch-dialog branch-action-dialog"><form id="changePinForm"><div class="branch-dialog-header"><h2>Change my PIN</h2></div><div class="branch-dialog-body"><label>Current PIN<input name="currentPin" type="password" inputmode="numeric" autocomplete="current-password" required></label><label>New PIN<input name="newPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6,12}" required></label><label>Confirm new PIN<input name="confirmPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6,12}" required></label><p class="hint">Use 6–12 digits. You will sign in again after changing it.</p><p id="changePinMessage" role="alert"></p></div><div class="branch-dialog-footer"><button class="secondary" type="button" id="cancelPinChange">Cancel</button><button class="primary" type="submit">Change PIN</button></div></form></dialog>
+    <dialog id="managerDashboardDialog" class="branch-dialog branch-action-dialog"><form id="managerDashboardForm"><div class="branch-dialog-header"><div><p class="eyebrow">Manager access</p><h2>Open manager dashboard</h2></div></div><div class="branch-dialog-body"><label>Manager PIN<input name="pin" type="password" inputmode="numeric" autocomplete="off" pattern="[0-9]{6,12}" required autofocus></label><p class="hint">Your manager PIN opens only this branch. Menus and editing follow the permissions set by the owner.</p><p id="managerDashboardError" role="alert"></p></div><div class="branch-dialog-footer"><button class="secondary" type="button" id="cancelManagerDashboard">Cancel</button><button class="primary" type="submit">Open dashboard</button></div></form></dialog>
     <div class="load-row admin-only">
       <button class="primary" id="loadData" type="button">Refresh data</button>
     </div>
@@ -1486,13 +1538,14 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
     </section>
 
     ${posPinHtml()}<div class="panel pos-login staff-only" id="posLogin">
-      <h2>Open branch workspace</h2>
+      <img class="login-brand-logo" src="${brandLogo}" alt="Kuncha’s Hair & Beauty Art" width="2551" height="1189">
+      <h2>Sign in to your branch</h2>
       <p class="hint">Choose a branch and enter its branch PIN. Each purchase and closing requires an individual staff PIN.</p>
       <div class="grid">
-        <label>Branch<select id="posBranch" required></select></label>
-        <label>Branch PIN<input type="password" id="posPin" inputmode="numeric" autocomplete="off" required></label>
+        <label>Branch name<select id="posBranch" required></select></label>
+        <label>Login PIN<input type="password" id="posPin" inputmode="numeric" autocomplete="off" required></label>
       </div>
-      <button class="primary" id="openPos" type="button">Open branch</button>
+      <button class="primary full" id="openPos" type="button">Log in</button>
     </div>
 
     <section class="tab staff-only ${initialTab === "pos" ? "active" : ""}" id="pos">
@@ -1502,12 +1555,10 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <p class="eyebrow">Current branch</p>
           <h2 id="posBranchName">Branch POS</h2>
         </div>
-        <button class="secondary" id="switchBranch" type="button">Switch branch</button>
       </div>
-      <div class="panel time-clock-panel"><div><p class="eyebrow">Staff time clock</p><h2>Clock in, break or out</h2><p class="hint" id="timeClockStatus">Actual hours feed the payroll report.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button">Clock in</button><button class="secondary" id="breakStartButton" type="button">Start break</button><button class="secondary" id="breakEndButton" type="button">End break</button><button class="secondary" id="clockOutButton" type="button">Clock out</button></div></div>
       <div class="split">
         <form class="panel" id="saleForm" novalidate>
-          <h2>New POS sale</h2>
+          <p class="eyebrow">Point of sale</p><h2>New sale</h2>
           <input name="branchId" type="hidden">
           <input name="bookingId" type="hidden">
           <label>Checkout a booking<select id="bookingCheckout"><option value="">New walk-in sale</option></select></label>
@@ -1516,6 +1567,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <div class="customer-existing hidden">
             <label>Customer search<input name="customerSearch" list="customerList" placeholder="Type name, phone, or email"></label>
           </div>
+          <div class="booking-customer-card hidden" id="bookingCustomerCard" aria-live="polite"></div>
           <div class="customer-new hidden">
             <label>Category<select name="customerCategory"><option>Member</option><option>Non-member</option></select></label>
             <div class="grid"><label>First name<input name="newFirstName"></label><label>Last name<input name="newLastName"></label></div>
@@ -1527,23 +1579,42 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <datalist id="staffList"></datalist>
           <div id="saleItems"></div>
           <button class="secondary" id="addSaleItem" type="button">Add item</button>
-          <div class="grid">
-            <label>Cash amount $<input name="cashAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
-            <label>Card amount $<input name="cardAmount" type="number" min="0" step="0.01" placeholder="0.00"></label>
+          <div class="checkout-total"><span>Total amount</span><strong id="checkoutTotal">$0.00</strong></div>
+          <button class="primary full pay-button" id="showPaymentMethods" type="button">Click to pay</button>
+          <div class="payment-panel hidden" id="paymentPanel">
+            <div class="payment-heading"><div><p class="eyebrow">Make a payment</p><h3>Select payment method</h3></div><label>Amount to pay $<input name="paymentAmount" type="number" min="0.01" step="0.01" placeholder="0.00"></label></div>
+            <div class="payment-methods" role="group" aria-label="Payment method">
+              <button type="button" data-payment-method="Cash">Cash</button>
+              <button type="button" data-payment-method="Card">Card</button>
+              <button type="button" data-payment-method="Bank Transfer">Bank transfer</button>
+              <button type="button" data-payment-method="Store Credit">Store credit</button>
+              <button type="button" data-payment-method="Gift Voucher">Gift voucher</button>
+              <button type="button" data-payment-method="Refund">Refund</button>
+              <button type="button" data-payment-method="On Account">On account</button>
+            </div>
+            <p class="hint" id="selectedPaymentMethod">Enter an amount, then choose how it was paid.</p>
+            <div class="payment-allocations" id="paymentAllocations"></div>
+            <div class="payment-balance" id="paymentBalance"></div>
           </div>
-          <p class="hint">Use one box for full cash/card, or both boxes for split payment.</p>
-          <button class="primary full" id="completeSale" type="submit">Complete purchase</button>
+          <button class="primary full hidden" id="completeSale" type="submit" disabled>Complete payment</button>
           <p class="sale-message" id="saleMessage" aria-live="polite"></p>
           <button class="secondary full hidden" id="printReceipt" type="button">Print receipt / open cash drawer</button>
           <p class="hint">Cash drawer opens only when it is connected to the receipt printer and configured to open on receipt print.</p>
         </form>
-        <div class="panel cart-panel"><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total</span><strong id="cartTotal">$0.00</strong></div></div>
+        <div class="panel cart-panel"><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total</span><strong id="cartTotal">$0.00</strong></div><div class="cart-payment-summary" id="cartPaymentSummary"></div></div>
       </div>
       </div>
     </section>
 
+    <section class="tab staff-only" id="staff-clock">
+      <div class="pos-workspace hidden" id="staffWorkspace">
+        <div class="panel time-clock-panel"><div><p class="eyebrow">Staff time clock</p><h2>Clock in, take a break, or clock out</h2><p class="hint" id="timeClockStatus">Actual hours feed the payroll report.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button">Clock in</button><button class="secondary" id="breakStartButton" type="button">Start break</button><button class="secondary" id="breakEndButton" type="button">End break</button><button class="secondary" id="clockOutButton" type="button">Clock out</button></div></div>
+        <div class="panel"><div class="section-heading"><div><h2>Clocked-in staff</h2><p class="hint">Everyone currently working at this branch remains visible here.</p></div><span class="pill" id="clockedInCount">0 clocked in</span></div><div class="table-wrap"><table><thead><tr><th>Staff</th><th>Clocked in</th><th>Status</th><th>Break minutes</th></tr></thead><tbody id="clockedInStaffTable"></tbody></table></div></div>
+      </div>
+    </section>
+
     <section class="tab staff-only" id="recent-sales">
-      <div class="panel"><h2>Recent sales</h2><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Total</th><th>Method</th><th>Status</th><th>Completed by</th><th>Edit</th></tr></thead><tbody id="salesTable"></tbody></table></div></div>
+      <div class="panel"><h2>Recent sales</h2><div class="grid"><label>Sales date<input id="recentSalesDate" type="date" required></label><label>Search customer<input id="recentSalesSearch" type="search" placeholder="Customer name, phone or email"></label></div><button class="secondary" id="recentSalesToday" type="button">Today</button><p class="hint" id="recentSalesStatus" role="status"></p><div class="table-wrap"><table><thead><tr><th>Time</th><th>Customer</th><th>Total</th><th>Method</th><th>Status</th><th>Completed by</th><th>Edit</th></tr></thead><tbody id="salesTable"></tbody></table></div><p class="hint">Sale edits require this branch’s manager PIN and a reason.</p></div>
     </section>
 
     <section class="tab staff-only ${initialTab === "bookings" ? "active" : ""}" id="bookings">
@@ -1585,10 +1656,10 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 
     <section class="tab admin-only" id="staff">
       <div class="split">
-        <form class="panel" id="staffForm"><h2>Add staff</h2><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01" value="0.00"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><p class="hint">Choose their usual weekly day or days off.</p><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary full" type="submit">Save staff</button></form>
-        <div class="panel"><h2>Staff</h2><p class="hint">Staff are shared across all branches and assigned through the roster.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Day off</th><th>Hourly rate</th><th>Status</th><th>Sales made</th></tr></thead><tbody id="staffTable"></tbody></table></div></div>
+        <form class="panel" id="staffForm"><h2>Add staff</h2><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><p class="hint">Choose their usual weekly day or days off.</p><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary full" type="submit">Save staff</button></form>
+        <div class="panel"><h2>Staff</h2><p class="hint">Staff are shared across all branches and assigned through the roster.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Day off</th><th>Status</th><th>Sales made</th></tr></thead><tbody id="staffTable"></tbody></table></div></div>
       </div>
-      <div class="panel staff-profile hidden" id="staffProfile"><div class="profile-heading"><div><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary" id="closeStaffProfile" type="button">Close</button></div><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary" type="submit">Save staff details</button></form><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div><div class="staff-hours-section"><div class="section-heading"><div><h3>Daily hours</h3><p class="hint">Last 14 days · Net hours exclude recorded breaks.</p></div><strong id="staffHoursSummary"></strong></div><div class="table-wrap"><table class="staff-hours-table"><thead><tr><th>Date</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Total hours</th><th>Estimated pay</th></tr></thead><tbody id="staffHoursTable"></tbody></table></div></div></div>
+      <div class="panel staff-profile hidden" id="staffProfile"><div class="profile-heading"><div><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary" id="closeStaffProfile" type="button">Close</button></div><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary" type="submit">Save staff details</button></form><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div><div class="staff-hours-section"><div class="section-heading"><div><h3>Daily hours</h3><p class="hint">Last 14 days · Net hours exclude recorded breaks.</p></div><strong id="staffHoursSummary"></strong></div><div class="table-wrap"><table class="staff-hours-table"><thead><tr><th>Date</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Total hours</th></tr></thead><tbody id="staffHoursTable"></tbody></table></div></div></div>
     </section>
     <section class="tab admin-only" id="roster">
       <div class="panel roster-day-panel"><div class="roster-toolbar"><div><p class="eyebrow">Schedule builder</p><h2 id="rosterDayTitle">Branch roster</h2><p class="hint">Choose one branch, then add or adjust staff shifts for the selected day.</p></div><div class="roster-toolbar-controls"><label>Branch<select id="rosterBranchSelect" aria-label="Roster branch"></select></label><label>Date<input id="rosterDay" type="date"></label></div></div><div class="roster-branch-board" id="rosterBranchBoard"></div></div>
@@ -1613,9 +1684,35 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       </div>
     </section>
     <section class="tab staff-only" id="closing">
-      <div class="split">
-        <form class="panel" id="closingForm"><h2>Daily closing</h2><input name="branchId" type="hidden"><label>Date<input name="closingDate" type="date" required></label><div class="closing-summary" id="closingExpected"></div><fieldset><legend>Cash denomination counts</legend><div class="grid"><label>$100 count<input data-denomination="100" type="number" min="0" max="100000" step="1" value="0" required></label><label>$50 count<input data-denomination="50" type="number" min="0" max="100000" step="1" value="0" required></label><label>$20 count<input data-denomination="20" type="number" min="0" max="100000" step="1" value="0" required></label><label>$10 count<input data-denomination="10" type="number" min="0" max="100000" step="1" value="0" required></label><label>$5 count<input data-denomination="5" type="number" min="0" max="100000" step="1" value="0" required></label><label>$2 count<input data-denomination="2" type="number" min="0" max="100000" step="1" value="0" required></label><label>$1 count<input data-denomination="1" type="number" min="0" max="100000" step="1" value="0" required></label></div></fieldset><div class="grid"><label>Yesterday cash $<input name="previousCash" type="number" min="0" step="0.01" readonly></label><label>Extra opening cash $<input name="openingFloat" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Total cash counted $<input name="actualCash" type="number" min="0" step="0.01" readonly></label><label>Cash taken $<input name="cashTaken" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Remaining cash $<input name="remainingCash" type="number" min="0" step="0.01" readonly></label><label>Actual card terminal total $<input name="actualCard" type="number" min="0" step="0.01"></label></div><div class="closing-summary" id="closingVariance"></div><p class="hint">Your name is recorded when you confirm with your individual PIN.</p><label>Notes<textarea name="notes"></textarea></label><button class="primary full" type="submit">Save daily closing</button></form>
-        <div class="panel"><h2>Closing records</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Cash taken</th><th>Remaining cash</th><th>Status</th></tr></thead><tbody id="closingTable"></tbody></table></div></div>
+      <div class="closing-layout">
+        <form class="panel" id="closingForm">
+          <div class="section-heading"><div><h2>Daily closing</h2><p class="hint" id="closingDateTitle"></p></div><label>Date<input name="closingDate" type="date" required></label></div>
+          <input name="branchId" type="hidden">
+          <div class="table-wrap" id="closingExpected"></div>
+          <fieldset class="cash-counter"><legend>Count cash in the drawer</legend><div class="denomination-grid">
+            <label>$100<input aria-label="$100 count" data-denomination="100" type="number" min="0" max="100000" step="1" value="0" required></label>
+            <label>$50<input aria-label="$50 count" data-denomination="50" type="number" min="0" max="100000" step="1" value="0" required></label>
+            <label>$20<input aria-label="$20 count" data-denomination="20" type="number" min="0" max="100000" step="1" value="0" required></label>
+            <label>$10<input aria-label="$10 count" data-denomination="10" type="number" min="0" max="100000" step="1" value="0" required></label>
+            <label>$5<input aria-label="$5 count" data-denomination="5" type="number" min="0" max="100000" step="1" value="0" required></label>
+            <label>$2<input aria-label="$2 count" data-denomination="2" type="number" min="0" max="100000" step="1" value="0" required></label>
+            <label>$1<input aria-label="$1 count" data-denomination="1" type="number" min="0" max="100000" step="1" value="0" required></label>
+          </div></fieldset>
+          <div class="closing-fields">
+            <label>Previous float $<input name="previousCash" type="number" readonly></label>
+            <label>Extra opening float $<input name="openingFloat" type="number" min="0" step="0.01" placeholder="0.00"></label>
+            <label>Cash counted $<input name="actualCash" type="number" readonly></label>
+            <label>Cash Taken $<input name="cashTaken" type="number" min="0" step="0.01" placeholder="0.00"></label>
+            <label>Float end $<input name="remainingCash" type="number" readonly></label>
+            <label>Card terminal total $<input name="actualCard" type="number" min="0" step="0.01" placeholder="0.00"></label>
+          </div>
+          <div class="closing-summary" id="closingVariance"></div>
+          <details><summary>Notes (optional)</summary><label>Notes<textarea name="notes" rows="2"></textarea></label></details>
+          <p class="hint">Confirm with your staff PIN to record who closed the day.</p>
+          <button class="primary" type="submit">Close register</button>
+        </form>
+        <div class="panel"><div class="section-heading"><h2>Sales for this day</h2><span class="pill" id="closingSalesCount"></span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Sale</th><th>Payment</th><th>Total</th><th>Completed by</th><th>Edit</th></tr></thead><tbody id="closingSalesTable"></tbody></table></div><p class="hint">Editing a sale requires a manager PIN and a reason. Both are recorded in the edit history.</p></div>
+        <details class="panel"><summary>Previous closing records</summary><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Cash taken</th><th>Remaining cash</th><th>Status</th></tr></thead><tbody id="closingTable"></tbody></table></div></details>
       </div>
     </section>
     <section class="tab admin-only" id="reports">
@@ -1628,7 +1725,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       <div class="panel report-section"><div class="section-heading"><div><h2>Staff and manager sales</h2><p class="hint">Staff credited sales; manager store sales add the branch totals for each day they were rostered there.</p></div><a class="secondary button-link report-export" data-report-type="staff">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Staff</th><th>Role</th><th>Credited sales</th><th>Services sold</th><th>Managed store sales</th></tr></thead><tbody id="reportStaffTable"></tbody></table></div></div>
       <div class="report-two-column"><div class="panel report-section"><div class="section-heading"><div><h2>Products sold</h2></div><a class="secondary button-link report-export" data-report-type="products">Export</a></div><div class="table-wrap"><table><thead><tr><th>Product</th><th>Qty</th><th>Sales</th></tr></thead><tbody id="reportProductsTable"></tbody></table></div></div><div class="panel report-section"><div class="section-heading"><div><h2>Services sold</h2></div><a class="secondary button-link report-export" data-report-type="services">Export</a></div><div class="table-wrap"><table><thead><tr><th>Service</th><th>Qty</th><th>Sales</th></tr></thead><tbody id="reportServicesTable"></tbody></table></div></div></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Bookings and walk-ins</h2><p class="hint">Online bookings, branch-created manual bookings, and POS visits without a booking.</p></div><a class="secondary button-link report-export" data-report-type="bookings">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Source</th><th>Bookings / visits</th><th>Value</th><th>Completed</th></tr></thead><tbody id="reportBookingsTable"></tbody></table></div></div>
-      <div class="panel report-section payroll-report"><div class="section-heading"><div><h2>Clock-in/out and payroll hours</h2><p class="hint">Actual completed time entries calculate net hours and estimated gross pay.</p></div><div class="report-export-actions"><a class="secondary button-link report-export" data-report-type="payroll">Export Excel</a><a class="primary button-link report-export" data-report-type="xero">Export Xero CSV</a></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Net hours</th><th>Rate</th><th>Gross pay</th><th>Status</th></tr></thead><tbody id="reportPayrollTable"></tbody></table></div></div>
+      <div class="panel report-section payroll-report"><div class="section-heading"><div><h2>Clock-in/out and payroll hours</h2><p class="hint">Actual completed time entries calculate net hours, excluding recorded breaks.</p></div><div class="report-export-actions"><a class="secondary button-link report-export" data-report-type="payroll">Export Excel</a><a class="primary button-link report-export" data-report-type="xero">Export Xero CSV</a></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Net hours</th><th>Status</th></tr></thead><tbody id="reportPayrollTable"></tbody></table></div></div>
       <div class="panel"><h2>Admin closing review</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Actual cash</th><th>Cash taken</th><th>Actual card</th><th>Status</th><th>Approved by</th><th></th></tr></thead><tbody id="adminClosingTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="branches">
@@ -1661,11 +1758,19 @@ let state = { branches: [], staff: [], services: [], products: [], customers: []
 let reportData = null;
 let reportRequestId = 0;
 let lastReceipt = null;
+let salePayments = [];
+let paymentTotalSnapshot = 0;
+let closingSalesKey = '';
+let closingSalesLoading = false;
+let closingSalesRequest = 0;
+let recentSales = [];
+let recentSalesRequest = 0;
+let recentSalesLoading = false;
 let selectedPosBranchId = "";
 let selectedPosPin = "";
 let draggedStaffId = "";
 let selectedDashboardPeriod = "today";
-let selectedGlobalBranchId = "";
+let selectedGlobalBranchId = window.currentUser.managerBranchId || "";
 let selectedRosterBranchId = "";
 let selectedProductBranchId = "";
 const appMode = window.appMode || "admin";
@@ -1678,6 +1783,13 @@ document.querySelectorAll(".nav").forEach((button) => button.addEventListener("c
 document.querySelector("#loadData").addEventListener("click", loadData);
 document.querySelector("#openPos").addEventListener("click", openPos);
 document.querySelector("#switchBranch").addEventListener("click", switchBranch);
+document.querySelector("#posPin").addEventListener("keydown", event => { if(event.key === "Enter") { event.preventDefault(); document.querySelector("#openPos").click(); } });
+document.querySelector('#recentSalesDate').addEventListener('change',loadRecentSales);
+document.querySelector('#recentSalesSearch').addEventListener('input',renderSales);
+document.querySelector('#recentSalesToday').addEventListener('click',()=>{document.querySelector('#recentSalesDate').value=localSalesDate();loadRecentSales();});
+document.querySelector("#managerDashboardButton")?.addEventListener("click", openManagerDashboard);
+document.querySelector("#cancelManagerDashboard")?.addEventListener("click", () => document.querySelector("#managerDashboardDialog").close());
+document.querySelector("#managerDashboardForm")?.addEventListener("submit", submitManagerDashboard);
 document.querySelector("#clockInButton").addEventListener("click", () => submitTimeClock("clock-in"));
 document.querySelector("#breakStartButton").addEventListener("click", () => submitTimeClock("break-start"));
 document.querySelector("#breakEndButton").addEventListener("click", () => submitTimeClock("break-end"));
@@ -1685,6 +1797,8 @@ document.querySelector("#clockOutButton").addEventListener("click", () => submit
 document.querySelector("#timeClockStaff").addEventListener("change", renderTimeClockStatus);
 document.querySelector("#addSaleItem").addEventListener("click", () => addSaleItem());
 document.querySelector("#bookingCheckout").addEventListener("change", selectBookingForCheckout);
+document.querySelector("#showPaymentMethods").addEventListener("click", showPaymentMethods);
+document.querySelectorAll("[data-payment-method]").forEach((button) => button.addEventListener("click", () => addPayment(button.dataset.paymentMethod)));
 document.querySelector("#printReceipt").addEventListener("click", printLastReceipt);
 document.querySelector("#customerForm").addEventListener("submit", submitCustomer);
 document.querySelector("#customerProfileForm").addEventListener("submit", submitCustomerProfile);
@@ -1762,6 +1876,8 @@ if (appMode === "admin") loadData();
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
+  if (appMode === "staff") headers["x-pos-workspace"] = "1";
+  else if (currentUser.managerBranchId) headers["x-branch-id"] = currentUser.managerBranchId;
   if (selectedPosBranchId && (path === "/api/pos-data" || path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
     headers["x-branch-id"] = selectedPosBranchId;
 
@@ -1794,17 +1910,48 @@ async function loadPublicBranches() {
     message.textContent = "Could not load branches.";
   }
 }
+function openManagerDashboard() {
+  if (!selectedPosBranchId) { message.textContent = "Open a branch workspace before opening its manager dashboard."; return; }
+  const form = document.querySelector("#managerDashboardForm");
+  form.reset();
+  document.querySelector("#managerDashboardError").textContent = "";
+  document.querySelector("#managerDashboardDialog").showModal();
+  form.elements.pin.focus();
+}
+async function submitManagerDashboard(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('[type="submit"]');
+  button.disabled = true;
+  document.querySelector("#managerDashboardError").textContent = "";
+  try {
+    await api("/api/auth/manager-dashboard", { method:"POST", body:JSON.stringify({ branchId:selectedPosBranchId, pin:form.elements.pin.value }) });
+    location.href = "/manager";
+  } catch (error) {
+    document.querySelector("#managerDashboardError").textContent = error.message;
+    form.elements.pin.value = "";
+    form.elements.pin.focus();
+  } finally {
+    button.disabled = false;
+  }
+}
 async function openPos() {
+  const button = document.querySelector("#openPos");
+  if (button.disabled) return;
   selectedPosBranchId = document.querySelector("#posBranch").value;
   selectedPosPin = document.querySelector("#posPin").value;
   if (!selectedPosBranchId) {
     message.textContent = "Select a branch.";
     return;
   }
-  try { await api("/api/pos-login",{method:"POST",body:JSON.stringify({branchId:selectedPosBranchId,pin:selectedPosPin})}); } catch(error){message.textContent=error.message;return;} finally{selectedPosPin="";document.querySelector("#posPin").value="";}
+  if (!selectedPosPin.trim()) { message.textContent = "Enter your branch login PIN."; return; }
+  button.disabled = true;
+  try {
+  await api("/api/pos-login",{method:"POST",body:JSON.stringify({branchId:selectedPosBranchId,pin:selectedPosPin})});
   if(!await refreshPosData())return;
   const branch = state.branches[0];
   document.querySelector("#posBranchName").textContent = branch ? branch.name : "Branch POS";
+  document.querySelector("#appTitle").textContent = branch ? branch.name : "Kunchas branch";
   document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
@@ -1812,20 +1959,24 @@ async function openPos() {
   renderClosingPreview();
   document.querySelector("#posLogin").classList.add("hidden");
   document.querySelector("#posWorkspace").classList.remove("hidden");
+  document.querySelector("#staffWorkspace").classList.remove("hidden");
+  document.body.classList.remove("pos-locked");
+  } catch(error) { message.textContent = error.message; }
+  finally { selectedPosPin = ""; document.querySelector("#posPin").value = ""; button.disabled = false; }
 }
 async function switchBranch() {
+  try {
   await api("/api/pos-logout",{method:"POST"});
-  selectedPosBranchId = "";
-  selectedPosPin = "";
-  state = normalizeState();
-  document.querySelector("#posWorkspace").classList.add("hidden");
-  document.querySelector("#posLogin").classList.remove("hidden");
-  document.querySelector("#posPin").value = "";
+  document.body.classList.add("pos-locked");
+  location.assign("/pos");
+  } catch(error) { message.textContent = error.message; }
 }
 async function refreshPosData() {
   try {
     message.textContent = "Opening branch workspace...";
     state = normalizeState(await api("/api/pos-data"));
+    closingSalesKey = '';
+    if (document.querySelector('#recent-sales').classList.contains('active')) loadRecentSales();
     renderAll();
     document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
     document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
@@ -1844,6 +1995,17 @@ function renderTimeClockStatus() {
   if (!select || !status) return;
   const open = (state.timeEntries || []).find((entry) => entry.staff_id === select.value && !entry.clock_out);
   status.textContent = open?.break_started_at ? "On break since " + new Date(open.break_started_at).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : open ? "Clocked in since " + new Date(open.clock_in).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : "Actual hours feed the payroll report.";
+}
+function renderClockedInStaff() {
+  const table = document.querySelector("#clockedInStaffTable");
+  const count = document.querySelector("#clockedInCount");
+  if (!table || !count) return;
+  const entries = (state.timeEntries || []).filter((entry) => !entry.clock_out);
+  count.textContent = entries.length + " clocked in";
+  table.innerHTML = entries.length ? entries.map((entry) => {
+    const status = entry.break_started_at ? "On break" : "Working";
+    return '<tr><td><strong>' + esc(entry.staff_name || "Staff") + '</strong></td><td>' + esc(new Date(entry.clock_in).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" })) + '</td><td><span class="pill">' + status + '</span></td><td>' + Number(entry.break_minutes || 0) + '</td></tr>';
+  }).join("") : '<tr><td colspan="4" class="empty-cell">No staff are clocked in at this branch.</td></tr>';
 }
 async function submitTimeClock(action) {
   const staffId = document.querySelector("#timeClockStaff").value;
@@ -1866,7 +2028,7 @@ function normalizeState(data = {}) {
   normalized.branches = normalized.branches.filter((b) => b.status !== "Archived");
   return normalized;
 }
-function renderAll() { fillSelects(); renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); applyAccessUi(); }
+function renderAll() { fillSelects(); if (currentUser.managerBranchId) document.querySelector("#appTitle").textContent = (state.branches[0]?.name || "Branch") + " · Manager Dashboard"; renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); renderClockedInStaff(); applyAccessUi(); }
 function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
   const staffSelectOptions = '<option value="">Unassigned</option>' + state.staff.map((s) => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join("");
@@ -1874,7 +2036,8 @@ function fillSelects() {
   const productOptions = '<option value="">Select product</option>' + (state.products || []).map((p) => '<option value="' + p.id + '">' + esc(p.name) + ' - ' + money(p.price_cents) + '</option>').join("");
   const globalBranch = document.querySelector("#globalBranchFilter");
   if (globalBranch) {
-    globalBranch.innerHTML = '<option value="">All branches</option>' + branchOptions;
+    globalBranch.innerHTML = (currentUser.managerBranchId ? '' : '<option value="">All branches</option>') + branchOptions;
+    globalBranch.disabled = Boolean(currentUser.managerBranchId);
     if (state.branches.some((branch) => branch.id === selectedGlobalBranchId)) globalBranch.value = selectedGlobalBranchId;
     else selectedGlobalBranchId = "";
   }
@@ -1886,14 +2049,14 @@ function fillSelects() {
   }
   const productBranch = document.querySelector("#productBranchFilter");
   if (productBranch) {
-    productBranch.innerHTML = '<option value="">All branches</option>' + branchOptions;
+    productBranch.innerHTML = (currentUser.managerBranchId ? '' : '<option value="">All branches</option>') + branchOptions;
     if (!state.branches.some((branch) => branch.id === selectedProductBranchId)) selectedProductBranchId = "";
     productBranch.value = selectedProductBranchId;
   }
   const reportBranch = document.querySelector("#reportBranch");
   if (reportBranch) {
     const current = reportBranch.value;
-    reportBranch.innerHTML = '<option value="">All branches</option>' + branchOptions;
+    reportBranch.innerHTML = (currentUser.managerBranchId ? '' : '<option value="">All branches</option>') + branchOptions;
     if (state.branches.some((branch) => branch.id === current)) reportBranch.value = current;
   }
   document.querySelectorAll('select[name="branchId"]').forEach((select) => select.innerHTML = branchOptions);
@@ -2083,7 +2246,7 @@ function dayOffChecksHtml(staffId = "") {
   return [[1,"Mon"],[2,"Tue"],[3,"Wed"],[4,"Thu"],[5,"Fri"],[6,"Sat"],[0,"Sun"]].map(([value, label]) => '<label class="day-chip"><input type="checkbox" name="days" value="' + value + '"' + (selected.includes(value) ? ' checked' : '') + '><span>' + label + '</span></label>').join("");
 }
 function renderStaff() {
-  document.querySelector("#staffTable").innerHTML = state.staff.map((staff) => '<tr class="staff-row" data-staff-id="' + esc(staff.id) + '" tabindex="0"><td><strong>' + esc(staff.name) + '</strong><div class="hint">' + esc(staff.email || staff.phone || "") + '</div></td><td>' + esc(staff.role || "") + '<div class="hint">Access: ' + esc(roleName(staff.access_role)) + '</div></td><td>' + esc(dayOffLabel(staff.id)) + '</td><td>' + money(staff.hourly_rate_cents || 0) + '</td><td><span class="pill">' + esc(staff.status) + '</span></td><td><strong>' + money(staffSalesTotal(staff.id)) + '</strong></td></tr>').join("");
+  document.querySelector("#staffTable").innerHTML = state.staff.map((staff) => '<tr class="staff-row" data-staff-id="' + esc(staff.id) + '" tabindex="0"><td><strong>' + esc(staff.name) + '</strong><div class="hint">' + esc(staff.email || staff.phone || "") + '</div></td><td>' + esc(staff.role || "") + '<div class="hint">Access: ' + esc(roleName(staff.access_role)) + '</div></td><td>' + esc(dayOffLabel(staff.id)) + '</td><td>' + '<span class="pill">' + esc(staff.status) + '</span></td><td><strong>' + money(staffSalesTotal(staff.id)) + '</strong></td></tr>').join("");
   document.querySelector("#staffForm [data-day-off-checks]").innerHTML = dayOffChecksHtml();
   document.querySelectorAll(".staff-row").forEach((row) => {
     row.addEventListener("click", () => openStaffProfile(row.dataset.staffId));
@@ -2123,12 +2286,12 @@ function renderStaffHours(staff) {
     const breakMinutes = dayEntries.reduce((sum, entry) => sum + Number(entry.break_minutes || 0) + (entry.break_started_at ? Math.max(0, Math.round((Date.now() - new Date(entry.break_started_at).getTime()) / 60000)) : 0), 0);
     const hours = dayEntries.reduce((sum, entry) => sum + staffEntryHours(entry), 0);
     const branches = [...new Set(dayEntries.map((entry) => entry.branch_name || branchName(entry.branch_id)).filter(Boolean))];
-    return { date, dateKey, branches, clockIn:clockIns[0] || "", clockOut:clockOuts.at(-1) || "", open:dayEntries.some((entry) => !entry.clock_out), breakMinutes, hours, payCents:Math.round(hours * Number(staff.hourly_rate_cents || 0)) };
+    return { date, dateKey, branches, clockIn:clockIns[0] || "", clockOut:clockOuts.at(-1) || "", open:dayEntries.some((entry) => !entry.clock_out), breakMinutes, hours };
   });
-  document.querySelector("#staffHoursTable").innerHTML = days.map((day) => '<tr class="' + (day.hours ? '' : 'no-hours-row') + '"><td><strong>' + esc(day.date.toLocaleDateString("en-AU", { weekday:"short", day:"numeric", month:"short" })) + '</strong></td><td>' + esc(day.branches.join(", ") || "—") + '</td><td>' + esc(staffClockTime(day.clockIn)) + '</td><td>' + day.breakMinutes + ' min</td><td>' + (day.open ? '<span class="status-pill inactive">In progress</span>' : esc(staffClockTime(day.clockOut))) + '</td><td><strong>' + day.hours.toFixed(2) + '</strong></td><td>' + money(day.payCents) + '</td></tr>').join("");
+  document.querySelector("#staffHoursTable").innerHTML = days.map((day) => '<tr class="' + (day.hours ? '' : 'no-hours-row') + '"><td><strong>' + esc(day.date.toLocaleDateString("en-AU", { weekday:"short", day:"numeric", month:"short" })) + '</strong></td><td>' + esc(day.branches.join(", ") || "—") + '</td><td>' + esc(staffClockTime(day.clockIn)) + '</td><td>' + day.breakMinutes + ' min</td><td>' + (day.open ? '<span class="status-pill inactive">In progress</span>' : esc(staffClockTime(day.clockOut))) + '</td><td><strong>' + day.hours.toFixed(2) + '</strong></td></tr>').join("");
   const totalHours = days.reduce((sum, day) => sum + day.hours, 0);
-  const totalPay = days.reduce((sum, day) => sum + day.payCents, 0);
-  document.querySelector("#staffHoursSummary").textContent = totalHours.toFixed(2) + " hours · " + money(totalPay);
+
+  document.querySelector("#staffHoursSummary").textContent = totalHours.toFixed(2) + " hours";
 }
 function openStaffProfile(staffId) {
   const staff = state.staff.find((item) => item.id === staffId);
@@ -2140,7 +2303,7 @@ function openStaffProfile(staffId) {
   form.elements.accessRole.value = staff.access_role || "none";
   form.elements.email.value = staff.email || "";
   form.elements.phone.value = staff.phone || "";
-  form.elements.hourlyRate.value = dollars(staff.hourly_rate_cents || 0);
+
   form.elements.xeroEmployeeId.value = staff.xero_employee_id || "";
   form.elements.xeroEarningsRateId.value = staff.xero_earnings_rate_id || "";
   form.elements.status.value = staff.status || "Active";
@@ -2519,9 +2682,10 @@ function showTab(tabId) {
   document.querySelectorAll(".nav,.tab").forEach((item) => item.classList.remove("active"));
   document.querySelector('.nav[data-tab="' + cssEsc(tabId) + '"]')?.classList.add("active");
   document.querySelector("#" + tabId)?.classList.add("active");
+  if (tabId === 'recent-sales') loadRecentSales();
   document.querySelector(".branch-switcher")?.classList.toggle("hidden", tabId !== "overview");
-  const titles = { overview:"Dashboard", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Access", pos:"POS", bookings:"Bookings", closing:"Daily closing", "recent-sales":"Recent sales" };
-  if (document.querySelector("#appTitle")) document.querySelector("#appTitle").textContent = titles[tabId] || "Kunchas";
+  const titles = { overview:"Dashboard", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Access", pos:"POS", "staff-clock":"Staff", bookings:"Bookings", closing:"Daily closing", "recent-sales":"Recent sales" };
+  if (document.querySelector("#appTitle")) document.querySelector("#appTitle").textContent = appMode === "staff" && selectedPosBranchId ? (state.branch?.name || state.branches[0]?.name || "Kunchas branch") : (currentUser.managerBranchId ? (state.branches[0]?.name || "Branch") + " · " : "") + (titles[tabId] || "Kunchas");
 }
 function canCheckoutBooking(booking) {
   return !booking.sale_id && booking.payment_status !== "Paid" && !["Cancelled", "No show"].includes(booking.status);
@@ -2539,22 +2703,34 @@ function selectBookingForCheckout() {
   const form = document.querySelector("#saleForm");
   const booking = state.bookings.find((item) => item.id === document.querySelector("#bookingCheckout").value);
   form.elements.bookingId.value = booking?.id || "";
+  form.elements.customerId.value = booking?.customer_id || "";
   if (!booking) {
+    form.elements.customerMode.value = "walkin";
+    form.elements.customerSearch.value = "";
+    updateCustomerMode();
     document.querySelector(".booking-checkout-hint").textContent = "Choose an unpaid booking to preload its customer, services, and assigned staff.";
+    document.querySelector("#bookingCustomerCard").classList.add("hidden");
+    document.querySelector("#bookingCustomerCard").innerHTML = "";
     return;
   }
   const customer = state.customers.find((item) => item.id === booking.customer_id);
   form.elements.customerMode.value = "existing";
   form.elements.customerSearch.value = customer ? customerLabel(customer) : "";
   updateCustomerMode();
+  const customerCard = document.querySelector("#bookingCustomerCard");
+  customerCard.innerHTML = '<span>Booking customer</span><strong>' + esc(customer ? customer.first_name + " " + customer.last_name : booking.customer_name || "Customer") + '</strong><em>' + esc(customer?.phone || "No phone") + ' · ' + esc(customer?.email || "No email") + '</em>';
+  customerCard.classList.remove("hidden");
   document.querySelector("#saleItems").innerHTML = "";
   parseClientIdList(booking.service_ids).forEach((serviceId) => {
     const service = saleCatalog().find((item) => item.type === "service" && item.id === serviceId);
     if (service) addSaleItem(service, booking.staff_id || "");
   });
   if (!document.querySelector("#saleItems").children.length) addSaleItem();
-  form.elements.cashAmount.value = "";
-  form.elements.cardAmount.value = "";
+  resetPaymentUi();
+  form.elements.customerMode.value = "existing";
+  form.elements.customerId.value = booking.customer_id || "";
+  form.elements.customerSearch.value = customer ? customerLabel(customer) : "";
+  updateCustomerMode();
   document.querySelector(".booking-checkout-hint").textContent = booking.customer_name + " — " + booking.service_names + " — " + money(booking.total_cents);
   renderCartSummary();
   message.textContent = "Booking loaded. Enter payment to complete checkout.";
@@ -2570,36 +2746,38 @@ function parseClientIdList(value) {
   try { const parsed = JSON.parse(value || "[]"); return Array.isArray(parsed) ? parsed : []; }
   catch { return []; }
 }
-function renderBookings() {
-  const dateInput = document.querySelector("#bookingDisplayDate");
-  dateInput.value ||= new Date().toISOString().slice(0, 10);
-  const rows = state.bookings.filter((booking) => booking.booking_date === dateInput.value && !['Cancelled','No show'].includes(booking.status)).sort((a, b) => String(a.booking_time).localeCompare(String(b.booking_time)));
-  const markers = Array.from({ length:37 }, (_, index) => { const minutes = 600 + index * 15; return '<time class="' + (minutes % 60 === 0 ? 'hour' : 'quarter') + '" style="top:' + (index * 18) + 'px">' + formatBookingTime(minutes) + '</time>'; }).join('');
-  const laneEnds = [0, 0, 0, 0];
-  const laneRows = [[], [], [], []];
-  rows.forEach((booking) => {
-    const [hours, minutes] = String(booking.booking_time || '10:00').split(':').map(Number);
-    const start = hours * 60 + minutes;
-    const end = start + Math.max(15, Number(booking.duration_minutes || 15));
-    const laneIndex = laneEnds.findIndex((laneEnd) => laneEnd <= start);
-    if (laneIndex < 0) return;
-    laneEnds[laneIndex] = end;
-    laneRows[laneIndex].push(booking);
-  });
-  const appointmentLanes = laneRows.map((appointments, laneIndex) => '<div class="booking-staff-lane" aria-label="Booking column">' + appointments.map((booking) => {
-    const [hours, minutes] = String(booking.booking_time || '10:00').split(':').map(Number);
-    const start = hours * 60 + minutes;
-    const duration = Math.max(15, Number(booking.duration_minutes || 15));
-    const source = booking.source === 'Online' ? 'Online' : 'Manual';
-    const note = booking.notes ? '<span class="booking-note">Note: ' + esc(booking.notes) + '</span>' : '';
-    return '<button class="booking-card lane-' + laneIndex + ' ' + source.toLowerCase() + '" style="top:' + Math.max(0, (start - 600) * 1.2) + 'px;height:' + Math.max(52, Math.min(duration, 1140 - start) * 1.2) + 'px" type="button" data-booking-id="' + esc(booking.id) + '"><strong>' + esc(booking.service_names) + '</strong><span class="booking-time">' + formatBookingTime(start) + '–' + formatBookingTime(start + duration) + '</span><span class="booking-meta"><b class="source-badge ' + source.toLowerCase() + '">' + source + '</b>' + esc(booking.customer_name) + '</span>' + note + '</button>';
-  }).join('') + '</div>').join('');
-  const headers = laneRows.map((_, index) => '<div>Booking ' + (index + 1) + '</div>').join('');
-  document.querySelector("#bookingsTable").innerHTML = '<div class="booking-calendar" style="--staff-count:4"><div class="booking-staff-spacer"></div><div class="booking-staff-headers">' + headers + '</div><div class="booking-time-rail">' + markers + '</div><div class="booking-lanes">' + appointmentLanes + '</div>' + (!rows.length ? '<p class="hint booking-empty">No bookings for this date.</p>' : '') + '</div>';
-  document.querySelectorAll(".booking-card").forEach((button) => button.addEventListener("click", () => openBookingDetail(button.dataset.bookingId)));
+function diaryClock(now = new Date()) {
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Sydney',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now).map(p=>[p.type,p.value]));
+  return {date:parts.year+'-'+parts.month+'-'+parts.day,minutes:Number(parts.hour)*60+Number(parts.minute)};
 }
-function moveBookingDiaryTo(date) { document.querySelector("#bookingDisplayDate").value = date.toISOString().slice(0, 10); renderBookings(); }
-function moveBookingDiaryBy(days) { const date = new Date((document.querySelector("#bookingDisplayDate").value || new Date().toISOString().slice(0, 10)) + 'T12:00:00'); date.setDate(date.getDate() + days); moveBookingDiaryTo(date); }
+function updateDiaryClock() {
+  const line=document.querySelector('#bookingNowLine');if(!line)return;
+  const now=diaryClock();line.hidden=document.querySelector('#bookingDisplayDate').value!==now.date||now.minutes<600||now.minutes>1140;
+  line.style.top=((now.minutes-600)*1.2)+'px';
+  line.querySelector('span').textContent='Now '+formatBookingTime(now.minutes);
+}
+setInterval(updateDiaryClock,30000);
+function renderBookings() {
+  const dateInput=document.querySelector('#bookingDisplayDate');dateInput.value ||= diaryClock().date;
+  const dayRows=state.bookings.filter(b=>b.booking_date===dateInput.value&&(!selectedPosBranchId||b.branch_id===selectedPosBranchId));
+  const rows=dayRows.filter(b=>!['Cancelled','No show'].includes(b.status)).sort((a,b)=>String(a.booking_time).localeCompare(String(b.booking_time))||String(a.id).localeCompare(String(b.id)));
+  const inactive=dayRows.filter(b=>['Cancelled','No show'].includes(b.status));
+  const markers=Array.from({length:37},(_,i)=>{const minutes=600+i*15;return '<time class="'+(minutes%60===0?'hour':'quarter')+'" style="top:'+(i*18)+'px">'+formatBookingTime(minutes)+'</time>';}).join('');
+  const laneEnds=[0,0,0,0],laneRows=[[],[],[],[]],overflow=[];
+  rows.forEach(b=>{const [h,m]=b.booking_time.split(':').map(Number),start=h*60+m,end=start+Math.max(15,Number(b.duration_minutes||15));const lane=laneEnds.findIndex(last=>last<=start);if(lane<0){overflow.push(b);return;}laneEnds[lane]=end;laneRows[lane].push(b);});
+  const lanes=laneRows.map((items,index)=>'<div class="booking-staff-lane" aria-label="Booking '+(index+1)+'">'+items.map(b=>{
+    const [h,m]=b.booking_time.split(':').map(Number),start=h*60+m,duration=Math.max(15,Number(b.duration_minutes||15)),source=b.source==='Online'?'Online':'Manual';
+    const title=b.customer_name+' · '+b.service_names+' · '+formatBookingTime(start)+'–'+formatBookingTime(start+duration)+' · '+b.status;
+    return '<button class="booking-card lane-'+index+' '+source.toLowerCase()+'" style="top:'+Math.max(0,(start-600)*1.2)+'px;height:'+Math.max(18,Math.min(duration,1140-start)*1.2)+'px" type="button" title="'+esc(title)+'" aria-label="'+esc(title)+'" data-booking-id="'+esc(b.id)+'"><strong>'+esc(b.customer_name)+'</strong><span class="booking-time">'+formatBookingTime(start)+'–'+formatBookingTime(start+duration)+'</span><span>'+esc(b.service_names)+'</span><span class="booking-meta"><b class="source-badge '+source.toLowerCase()+'">'+source+'</b>'+esc(b.status)+'</span></button>';
+  }).join('')+'</div>').join('');
+  const history=inactive.length?'<div class="booking-status-history"><h3>Cancelled / no-show bookings</h3>'+inactive.map(b=>'<button type="button" class="secondary booking-history-row" data-booking-id="'+esc(b.id)+'"><span>'+esc(b.booking_time)+' · '+esc(b.customer_name)+' · '+esc(b.service_names)+'</span><strong class="'+(b.status==='No show'?'booking-no-show':'booking-cancelled')+'">'+esc(b.status)+'</strong></button>').join('')+'</div>':'';
+  const warning=overflow.length?'<div class="booking-overflow" role="alert">Existing over-capacity bookings need rescheduling: '+overflow.map(b=>'<button class="secondary" data-booking-id="'+esc(b.id)+'">'+esc(b.booking_time+' '+b.customer_name)+'</button>').join('')+'</div>':'';
+  document.querySelector('#bookingsTable').innerHTML='<div class="booking-calendar" style="--staff-count:4"><div class="booking-staff-spacer"></div><div class="booking-staff-headers">'+laneRows.map((_,i)=>'<div>Booking '+(i+1)+'</div>').join('')+'</div><div class="booking-time-rail">'+markers+'</div><div class="booking-lanes">'+lanes+'</div><div id="bookingNowLine" class="booking-now" hidden><span></span></div></div>'+(!rows.length?'<p class="hint">No active bookings for this date.</p>':'')+warning+history;
+  document.querySelectorAll('#bookingsTable [data-booking-id]').forEach(button=>button.addEventListener('click',()=>openBookingDetail(button.dataset.bookingId)));
+  updateDiaryClock();
+}
+function moveBookingDiaryTo(date) { document.querySelector('#bookingDisplayDate').value=diaryClock(date).date;renderBookings(); }
+function moveBookingDiaryBy(days) { const date=new Date((document.querySelector('#bookingDisplayDate').value||diaryClock().date)+'T00:00:00Z');date.setUTCDate(date.getUTCDate()+days);document.querySelector('#bookingDisplayDate').value=date.toISOString().slice(0,10);renderBookings(); }
 function formatBookingTime(totalMinutes) { const hours = Math.floor(totalMinutes / 60); return (hours % 12 || 12) + ':' + String(totalMinutes % 60).padStart(2, '0') + (hours < 12 ? ' am' : ' pm'); }
 function bookingTimeSelectOptions(selectedTime) { let options = '<option value="">Select time</option>'; for (let minutes = 600; minutes < 1140; minutes += 15) { const hours = Math.floor(minutes / 60); const value = String(hours).padStart(2, '0') + ':' + String(minutes % 60).padStart(2, '0'); options += '<option value="' + value + '"' + (value === selectedTime ? ' selected' : '') + '>' + formatBookingTime(minutes) + '</option>'; } return options; }
 function openBookingDetail(bookingId) {
@@ -2608,15 +2786,38 @@ function openBookingDetail(bookingId) {
   const customer = state.customers.find((item) => item.id === booking.customer_id);
   const detail = document.querySelector("#bookingDetail");
   const source = booking.source === 'Online' ? 'Online' : 'Manual';
-  detail.innerHTML = '<div class="profile-heading"><div><span class="source-badge ' + source.toLowerCase() + '">' + source + '</span><h3>' + esc(booking.customer_name) + '</h3><p class="hint">Edit, reschedule, cancel, or send this booking to POS checkout.</p></div><button class="secondary close-booking-detail" type="button">Close</button></div><div class="booking-detail-grid"><article><span>Phone</span><strong>' + esc(customer?.phone || "Not supplied") + '</strong></article><article><span>Services</span><strong>' + esc(booking.service_names) + '</strong></article><article><span>Staff</span><strong>' + esc(booking.staff_name || "Unassigned") + '</strong></article><article><span>Status</span><strong>' + esc(booking.status) + '</strong></article></div><div class="grid"><label>Booking date<input name="bookingDetailDate" type="date" value="' + esc(booking.booking_date) + '" required></label><label>Booking time<select name="bookingDetailTime" required>' + bookingTimeSelectOptions(booking.booking_time) + '</select></label></div><label>Assigned staff<select name="bookingDetailStaff">' + staffSelectOptions(booking.staff_id) + '</select></label><label>Special note<textarea name="bookingDetailNote">' + esc(booking.notes || "") + '</textarea></label><div class="form-actions booking-edit-actions"><button class="primary save-booking-detail" type="button">Save changes</button>' + (canCheckoutBooking(booking) ? '<button class="secondary checkout-booking-detail" type="button">Checkout in POS</button>' : '') + (!['Cancelled','Completed'].includes(booking.status) ? '<button class="danger cancel-booking-detail" type="button">Cancel booking</button>' : '') + '</div>';
+  detail.innerHTML = '<div class="profile-heading"><div><span class="source-badge ' + source.toLowerCase() + '">' + source + '</span><h3>' + esc(booking.customer_name) + '</h3><p class="hint">Edit, reschedule, cancel, or send this booking to POS checkout.</p></div><button class="secondary close-booking-detail" type="button">Close</button></div><div class="booking-detail-grid"><article><span>Phone</span><strong>' + esc(customer?.phone || "Not supplied") + '</strong></article><article><span>Services</span><strong>' + esc(booking.service_names) + '</strong></article><article><span>Staff</span><strong>' + esc(booking.staff_name || "Unassigned") + '</strong></article><article><span>Status</span><strong>' + esc(booking.status) + '</strong></article></div><div class="grid"><label>Booking date<input name="bookingDetailDate" type="date" value="' + esc(booking.booking_date) + '" required></label><label>Booking time<select name="bookingDetailTime" required>' + bookingTimeSelectOptions(booking.booking_time) + '</select></label></div><label>Assigned staff<select name="bookingDetailStaff">' + staffSelectOptions(booking.staff_id) + '</select></label><label>Special note<textarea name="bookingDetailNote">' + esc(booking.notes || "") + '</textarea></label><div class="form-actions booking-edit-actions"><button class="primary save-booking-detail" type="button">Save changes</button>' + (canCheckoutBooking(booking) ? '<button class="secondary checkout-booking-detail" type="button">Checkout in POS</button>' : '') + (!['Cancelled','No show','Completed'].includes(booking.status) ? '<button class="danger cancel-booking-detail" type="button">Cancel booking</button>' : '') + (!['Cancelled','No show','Completed'].includes(booking.status) ? '<button class="secondary no-show-booking-detail" type="button">Mark no show</button>' : '') + '</div>';
   detail.classList.remove("hidden");
   detail.scrollIntoView({ behavior:"smooth", block:"start" });
   detail.querySelector(".close-booking-detail").addEventListener("click", () => detail.classList.add("hidden"));
-  detail.querySelector(".save-booking-detail").addEventListener("click", async () => { const bookingDate = detail.querySelector('[name="bookingDetailDate"]').value; const bookingTime = detail.querySelector('[name="bookingDetailTime"]').value; const staffId = detail.querySelector('[name="bookingDetailStaff"]').value; try { await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ bookingDate, bookingTime, staffId, notes:detail.querySelector('textarea').value }) }); await refreshPosData(); document.querySelector("#bookingDisplayDate").value = bookingDate; renderBookings(); detail.classList.add("hidden"); message.textContent = 'Booking details updated.'; } catch (error) { message.textContent = error.message; } });
-  detail.querySelector(".cancel-booking-detail")?.addEventListener("click", async () => { if (!window.confirm('Cancel this booking?')) return; try { await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ status:'Cancelled' }) }); await refreshPosData(); detail.classList.add("hidden"); message.textContent = 'Booking cancelled.'; } catch (error) { message.textContent = error.message; } });
+  detail.querySelector(".save-booking-detail").addEventListener("click", async () => { const bookingDate = detail.querySelector('[name="bookingDetailDate"]').value; const bookingTime = detail.querySelector('[name="bookingDetailTime"]').value; const staffId = detail.querySelector('[name="bookingDetailStaff"]').value; try { const approval=await askActor(booking.branch_id,true,'Authorize booking edit');if(!approval)return;await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ ...approval, bookingDate, bookingTime, staffId, notes:detail.querySelector('textarea').value }) }); await refreshPosData(); document.querySelector("#bookingDisplayDate").value = bookingDate; renderBookings(); detail.classList.add("hidden"); message.textContent = 'Booking details updated.'; } catch (error) { message.textContent = error.message; } });
+  async function changeBookingStatus(status) { try { const approval=await askActor(booking.branch_id,true,status==='No show'?'Mark booking as no show':'Cancel booking');if(!approval)return;await api('/api/bookings/'+encodeURIComponent(booking.id),{method:'PATCH',body:JSON.stringify({...approval,status})});await refreshPosData();detail.classList.add('hidden');message.textContent='Booking marked '+status.toLowerCase()+'.';}catch(error){message.textContent=error.message;} }
+  detail.querySelector('.cancel-booking-detail')?.addEventListener('click',()=>changeBookingStatus('Cancelled'));
+  detail.querySelector('.no-show-booking-detail')?.addEventListener('click',()=>changeBookingStatus('No show'));
   detail.querySelector(".checkout-booking-detail")?.addEventListener("click", () => { document.querySelector("#bookingCheckout").value = booking.id; selectBookingForCheckout(); showTab("pos"); });
 }
-function renderSales() { document.querySelector("#salesTable").innerHTML = state.sales.map(s=>'<tr><td>'+esc(s.branch_name)+'</td><td>'+money(s.total_cents)+'</td><td>'+esc(s.payment_method)+'</td><td>'+esc(s.status)+'</td><td>'+esc(s.recorded_by_name||'Not recorded')+'</td><td><button type="button" class="secondary" data-edit-sale="'+esc(s.id)+'">Edit sale</button></td></tr>').join('');document.querySelectorAll('[data-edit-sale]').forEach(button=>button.addEventListener('click',()=>openSaleEditor(button.dataset.editSale))); }
+function localSalesDate() { const now=new Date();return now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0'); }
+async function loadRecentSales() {
+  const dateInput=document.querySelector('#recentSalesDate');dateInput.value ||= localSalesDate();
+  const requestId=++recentSalesRequest;
+  recentSales=[];recentSalesLoading=true;renderSales();
+  if(!selectedPosBranchId){recentSalesLoading=false;renderSales();return;}
+  try {
+    const from=new Date(dateInput.value+'T00:00:00');const to=new Date(from);to.setDate(to.getDate()+1);
+    const result=await api('/api/recent-sales?from='+encodeURIComponent(from.toISOString())+'&to='+encodeURIComponent(to.toISOString()),{headers:{'x-branch-id':selectedPosBranchId}});
+    if(requestId!==recentSalesRequest)return;
+    recentSales=result.sales;
+    const ids=new Set(recentSales.map(sale=>sale.id));state.sales=state.sales.filter(sale=>!ids.has(sale.id)).concat(recentSales);
+    recentSalesLoading=false;renderSales();
+  } catch(error) {if(requestId===recentSalesRequest){recentSalesLoading=false;renderSales();document.querySelector('#recentSalesStatus').textContent=error.message;}}
+}
+function renderSales() {
+  const query=document.querySelector('#recentSalesSearch').value.trim().toLowerCase();
+  const sales=recentSales.filter(sale=>sale.branch_id===selectedPosBranchId && (!query||[sale.customer_name||'Walking customer',sale.customer_phone,sale.customer_email].some(value=>String(value||'').toLowerCase().includes(query))));
+  document.querySelector('#recentSalesStatus').textContent=recentSalesLoading?'Loading sales…':sales.length+' sales for the selected day'+(query?' matching your customer search':'');
+  document.querySelector('#salesTable').innerHTML=recentSalesLoading?'<tr><td colspan="7">Loading sales…</td></tr>':sales.length?sales.map(s=>'<tr><td>'+esc(new Date(s.created_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}))+'</td><td>'+esc(s.customer_name||'Walking customer')+'</td><td>'+money(s.total_cents)+'</td><td>'+esc(s.payment_method)+'</td><td>'+esc(s.status)+'</td><td>'+esc(s.recorded_by_name||'Not recorded')+'</td><td><button type="button" class="secondary" aria-label="Edit sale" title="Manager PIN and reason required" data-edit-sale="'+esc(s.id)+'">&#9998;</button></td></tr>').join(''):'<tr><td colspan="7">No sales found for this date and customer search.</td></tr>';
+  document.querySelectorAll('[data-edit-sale]').forEach(button=>button.addEventListener('click',()=>openSaleEditor(button.dataset.editSale)));
+}
 function inventoryRows() {
   return state.branches.flatMap((branch) => (state.products || []).map((product) => {
     const stock = (state.inventoryStock || []).find((item) => item.branch_id === branch.id && item.product_id === product.id);
@@ -2671,7 +2872,7 @@ function renderReports() {
   document.querySelector("#reportProductsTable").innerHTML = reportData.productRows.length ? reportData.productRows.map((row) => '<tr><td><strong>' + esc(row.name) + '</strong></td><td>' + row.quantity + '</td><td>' + money(row.revenueCents) + '</td></tr>').join("") : reportEmpty(3, "No products sold.");
   document.querySelector("#reportServicesTable").innerHTML = reportData.serviceRows.length ? reportData.serviceRows.map((row) => '<tr><td><strong>' + esc(row.name) + '</strong></td><td>' + row.quantity + '</td><td>' + money(row.revenueCents) + '</td></tr>').join("") : reportEmpty(3, "No services sold.");
   document.querySelector("#reportBookingsTable").innerHTML = reportData.bookingRows.length ? reportData.bookingRows.map((row) => '<tr><td><strong>' + esc(row.branch) + '</strong></td><td><span class="source-pill">' + esc(row.source) + '</span></td><td>' + row.count + '</td><td>' + money(row.valueCents) + '</td><td>' + row.completed + '</td></tr>').join("") : reportEmpty(5);
-  document.querySelector("#reportPayrollTable").innerHTML = reportData.payrollRows.length ? reportData.payrollRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong><span class="table-subtext">' + esc(row.role) + '</span></td><td>' + esc(row.branch) + '</td><td>' + esc(reportTime(row.clockIn)) + '</td><td>' + Number(row.breakMinutes || 0) + ' min</td><td>' + esc(reportTime(row.clockOut)) + '</td><td><strong>' + Number(row.hours || 0).toFixed(2) + '</strong></td><td>' + money(row.hourlyRateCents) + '</td><td><strong>' + money(row.grossPayCents) + '</strong></td><td><span class="status-pill ' + (row.status === "Complete" ? "" : "inactive") + '">' + esc(row.status) + '</span></td></tr>').join("") : reportEmpty(10, "No clock-in records for this period.");
+  document.querySelector("#reportPayrollTable").innerHTML = reportData.payrollRows.length ? reportData.payrollRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong><span class="table-subtext">' + esc(row.role) + '</span></td><td>' + esc(row.branch) + '</td><td>' + esc(reportTime(row.clockIn)) + '</td><td>' + Number(row.breakMinutes || 0) + ' min</td><td>' + esc(reportTime(row.clockOut)) + '</td><td><strong>' + Number(row.hours || 0).toFixed(2) + '</strong></td><td>' + '<span class="status-pill ' + (row.status === "Complete" ? "" : "inactive") + '">' + esc(row.status) + '</span></td></tr>').join("") : reportEmpty(8, "No clock-in records for this period.");
   const exportQuery = new URLSearchParams(reportData.range).toString();
   document.querySelectorAll(".report-export").forEach((link) => { link.href = "/api/reports/export?type=" + encodeURIComponent(link.dataset.reportType) + "&" + exportQuery; });
 }
@@ -2685,7 +2886,7 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
   quickFind.addEventListener("input", () => { updateSaleQuickFind(quickFind.value); updateSaleItemRow(row); });
   quickFind.addEventListener("focus", () => updateSaleQuickFind(quickFind.value));
   row.querySelector('input[name="instanceName"]').addEventListener("input", renderCartSummary);
-  row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { updateAllocationSummary(row); renderCartSummary(); });
+  row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { rebalanceStaffAllocations(row, null, "preserve"); renderCartSummary(); });
   if (selectedItem) row.querySelector('input[name="saleItemSearch"]').value = selectedItem.label;
   updateSaleItemRow(row);
   if (selectedStaffId && selectedItem?.type === "service") {
@@ -2762,7 +2963,8 @@ async function submitSale(event) {
   const data = new FormData(form);
   setSaleMessage("");
   const customerMode = data.get("customerMode");
-  const customerId = customerMode === "existing" ? findCustomerId(data.get("customerSearch")) : "";
+  const selectedBooking = state.bookings.find((booking) => booking.id === data.get("bookingId"));
+  const customerId = selectedBooking?.customer_id || (customerMode === "existing" ? findCustomerId(data.get("customerSearch")) : "");
   if (customerMode === "existing" && !customerId) {
     setSaleMessage("Select an existing customer from the dropdown, or choose walking customer.", true);
     return;
@@ -2808,14 +3010,19 @@ async function submitSale(event) {
     const amount = item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value) * 100) : item.priceCents;
     return total + amount;
   }, 0);
-  const paymentTotal = Math.round((Number(data.get("cashAmount") || 0) + Number(data.get("cardAmount") || 0)) * 100);
-  if (paymentTotal < saleTotal) {
-    setSaleMessage("Enter cash and/or card payment covering the " + money(saleTotal) + " sale total.", true);
+  const paidCents = salePayments.reduce((sum, payment) => sum + payment.amountCents, 0);
+  const cashCents = salePayments.filter((payment) => payment.method === "Cash").reduce((sum, payment) => sum + payment.amountCents, 0);
+  if (!salePayments.length || paidCents < saleTotal) {
+    setSaleMessage("Add another payment for the remaining " + money(Math.max(0, saleTotal - paidCents)) + ".", true);
     return;
   }
-  let actor;try{actor=await askActor(data.get("branchId"),false,"Complete purchase — staff PIN");}catch(error){setSaleMessage(error.message,true);return;}if(!actor)return;
+  if (paidCents - saleTotal > cashCents) {
+    setSaleMessage("Only cash can exceed the sale total and produce change.", true);
+    return;
+  }
+  let actor;try{actor=await askActor(data.get("branchId"),false,"Complete payment — enter staff PIN",false,false,true);}catch(error){setSaleMessage(error.message,true);return;}if(!actor)return;
   submitButton.disabled = true;
-  submitButton.textContent = "Processing purchase...";
+  submitButton.textContent = "Processing payment...";
   await submitJson("/api/sales", {
     ...actor,
     branchId:data.get("branchId"),
@@ -2824,12 +3031,11 @@ async function submitSale(event) {
     customerId,
     customerCategory:data.get("customerCategory"),
     newCustomer:{ firstName:data.get("newFirstName"), lastName:data.get("newLastName"), phone:data.get("newPhone"), email:data.get("newEmail") },
-    cashAmount:data.get("cashAmount"),
-    cardAmount:data.get("cardAmount"),
+    payments:salePayments.map((payment) => ({ method:payment.method, amount:(payment.amountCents / 100).toFixed(2) })),
     items
   }, form);
   submitButton.disabled = false;
-  submitButton.textContent = "Complete purchase";
+  submitButton.textContent = "Complete payment";
 }
 function setSaleMessage(text, isError = false) {
   const saleMessage = document.querySelector("#saleMessage");
@@ -2847,7 +3053,7 @@ async function submitJson(path, payload, form) {
       document.querySelector("#printReceipt").classList.remove("hidden");
     }
     form.reset();
-    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; addSaleItem(); updateCustomerMode(); setSaleMessage(result.receipt?.changeCents ? "Purchase complete. Return " + money(result.receipt.changeCents) + " change." : "Purchase completed successfully."); }
+    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; document.querySelector("#bookingCustomerCard").classList.add("hidden"); document.querySelector("#bookingCustomerCard").innerHTML = ""; addSaleItem(); updateCustomerMode(); resetPaymentUi(); setSaleMessage(result.receipt?.changeCents ? "Purchase complete. Return " + money(result.receipt.changeCents) + " change." : "Purchase completed successfully."); }
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
@@ -2879,6 +3085,19 @@ function renderClosingPreview() {
   if (!expectedBox || !varianceBox) return;
   const form = document.querySelector("#closingForm");
   const closingDate = form.querySelector('input[name="closingDate"]').value;
+  const requestedKey = selectedPosBranchId + ':' + closingDate;
+  if (selectedPosBranchId && closingDate && closingSalesKey !== requestedKey) {
+    closingSalesKey = requestedKey;
+    closingSalesLoading = true;
+    const requestId = ++closingSalesRequest;
+    api('/api/closing-sales?date=' + encodeURIComponent(closingDate),{headers:{'x-branch-id':selectedPosBranchId}}).then((result)=>{
+      if (requestId !== closingSalesRequest) return;
+      state.sales = state.sales.filter((sale)=>!(sale.branch_id===selectedPosBranchId && String(sale.created_at||'').slice(0,10)===closingDate)).concat(result.sales);
+      closingSalesLoading = false;
+      renderClosingPreview();
+    }).catch((error)=>{ if(requestId===closingSalesRequest){ message.textContent=error.message; document.querySelector('#closingSalesTable').innerHTML='<tr><td colspan="6">Could not load sales. Reopen the branch to retry.</td></tr>'; } });
+  }
+  form.querySelector('[type="submit"]').disabled = closingSalesLoading;
   const totals = expectedClosingPreview(closingDate);
   const previousCash = previousClosingCashPreview(closingDate);
   const openingFloat = Math.round(Number(form.querySelector('input[name="openingFloat"]').value || 0) * 100);
@@ -2890,10 +3109,23 @@ function renderClosingPreview() {
   form.querySelector('input[name="previousCash"]').value = dollars(previousCash);
   form.querySelector('input[name="remainingCash"]').value = dollars(remainingCash);
   const expectedDrawerCash = previousCash + openingFloat + totals.cashCents;
-  expectedBox.innerHTML = '<article><span>Yesterday cash</span><strong>' + money(previousCash) + '</strong></article><article><span>Cash sales today</span><strong>' + money(totals.cashCents) + '</strong></article><article><span>Expected drawer cash</span><strong>' + money(expectedDrawerCash) + '</strong></article><article><span>Expected card sales</span><strong>' + money(totals.cardCents) + '</strong></article><article><span>Transactions</span><strong>' + totals.count + '</strong></article>';
+  const daySales = state.sales.filter((sale) => sale.branch_id === selectedPosBranchId && String(sale.created_at || '').slice(0,10) === closingDate);
+  const extraMethods = ['Bank Transfer','Store Credit','Refund','Gift Voucher','On Account'].map((method) => {
+    const amount = daySales.reduce((sum,sale) => sum + String(sale.payment_method || '').split(' / ').reduce((partTotal,part) => {
+      const parts = part.split('$');
+      return partTotal + (parts[0].trim().toLowerCase() === method.toLowerCase() ? Math.round(Number((parts[1] || '').split(',').join('')) * 100) || 0 : 0);
+    },0),0);
+    return {method,amount};
+  }).filter((entry) => entry.amount !== 0);
+  document.querySelector('#closingDateTitle').textContent = closingDate ? new Date(closingDate + 'T12:00:00').toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long',year:'numeric'}) : '';
+  const columns = [['Branch',esc(branchName(selectedPosBranchId))],['Card',money(totals.cardCents)],['Float start',money(previousCash + openingFloat)],['Cash sales',money(totals.cashCents)],['Float end',money(remainingCash)],...extraMethods.map((entry)=>[entry.method,money(entry.amount)]),['Sales total',money(daySales.reduce((sum,sale)=>sum+Number(sale.total_cents||0),0))]];
+  expectedBox.innerHTML = '<table class="closing-overview"><thead><tr>' + columns.map(([label])=>'<th>'+label+'</th>').join('') + '</tr></thead><tbody><tr>' + columns.map(([,value])=>'<td><strong>'+value+'</strong></td>').join('') + '</tr></tbody></table>';
+  document.querySelector('#closingSalesCount').textContent = daySales.length + ' sales';
+  document.querySelector('#closingSalesTable').innerHTML = daySales.length ? daySales.map((sale)=>'<tr><td>'+esc(new Date(sale.created_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}))+'</td><td>'+esc(sale.id)+'</td><td>'+esc(sale.payment_method)+'</td><td>'+money(sale.total_cents)+'</td><td>'+esc(sale.recorded_by_name||'Not recorded')+'</td><td><button type="button" class="closing-sale-edit" aria-label="Edit sale" title="Manager PIN and reason required" data-closing-edit="'+esc(sale.id)+'"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg></button></td></tr>').join('') : '<tr><td colspan="6" class="empty-cell">No sales for this day.</td></tr>';
+  document.querySelectorAll('[data-closing-edit]').forEach((button)=>button.addEventListener('click',()=>openSaleEditor(button.dataset.closingEdit)));
   const cashVariance = actualCash - expectedDrawerCash;
   const cardVariance = actualCard - totals.cardCents;
-  varianceBox.innerHTML = '<article><span>Cash taken</span><strong>' + money(cashTaken) + '</strong></article><article><span>Remaining cash</span><strong>' + money(remainingCash) + '</strong></article><article><span>Cash variance</span><strong>' + money(cashVariance) + '</strong></article><article><span>Card variance</span><strong>' + money(cardVariance) + '</strong></article><article><span>Status</span><strong>' + (cashVariance || cardVariance ? "Variance" : "Balanced") + '</strong></article>';
+  varianceBox.innerHTML = '<article><span>Cash difference</span><strong>' + money(cashVariance) + '</strong></article><article><span>Card difference</span><strong>' + money(cardVariance) + '</strong></article><article class="' + (cashVariance || cardVariance ? 'closing-unbalanced' : 'closing-balanced') + '" role="status"><span>Status</span><strong>' + (cashVariance || cardVariance ? 'Not balanced' : 'Balanced') + '</strong></article>';
 }
 function previousClosingCashPreview(date) {
   const branchId = selectedPosBranchId || document.querySelector('#closingForm input[name="branchId"]')?.value || "";
@@ -2903,7 +3135,8 @@ function previousClosingCashPreview(date) {
   return Number(previous?.remaining_cash_cents ?? previous?.actual_cash_cents ?? 0);
 }
 function expectedClosingPreview(date) {
-  return state.sales.filter((sale) => !date || String(sale.created_at || "").slice(0, 10) === date).reduce((totals, sale) => {
+  return state.sales.filter((sale) => sale.status === 'Paid' && (!selectedPosBranchId || sale.branch_id === selectedPosBranchId) && (!date || String(sale.created_at || "").slice(0, 10) === date)).reduce((totals, sale) => {
+    if (sale.cash_cents != null && sale.card_cents != null) { totals.cashCents += Number(sale.cash_cents) - Number(sale.change_cents || 0); totals.cardCents += Number(sale.card_cents); totals.count += 1; return totals; }
     const method = String(sale.payment_method || "");
     const cash = method.match(/cash \$([0-9.]+)/i);
     const card = method.match(/card \$([0-9.]+)/i);
@@ -2923,7 +3156,87 @@ function renderCartSummary() {
     return { ...item, name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
   }).filter(Boolean);
   document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + '</em></span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
-  document.querySelector("#cartTotal").textContent = money(selectedItems.reduce((sum, item) => sum + item.priceCents, 0));
+  const total = selectedItems.reduce((sum, item) => sum + item.priceCents, 0);
+  document.querySelector("#cartTotal").textContent = money(total);
+  document.querySelector("#checkoutTotal").textContent = money(total);
+  const panel = document.querySelector("#paymentPanel");
+  if (salePayments.length && paymentTotalSnapshot !== total) {
+    resetPaymentUi();
+    setSaleMessage("The sale total changed. Add the payment amounts again.");
+  } else if (panel && !panel.classList.contains("hidden") && !salePayments.length) {
+    paymentTotalSnapshot = total;
+    document.querySelector('#saleForm input[name="paymentAmount"]').value = dollars(total);
+    renderPaymentState(false);
+  }
+}
+function saleTotalCents() {
+  return [...document.querySelectorAll(".sale-item")].reduce((total, row) => {
+    const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]')?.value);
+    if (!item) return total;
+    return total + (item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) : item.priceCents);
+  }, 0);
+}
+function resetPaymentUi() {
+  const form = document.querySelector("#saleForm");
+  if (!form) return;
+  salePayments = [];
+  paymentTotalSnapshot = saleTotalCents();
+  form.elements.paymentAmount.value = "";
+  document.querySelector("#paymentPanel").classList.add("hidden");
+  document.querySelector("#showPaymentMethods").classList.remove("hidden");
+  document.querySelector("#completeSale").classList.add("hidden");
+  document.querySelector("#completeSale").disabled = true;
+  document.querySelector("#selectedPaymentMethod").textContent = "Enter an amount, then choose how it was paid.";
+  document.querySelector("#paymentAllocations").innerHTML = "";
+  document.querySelector("#paymentBalance").innerHTML = "";
+  document.querySelector("#cartPaymentSummary").innerHTML = "";
+}
+function showPaymentMethods() {
+  const total = saleTotalCents();
+  if (!total) { setSaleMessage("Add a valid service or product before paying.", true); return; }
+  setSaleMessage("");
+  salePayments = [];
+  paymentTotalSnapshot = total;
+  document.querySelector("#paymentPanel").classList.remove("hidden");
+  document.querySelector("#showPaymentMethods").classList.add("hidden");
+  document.querySelector("#completeSale").classList.remove("hidden");
+  document.querySelector('#saleForm input[name="paymentAmount"]').value = dollars(total);
+  renderPaymentState(false);
+  document.querySelector("#paymentPanel").scrollIntoView({ behavior:"smooth", block:"nearest" });
+}
+function paymentTotals() {
+  const total = saleTotalCents();
+  const paid = salePayments.reduce((sum, payment) => sum + payment.amountCents, 0);
+  const cash = salePayments.filter((payment) => payment.method === "Cash").reduce((sum, payment) => sum + payment.amountCents, 0);
+  return { total, paid, cash, remaining:Math.max(0, total - paid), change:Math.max(0, paid - total) };
+}
+function renderPaymentState(syncInput = true) {
+  const totals = paymentTotals();
+  const allocationHtml = salePayments.map((payment, index) => '<div class="payment-allocation"><span><strong>' + esc(payment.method) + '</strong><small>Payment ' + (index + 1) + '</small></span><b>' + money(payment.amountCents) + '</b><button type="button" data-remove-payment="' + index + '" aria-label="Remove ' + esc(payment.method) + ' payment">Remove</button></div>').join("");
+  document.querySelector("#paymentAllocations").innerHTML = allocationHtml || '<p class="hint">No payment amounts added yet.</p>';
+  document.querySelectorAll("[data-remove-payment]").forEach((button) => button.addEventListener("click", () => {
+    salePayments.splice(Number(button.dataset.removePayment), 1);
+    renderPaymentState(true);
+  }));
+  const balanceHtml = '<article><span>Paid</span><strong>' + money(totals.paid) + '</strong></article><article><span>Remaining</span><strong>' + money(totals.remaining) + '</strong></article>' + (totals.change ? '<article class="change-due"><span>Cash to return</span><strong>' + money(totals.change) + '</strong></article>' : '');
+  document.querySelector("#paymentBalance").innerHTML = balanceHtml;
+  document.querySelector("#cartPaymentSummary").innerHTML = salePayments.map((payment) => '<div class="cart-payment-line"><span>' + esc(payment.method) + '</span><strong>' + money(payment.amountCents) + '</strong></div>').join("") + (totals.remaining ? '<div class="cart-payment-line balance"><span>Amount remaining</span><strong>' + money(totals.remaining) + '</strong></div>' : '') + (totals.change ? '<div class="cart-payment-line change"><span>Cash to return</span><strong>' + money(totals.change) + '</strong></div>' : '');
+  document.querySelector("#completeSale").disabled = !salePayments.length || totals.paid < totals.total || totals.change > totals.cash;
+  document.querySelector("#selectedPaymentMethod").textContent = totals.change ? "Payment covered. Return " + money(totals.change) + " in cash after completing the sale." : totals.remaining ? money(totals.remaining) + " remains to be paid." : "Payment covered. You can complete the sale.";
+  if (syncInput) document.querySelector('#saleForm input[name="paymentAmount"]').value = totals.remaining ? dollars(totals.remaining) : "";
+}
+function addPayment(method) {
+  const input = document.querySelector('#saleForm input[name="paymentAmount"]');
+  const amountCents = Math.round(Number(input.value || 0) * 100);
+  const totals = paymentTotals();
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) { setSaleMessage("Enter a valid payment amount first.", true); input.focus(); return; }
+  if (!totals.remaining) { setSaleMessage("The sale is already fully paid. Remove a payment to make a change.", true); return; }
+  if (method !== "Cash" && amountCents > totals.remaining) { setSaleMessage("Only cash can be more than the remaining balance.", true); input.focus(); return; }
+  const existing = salePayments.find((payment) => payment.method === method);
+  if (existing) existing.amountCents += amountCents;
+  else salePayments.push({ method, amountCents });
+  setSaleMessage("");
+  renderPaymentState(true);
 }
 function updateSaleItemRow(row) {
   const selectedItem = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
@@ -2951,9 +3264,11 @@ function allocationError(row) {
   if (!item || item.type !== "service") return "";
   const totals = allocationTotals(row);
   const serviceAmount = Number(row.querySelector('input[name="instancePrice"]').value || 0);
-  if (totals.percent > 100) return "Staff percentages for " + (row.querySelector('input[name="instanceName"]').value || item.name) + " cannot exceed 100%.";
-  if (totals.amount > serviceAmount) return "Staff dollar allocations cannot exceed the service amount of " + money(Math.round(serviceAmount * 100)) + ".";
-  if (totals.amount + (serviceAmount * totals.percent / 100) > serviceAmount + 0.001) return "Combined staff percentage and dollar allocations cannot exceed the service amount.";
+  const chips = [...row.querySelectorAll(".staff-chip")];
+  if (!chips.length) return "";
+  if (Math.abs(totals.percent - 100) > 0.01) return "Staff percentages must total 100%.";
+  if (Math.abs(totals.amount - serviceAmount) > 0.011) return "Staff amounts must total " + money(Math.round(serviceAmount * 100)) + ".";
+  if (chips.some((chip) => Math.abs(Number(chip.querySelector('input[name="staffAmount"]').value || 0) - serviceAmount * Number(chip.querySelector('input[name="staffPercent"]').value || 0) / 100) > 0.011)) return "Each staff amount must match its percentage.";
   return "";
 }
 function updateAllocationSummary(row) {
@@ -2961,8 +3276,63 @@ function updateAllocationSummary(row) {
   const summary = row.querySelector(".allocation-summary");
   if (!summary) return;
   const error = allocationError(row);
-  summary.textContent = error || ("Staff percentages: " + totals.percent + "% · Staff dollars: $" + totals.amount.toFixed(2));
+  summary.textContent = error || ("Allocated: " + totals.percent.toFixed(2).replace(/\.00$/, "") + "% · $" + totals.amount.toFixed(2));
   summary.classList.toggle("allocation-error", Boolean(error));
+}
+function setAllocation(chip, percent, amountCents) {
+  chip.querySelector('input[name="staffPercent"]').value = Number(percent.toFixed(2));
+  chip.querySelector('input[name="staffAmount"]').value = (amountCents / 100).toFixed(2);
+}
+function rebalanceStaffAllocations(row, sourceChip = null, sourceKind = "equal") {
+  const chips = [...row.querySelectorAll(".staff-chip")];
+  const totalCents = Math.max(0, Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100));
+  if (!chips.length || !totalCents) { updateAllocationSummary(row); return; }
+  if (sourceKind === "preserve") {
+    let assigned = 0;
+    chips.forEach((chip, index) => {
+      const percent = Math.max(0, Number(chip.querySelector('input[name="staffPercent"]').value || 0));
+      const amount = index === chips.length - 1 ? Math.max(0, totalCents - assigned) : Math.round(totalCents * percent / 100);
+      assigned += amount;
+      setAllocation(chip, percent, amount);
+    });
+    updateAllocationSummary(row);
+    return;
+  }
+  if (!sourceChip || chips.length === 1) {
+    let assignedPercent = 0;
+    let assigned = 0;
+    chips.forEach((chip, index) => {
+      const percent = index === chips.length - 1 ? 100 - assignedPercent : Number((100 / chips.length).toFixed(2));
+      const amount = index === chips.length - 1 ? totalCents - assigned : Math.round(totalCents / chips.length);
+      assignedPercent += percent;
+      assigned += amount;
+      setAllocation(chip, percent, amount);
+    });
+  } else {
+    const others = chips.filter((chip) => chip !== sourceChip);
+    let sourcePercent;
+    let sourceAmount;
+    if (sourceKind === "amount") {
+      sourceAmount = Math.min(totalCents, Math.max(0, Math.round(Number(sourceChip.querySelector('input[name="staffAmount"]').value || 0) * 100)));
+      sourcePercent = totalCents ? sourceAmount * 100 / totalCents : 0;
+    } else {
+      sourcePercent = Math.min(100, Math.max(0, Number(sourceChip.querySelector('input[name="staffPercent"]').value || 0)));
+      sourceAmount = Math.round(totalCents * sourcePercent / 100);
+    }
+    setAllocation(sourceChip, sourcePercent, sourceAmount);
+    const remainingPercent = Math.max(0, 100 - sourcePercent);
+    const remainingCents = Math.max(0, totalCents - sourceAmount);
+    let assignedPercent = 0;
+    let assignedCents = 0;
+    others.forEach((chip, index) => {
+      const percent = index === others.length - 1 ? remainingPercent - assignedPercent : Number((remainingPercent / others.length).toFixed(2));
+      const amount = index === others.length - 1 ? remainingCents - assignedCents : Math.round(remainingCents / others.length);
+      assignedPercent += percent;
+      assignedCents += amount;
+      setAllocation(chip, percent, amount);
+    });
+  }
+  updateAllocationSummary(row);
 }
 function staffCheckboxes() { return state.staff.map((s) => '<label class="mini-check"><input type="checkbox" name="saleStaffIds" value="' + s.id + '">' + esc(s.name) + '</label>').join(""); }
 function staffSelectOptions(value) { return '<option value="">Unassigned</option>' + state.staff.map((s) => '<option value="' + s.id + '"' + selected(value, s.id) + '>' + esc(s.name) + '</option>').join(""); }
@@ -2971,14 +3341,15 @@ function addStaffToSaleItem(row) {
   const staff = findStaff(input.value);
   if (!staff) { message.textContent = "Select a staff member from the list."; return; }
   if (row.querySelector('input[name="saleStaffIds"][value="' + cssEsc(staff.id) + '"]')) { input.value = ""; return; }
-  const chip = document.createElement("label");
+  const chip = document.createElement("div");
   chip.className = "staff-chip";
-  chip.innerHTML = '<input type="checkbox" name="saleStaffIds" value="' + esc(staff.id) + '" checked><span>' + esc(staff.name) + '</span><label>%<input name="staffPercent" type="number" min="0" max="100" step="1" placeholder="%"></label><label>$<input name="staffAmount" type="number" min="0" step="0.01" placeholder="$"></label><button type="button" aria-label="Remove staff">x</button>';
-  chip.querySelectorAll('input[type="number"]').forEach((field) => field.addEventListener("input", () => updateAllocationSummary(row)));
-  chip.querySelector("button").addEventListener("click", () => { chip.remove(); updateAllocationSummary(row); });
+  chip.innerHTML = '<input type="checkbox" name="saleStaffIds" value="' + esc(staff.id) + '" checked><span>' + esc(staff.name) + '</span><label>%<input name="staffPercent" type="number" min="0" max="100" step="0.01" placeholder="%"></label><label>$<input name="staffAmount" type="number" min="0" step="0.01" placeholder="$"></label><button type="button" aria-label="Remove staff">x</button>';
+  chip.querySelector('input[name="staffPercent"]').addEventListener("change", () => rebalanceStaffAllocations(row, chip, "percent"));
+  chip.querySelector('input[name="staffAmount"]').addEventListener("change", () => rebalanceStaffAllocations(row, chip, "amount"));
+  chip.querySelector("button").addEventListener("click", () => { chip.remove(); rebalanceStaffAllocations(row); });
   row.querySelector(".selected-staff").append(chip);
   input.value = "";
-  updateAllocationSummary(row);
+  rebalanceStaffAllocations(row);
 }
 function findCustomerId(value) { return state.customers.find((c) => customerLabel(c) === value)?.id || ""; }
 function findSaleItem(value) { return saleCatalog().find((item) => item.label === value); }
@@ -3018,8 +3389,9 @@ function printLastReceipt() {
   if (!lastReceipt) { message.textContent = "Complete a sale first."; return; }
   const drawerNote = "If your cash drawer is connected to the receipt printer, it should open when this receipt prints.";
   const receipt = window.open("", "kunchasReceipt", "width=380,height=640");
-  const paymentRows = (lastReceipt.cashCents ? '<div class="row"><span>Cash paid</span><strong>' + money(lastReceipt.cashCents) + '</strong></div>' : '') + (lastReceipt.cardCents ? '<div class="row"><span>Card paid</span><strong>' + money(lastReceipt.cardCents) + '</strong></div>' : '') + (lastReceipt.changeCents ? '<div class="row total"><span>Change to return</span><span>' + money(lastReceipt.changeCents) + '</span></div>' : '');
-  receipt.document.write('<!doctype html><html><head><title>Kunchas receipt</title><style>body{font-family:Arial,sans-serif;margin:18px;color:#111}.center{text-align:center}h1{font-size:20px;margin:0}.line{border-top:1px dashed #999;margin:12px 0}.row{display:flex;justify-content:space-between;gap:12px;margin:6px 0}.total{font-weight:800;font-size:18px}.note{font-size:12px;color:#555}</style></head><body><div class="center"><h1>Kunchas</h1><div>' + esc(lastReceipt.branch?.name || "") + '</div><div>' + esc(lastReceipt.branch?.phone || "") + '</div></div><div class="line"></div><div>Receipt: ' + esc(lastReceipt.saleId) + '</div><div>' + esc(new Date(lastReceipt.createdAt).toLocaleString("en-AU")) + '</div><div class="line"></div>' + lastReceipt.items.map((item) => '<div class="row"><span>' + esc(item.name) + '</span><strong>' + money(item.priceCents) + '</strong></div>').join("") + '<div class="line"></div><div class="row total"><span>Total</span><span>' + money(lastReceipt.totalCents) + '</span></div>' + paymentRows + '<p class="center">Thank you</p><p class="note">' + drawerNote + '</p></body></html>');
+  const detailedPayments = Array.isArray(lastReceipt.payments) ? lastReceipt.payments.filter((payment) => Number(payment.amountCents || 0) > 0) : [];
+  const paymentRows = (detailedPayments.length ? detailedPayments.map((payment) => '<div class="row"><span>' + esc(payment.method) + ' paid</span><strong>' + money(payment.amountCents) + '</strong></div>').join("") : (lastReceipt.cashCents ? '<div class="row"><span>Cash paid</span><strong>' + money(lastReceipt.cashCents) + '</strong></div>' : '') + (lastReceipt.cardCents ? '<div class="row"><span>Card paid</span><strong>' + money(lastReceipt.cardCents) + '</strong></div>' : '') + (!lastReceipt.cashCents && !lastReceipt.cardCents ? '<div class="row"><span>Payment</span><strong>' + esc(lastReceipt.paymentMethod || "Paid") + '</strong></div>' : '')) + (lastReceipt.changeCents ? '<div class="row total"><span>Change to return</span><span>' + money(lastReceipt.changeCents) + '</span></div>' : '');
+  receipt.document.write('<!doctype html><html><head><title>Kunchas receipt</title><style>body{font-family:Arial,sans-serif;margin:18px;color:#111}.center{text-align:center}h1{font-size:20px;margin:0}.line{border-top:1px dashed #999;margin:12px 0}.row{display:flex;justify-content:space-between;gap:12px;margin:6px 0}.total{font-weight:800;font-size:18px}.note{font-size:12px;color:#555}</style></head><body><div class="center"><img alt="Kuncha’s Hair &amp; Beauty Art" style="width:200px;max-width:100%;height:auto" src="' + esc(document.querySelector('.brand img').src) + '"><div>' + esc(lastReceipt.branch?.name || "") + '</div><div>' + esc(lastReceipt.branch?.phone || "") + '</div></div><div class="line"></div><div>Receipt: ' + esc(lastReceipt.saleId) + '</div><div>' + esc(new Date(lastReceipt.createdAt).toLocaleString("en-AU")) + '</div><div class="line"></div>' + lastReceipt.items.map((item) => '<div class="row"><span>' + esc(item.name) + '</span><strong>' + money(item.priceCents) + '</strong></div>').join("") + '<div class="line"></div><div class="row total"><span>Total</span><span>' + money(lastReceipt.totalCents) + '</span></div>' + paymentRows + '<p class="center">Thank you</p><p class="note">' + drawerNote + '</p></body></html>');
   receipt.document.close();
   receipt.focus();
   receipt.print();
@@ -3035,9 +3407,18 @@ function styles() {
 :root { --ink:#1c1724; --muted:#716b79; --line:#e7e1ea; --soft:#f8f6f9; --brand:#5b1b6f; --brand-dark:#3b1048; --brand-soft:#f3eaf6; --gold:#d59b48; --surface:#fff; --success:#087f5b; }
 * { box-sizing:border-box; }
 body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; }
-.sidebar { position:sticky; top:0; height:100vh; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
-.brand { display:flex; align-items:center; gap:10px; margin-bottom:30px; font-size:22px; }
-.brand span { display:grid; place-items:center; width:38px; height:38px; border-radius:11px; background:rgba(255,255,255,.14); font-weight:800; }
+.sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; overflow-y:auto; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
+.sidebar-footer { margin-top:auto; padding-top:24px; }
+.sidebar-footer .nav { width:100%; border-top:1px solid #ffffff30; border-radius:0; }
+body.pos-locked { grid-template-columns:1fr; }
+.pos-locked .sidebar,.pos-locked .topbar,.pos-locked .account-tools,.pos-locked .tab { display:none!important; }
+.pos-locked .app { width:min(100%,540px); min-height:100dvh; margin:auto; padding:24px; display:flex; flex-direction:column; justify-content:center; }
+.pos-locked #posLogin { order:1; margin:0; }
+.pos-locked #posLogin .grid { grid-template-columns:1fr; margin-top:24px; }
+.pos-locked #message { order:2; text-align:center; }
+.brand { display:flex; align-items:center; justify-content:center; margin-bottom:26px; padding:8px; background:#fff; border-radius:12px; flex-shrink:0; }
+.brand img { display:block; width:100%; max-width:210px; height:auto; }
+.login-brand-logo { display:block; width:min(100%,280px); height:auto; margin:0 auto 22px; }
 nav { display:grid; gap:8px; }
 .nav { display:flex; align-items:center; gap:12px; min-height:44px; padding:0 14px; color:#e6dbe9; background:transparent; border:0; border-radius:9px; text-align:left; font:inherit; font-weight:700; cursor:pointer; }
 .nav.active,.nav:hover { color:#fff; background:rgba(255,255,255,.12); }
@@ -3306,10 +3687,45 @@ legend { grid-column:1/-1; }
 .cart-total { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
 .cart-total span { color:var(--muted); font-weight:800; }
 .cart-total strong { font-size:30px; }
+.booking-customer-card { display:grid; gap:2px; margin:0 0 16px; padding:14px 16px; color:#0b3558; background:#eef7ff; border:1px solid #cfe4f5; border-radius:10px; }
+.booking-customer-card.hidden { display:none; }
+.booking-customer-card span { color:#54738d; font-size:11px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; }
+.booking-customer-card strong { font-size:17px; }.booking-customer-card em { color:#54738d; font-size:13px; font-style:normal; }
+.checkout-total { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:20px 0 12px; padding:18px; color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand-dark)); border-radius:12px; }
+.checkout-total span { font-weight:800; }.checkout-total strong { font-size:30px; }
+.pay-button { min-height:54px; font-size:17px; }
+.payment-panel { margin-top:16px; padding:20px; background:#fff; border:2px solid #d7c6df; border-radius:14px; }
+.payment-heading { display:flex; align-items:end; justify-content:space-between; gap:18px; margin-bottom:14px; }
+.payment-heading h3 { margin:0; font-size:22px; }.payment-heading label { width:min(220px,45%); }.payment-heading input { margin-bottom:0; }
+.payment-methods { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.payment-methods button { color:#073b78; background:#fff; border:2px solid #0d4a91; border-radius:999px; }
+.payment-methods button.selected { color:#fff; background:#0d4a91; box-shadow:0 0 0 3px #cfe2fa; }
+.payment-methods button:last-child { grid-column:1/-1; }
+.payment-allocations { display:grid; gap:8px; margin-top:14px; }
+.payment-allocation { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:12px; padding:10px 12px; background:#f8fbfc; border:1px solid var(--line); border-radius:9px; }
+.payment-allocation span,.payment-allocation small { display:block; }.payment-allocation small { color:var(--muted); }
+.payment-allocation button { min-height:34px; padding:6px 10px; color:#9b3444; background:#fff3ef; }
+.payment-balance { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:14px 0; }
+.payment-balance article { padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:9px; }
+.payment-balance span { display:block; color:var(--muted); font-size:12px; font-weight:800; }.payment-balance strong { display:block; margin-top:3px; font-size:20px; }
+.payment-balance .change-due { color:#7a3e00; background:#fff8e6; border-color:#edcf83; }
+.cart-payment-summary { display:grid; gap:7px; margin-top:14px; }
+.cart-payment-line { display:flex; justify-content:space-between; gap:12px; padding:8px 10px; color:#365166; background:#f8fbfc; border-radius:7px; }
+.cart-payment-line.balance { color:#9b3444; background:#fff3ef; }.cart-payment-line.change { color:#7a3e00; background:#fff8e6; }
 .closing-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:10px 0 14px; }
+.closing-layout { display:grid; grid-template-columns:minmax(0,1fr); gap:18px; }
+.closing-layout .panel { margin:0; min-width:0; }
+.closing-overview { margin:12px 0 20px; width:100%; }
+.closing-overview th { background:#e5e8ec; white-space:nowrap; }.closing-overview td { background:#f4f6f8; }
+.cash-counter { display:block; }.denomination-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:12px; }
+.closing-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+@media(max-width:700px){.denomination-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.closing-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .closing-summary article { padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .closing-summary span { display:block; color:var(--muted); font-size:12px; font-weight:800; }
 .closing-summary strong { display:block; margin-top:4px; font-size:20px; }
+.closing-summary article.closing-balanced { color:#166534; background:#dcfce7; border-color:#86efac; }
+.closing-summary article.closing-unbalanced { color:#991b1b; background:#fee2e2; border-color:#fca5a5; }
+.closing-summary .closing-balanced span,.closing-summary .closing-unbalanced span { color:inherit; }
 .field-label { display:block; margin-bottom:8px; font-weight:800; }
 .staff-checks { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .mini-check { display:flex; align-items:center; gap:8px; min-height:44px; padding:10px; margin:0; background:#fff; border:1px solid var(--line); border-radius:8px; font-weight:700; }
@@ -3364,6 +3780,17 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .booking-time-rail { position:relative; grid-column:1; grid-row:2; border-right:1px solid #dbe3f1; background:#fbfcff; }
 .booking-time-rail time { position:absolute; right:8px; color:#718096; font-size:9px; transform:translateY(-50%); }.booking-time-rail time.hour { color:#26385f; font-size:11px; font-weight:900; }
 .booking-lanes { display:grid; grid-column:2; grid-row:2; grid-template-columns:repeat(var(--staff-count),minmax(210px,1fr)); }
+.booking-now { grid-area:2/1/3/-1; align-self:start; position:relative; height:0; border-top:2px solid #dc2626; z-index:5; pointer-events:none; }
+.booking-now span { position:absolute; left:0; top:-11px; background:#dc2626; color:white; padding:2px 4px; border-radius:4px; font-size:10px; font-weight:800; }
+.booking-status-history { padding:16px 0; }
+.closing-sale-edit { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; min-height:32px; padding:0; border:1px solid #e8dce4; border-radius:7px; background:#fff; color:#846576; vertical-align:middle; }
+.closing-sale-edit:hover { color:#9c3468; background:#fff0f6; border-color:#d9a6bf; }
+.closing-sale-edit:focus-visible { outline:2px solid #b7447e; outline-offset:3px; }
+@media(pointer:coarse){.closing-sale-edit{width:44px;height:44px;min-height:44px}}
+.booking-history-row { display:flex; justify-content:space-between; gap:16px; width:100%; margin:8px 0; padding:12px; text-align:left; }
+.booking-no-show { color:#b42318; white-space:nowrap; }.booking-cancelled { color:#67566e; white-space:nowrap; }
+.booking-overflow { color:#b42318; padding:12px; border:1px solid #f6b5ad; }
+.booking-staff-lane .booking-card { min-height:0; padding:2px 8px; }
 .booking-staff-lane { position:relative; height:648px; border-right:1px solid #dbe3f1; background:repeating-linear-gradient(to bottom,#fff 0,#fff 17px,#edf1f7 18px); }
 .booking-card { position:absolute; left:8px; right:8px; z-index:1; min-height:52px; padding:9px 12px; overflow:hidden; color:#081632; border:1px solid; border-radius:8px; text-align:left; box-shadow:none; }
 .booking-card.lane-0{background:#fde4ef;border-color:#ff9dc7}.booking-card.lane-1{background:#dcf7fb;border-color:#72d4df}.booking-card.lane-2{background:#e7e2ff;border-color:#b7a8fa}.booking-card.lane-3{background:#e0f8f2;border-color:#74d9c4}
@@ -3373,7 +3800,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .booking-empty{position:sticky;left:100px;margin:28px}.booking-detail{margin-top:18px;padding:18px;background:#fff8f5;border:1px solid #eadbd6;border-radius:10px}.booking-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}.booking-detail-grid article{padding:12px;background:#fff;border:1px solid var(--line);border-radius:8px}.booking-edit-actions{flex-wrap:wrap}
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
-@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.time-clock-panel,.report-filters{grid-template-columns:1fr}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
+@media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.payment-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search,.payment-heading label{width:100%}.time-clock-panel,.report-filters,.payment-methods,.payment-balance{grid-template-columns:1fr}.payment-methods button:last-child{grid-column:auto}.payment-allocation{grid-template-columns:minmax(0,1fr) auto}.payment-allocation button{grid-column:1/-1}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
 
 /* Branch management */
 .branch-hours-table { min-width:480px; width:100%; table-layout:fixed; }.branch-hours-table th:last-child { width:68px; }.branch-hours-table td,.branch-hours-table th { padding:10px 8px; }.branch-hours-table input { width:100%; }
@@ -3401,6 +3828,8 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 export default {
   async fetch(request, env, ctx) {
     try {
+      const publicResponse=await publicBookingRoute(request,env);
+      if(publicResponse)return publicResponse;
       const access = await accessGate(request, env);
       if (access.response) return access.response;
       const response = await application.fetch(request, env, { identity:access.user, waitUntil:(promise)=>ctx.waitUntil(promise) });

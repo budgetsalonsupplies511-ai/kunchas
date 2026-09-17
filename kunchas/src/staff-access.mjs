@@ -1,8 +1,8 @@
-import { branchGate } from './pos-accountability.mjs';
+import { branchGate, verifyManagerDashboardPin } from './pos-accountability.mjs';
 export const ACCESS_SECTIONS = [
   ['dashboard','Dashboard'],['pos','POS / sales'],['bookings','Bookings'],['customers','Customers'],
   ['services','Services catalogue'],['products','Products catalogue'],['inventory','Inventory'],
-  ['staff','Staff details'],['payroll','Pay rates / payroll'],['roster','Roster'],['reports','Sales reports'],
+  ['staff','Staff details'],['payroll','Payroll hours'],['roster','Roster'],['reports','Sales reports'],
   ['closing','Daily closing'],['time_clock','Own time clock'],['branches','Branches'],['access','User access']
 ];
 const COOKIE='__Host-kunchas_session';
@@ -22,14 +22,22 @@ const first=async(env,sql,args=[])=>env.DB.prepare(sql).bind(...args).first();
 export function can(user,section,write=false){return user?.role==='owner'||Number(user?.permissions?.[section]||0)>=(write?2:1);}
 export function managesAccess(user){return ['owner','admin'].includes(user?.role)&&can(user,'access',true);}
 export function hasBranch(user,id){return Boolean(id&&(user.allBranches||user.branchIds.includes(id)));}
-export function publicIdentity(user){return {id:user.id,staffId:user.staffId,name:user.name,role:user.role,permissions:user.permissions,allBranches:user.allBranches,branchIds:user.branchIds};}
+export function dashboardPath(user){return user?.role==='owner'?'/owner':user?.role==='admin'?'/admin':user?.role==='manager'&&user.managerBranchId?'/manager':'/pos';}
+export function publicIdentity(user){return {id:user.id,staffId:user.staffId,name:user.name,role:user.role,permissions:user.permissions,allBranches:user.allBranches,branchIds:user.branchIds,managerBranchId:user.managerBranchId||''};}
 export async function identity(request,env){
   const token=(request.headers.get('cookie')||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(COOKIE+'='))?.slice(COOKIE.length+1);
   if(!token||!/^[a-f0-9]{64}$/.test(token))return null;
-  const row=await first(env,`SELECT u.*, s.name, s.status AS staff_status, r.permissions FROM access_sessions se JOIN access_users u ON u.id=se.user_id LEFT JOIN staff s ON s.id=u.staff_id LEFT JOIN access_roles r ON r.role=u.role WHERE se.token_hash=? AND se.expires_at>? AND u.enabled=1`,[await digest(token),Math.floor(Date.now()/1000)]);
+  const row=await first(env,`SELECT u.*, s.name, s.status AS staff_status, r.permissions, ms.branch_id AS manager_branch_id FROM access_sessions se JOIN access_users u ON u.id=se.user_id LEFT JOIN staff s ON s.id=u.staff_id LEFT JOIN access_roles r ON r.role=u.role LEFT JOIN access_manager_sessions ms ON ms.token_hash=se.token_hash WHERE se.token_hash=? AND se.expires_at>? AND u.enabled=1`,[await digest(token),Math.floor(Date.now()/1000)]);
   if(!row||row.role==='none'||(row.staff_id&&row.staff_status!=='Active'))return null;
   const branchIds=parse(row.branch_ids,[]);
-  return {id:row.id,staffId:row.staff_id,name:row.name||'Owner',role:row.role,permissions:parse(row.permissions,{}),allBranches:row.role==='owner'||Boolean(row.all_branches),branchIds:Array.isArray(branchIds)?branchIds:[]};
+  const user={id:row.id,staffId:row.staff_id,name:row.name||'Owner',role:row.role,permissions:parse(row.permissions,{}),allBranches:row.role==='owner'||Boolean(row.all_branches),branchIds:Array.isArray(branchIds)?branchIds:[]};
+  if(user.role==='manager'){
+    const branch=row.manager_branch_id;
+    if(branch&&!hasBranch(user,branch))return null;
+    // Old/unscoped manager sessions must re-enter through a branch PIN gate.
+    user.allBranches=false;user.branchIds=branch?[branch]:[];user.managerBranchId=branch||'';
+  }
+  return user;
 }
 async function audit(env,actor,action,target){await env.DB.prepare('INSERT INTO access_audit(id,actor_id,action,target_id,created_at) VALUES (?,?,?,?,?)').bind(crypto.randomUUID(),actor.id,action,target,new Date().toISOString()).run();}
 async function login(request,env){
@@ -50,7 +58,18 @@ async function login(request,env){
     env.DB.prepare('DELETE FROM access_sessions WHERE expires_at<=?').bind(now),
     env.DB.prepare('DELETE FROM access_login_limits WHERE reset_at<=?').bind(now)
   ]);
-  return reply({ok:true},200,{'set-cookie':`${COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_SECONDS}`});
+  return reply({ok:true,redirect:dashboardPath(user)},200,{'set-cookie':`${COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_SECONDS}`});
+}
+async function managerDashboardLogin(request,env){
+  const verified=await verifyManagerDashboardPin(request,env);if(verified.response)return verified.response;
+  const token=random(32),now=Math.floor(Date.now()/1000),account=verified.account;
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO access_sessions(token_hash,user_id,expires_at) VALUES (?,?,?)').bind(await digest(token),account.id,now+SESSION_SECONDS),
+    env.DB.prepare('INSERT INTO access_manager_sessions(token_hash,branch_id) VALUES (?,?)').bind(await digest(token),verified.branchId),
+    env.DB.prepare('DELETE FROM access_sessions WHERE expires_at<=?').bind(now)
+  ]);
+  await audit(env,{id:account.id},'manager_dashboard_login',verified.branchId);
+  return reply({ok:true,name:account.name||'Manager',redirect:'/manager'},200,{'set-cookie':`${COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_SECONDS}`});
 }
 export async function setStaffRole(env,staffId,role,actor){
   if(!['none','admin','manager','staff'].includes(role))throw new Error('Invalid access role');
@@ -109,14 +128,16 @@ async function accessSettings(request,env,user){
   return reply({error:'Not found'},404);
 }
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function loginPage(){return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Kunchas</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f5fa;color:#251c2c;font:16px system-ui}main{width:min(380px,calc(100vw - 64px));padding:32px;background:white;border:1px solid #e4ddea;border-radius:20px}h1{margin:0 0 8px;color:#5d1e70}p{color:#74667d;line-height:1.5}label{display:block;margin:20px 0}input,button{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cdc3d4;border-radius:8px;font:inherit;margin-top:6px}button{background:#5d1e70;color:white;cursor:pointer}#error{color:#a12a39}</style><main><h1>Kunchas</h1><p>Sign in with your username and individual PIN.</p><p><a href="/pos">Open POS with branch PIN</a></p><form id="login"><label>Username or email<input name="username" autocomplete="username" required></label><label>PIN<input name="pin" type="password" inputmode="numeric" autocomplete="current-password" required></label><button>Sign in</button><p id="error" role="alert"></p></form></main><script>document.querySelector('#login').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('button');button.disabled=true;try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(form)))});const data=await r.json();if(!r.ok)throw Error(data.error);location.href='/admin';}catch(error){document.querySelector('#error').textContent=error.message;form.elements.pin.value='';}finally{button.disabled=false;}};</script></html>`,{headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'DENY'}});}
+import { brandLogo } from './brand-logo.mjs';
+function loginPage(){return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Kunchas</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fff8fb;color:#251c2c;font:16px system-ui}main{width:min(380px,calc(100vw - 64px));padding:32px;background:white;border:1px solid #e4ddea;border-radius:20px}h1{margin:0 0 8px;color:#b7447e}p{color:#74667d;line-height:1.5}label{display:block;margin:20px 0}input,button{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cdc3d4;border-radius:8px;font:inherit;margin-top:6px}button{background:#b7447e;color:white;cursor:pointer}#error{color:#a12a39}</style><main><img src="${brandLogo}" alt="Kuncha’s Hair & Beauty Art" width="2551" height="1189" style="display:block;width:100%;max-width:280px;height:auto;margin:0 auto 24px"><h1>Sign in</h1><p>Sign in with your username and individual PIN.</p><p><a href="/pos">Open POS with branch PIN</a></p><form id="login"><label>Username or email<input name="username" autocomplete="username" required></label><label>PIN<input name="pin" type="password" inputmode="numeric" autocomplete="current-password" required></label><button>Sign in</button><p id="error" role="alert"></p></form></main><script>document.querySelector('#login').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('button');button.disabled=true;try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(form)))});const data=await r.json();if(!r.ok)throw Error(data.error);location.href=data.redirect||'/pos';}catch(error){document.querySelector('#error').textContent=error.message;form.elements.pin.value='';}finally{button.disabled=false;}};</script></html>`,{headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'DENY'}});}
 export async function accessGate(request,env){
   const url=new URL(request.url),p=url.pathname,method=request.method;
   if(!['GET','HEAD','OPTIONS'].includes(method)&&request.headers.get('origin')!==url.origin)return {response:reply({error:'Reload the page and try again.'},403)};
   if(p==='/api/auth/login'&&method==='POST')return {response:await login(request,env)};
+  if(p==='/api/auth/manager-dashboard'&&method==='POST')return {response:await managerDashboardLogin(request,env)};
   const user=await identity(request,env);
   const branchAccess=await branchGate(request,env,user);if(branchAccess)return branchAccess;
-  if(p==='/login')return {response:user?Response.redirect(url.origin+'/admin',302):loginPage()};
+  if(p==='/login')return {response:user?Response.redirect(url.origin+dashboardPath(user),302):loginPage()};
   if(!user)return {response:p.startsWith('/api/')?reply({error:'Please sign in to continue.'},401):Response.redirect(url.origin+'/login',302)};
   if(p==='/api/auth/me')return {response:reply({user:publicIdentity(user)})};
   if(p==='/api/auth/change-pin'&&method==='POST'){
@@ -140,6 +161,8 @@ export async function accessGate(request,env){
     await env.DB.prepare('DELETE FROM access_sessions WHERE token_hash=?').bind(await digest(token)).run();
     return {response:reply({ok:true},200,{'set-cookie':`${COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`})};
   }
+  if(['/','/owner','/admin','/manager'].includes(p)&&p!==dashboardPath(user))return {response:Response.redirect(url.origin+dashboardPath(user),302)};
+  if(user.role==='manager'&&!user.managerBranchId)return {response:p.startsWith('/api/')?reply({error:'Open a branch POS and enter your manager PIN to continue.'},403):Response.redirect(url.origin+'/pos',302)};
   if(p.startsWith('/api/access/'))return {response:await accessSettings(request,env,user)};
   if(!p.startsWith('/api/'))return {user};
   if(p==='/api/branches-public'||p==='/api/app-data')return {user};
@@ -222,6 +245,10 @@ export async function protectData(response,request,user,env){
   if(!allowed('services','pos','bookings'))data.services=[];
   if(!allowed('products','pos','inventory'))data.products=[];
   if(!allowed('customers','pos','bookings'))data.customers=[];
+  if(allowed('pos','bookings')&&data.bookings?.length){
+    const missing=[...new Set(data.bookings.map(b=>b.customer_id))].filter(id=>id&&!data.customers.some(c=>c.id===id));
+    for(let offset=0;offset<missing.length;offset+=50){const ids=missing.slice(offset,offset+50);data.customers.push(...await rows(env,'SELECT id,first_name,last_name,email,phone,branch_id FROM customers WHERE id IN ('+ids.map(()=>'?').join(',')+')',ids));}
+  }
   if(!allowed('bookings','dashboard'))data.bookings=[];
   if(!allowed('pos','reports','dashboard','closing','staff')){data.sales=[];data.saleItems=[];}
   if(!allowed('inventory','products','pos','dashboard'))data.inventoryStock=[];
@@ -231,7 +258,7 @@ export async function protectData(response,request,user,env){
   if(!can(user,'payroll'))data.timeEntries=(data.timeEntries||[]).filter(row=>user.role==='branch'||row.staff_id===user.staffId).map(({hourly_rate_cents,...row})=>row);
   const employeeIds=new Set([user.staffId,...(data.staffRoster||[]).map(row=>row.staff_id),...(data.timeEntries||[]).map(row=>row.staff_id)]);
   if(!user.allBranches){for(const account of await rows(env,'SELECT staff_id,all_branches,branch_ids FROM access_users WHERE staff_id IS NOT NULL'))if(account.all_branches||parse(account.branch_ids,[]).some(id=>hasBranch(user,id)))employeeIds.add(account.staff_id);}
-  data.staff=(data.staff||[]).map(person=>{
+  data.staff=(data.staff||[]).filter(person=>user.role!=='manager'||employeeIds.has(person.id)).map(person=>{
     const inScope=user.allBranches||employeeIds.has(person.id);
     const result=inScope&&allowed('staff','payroll')?{...person}:{id:person.id,name:person.name,role:person.role,status:person.status};
     if(!can(user,'payroll')||!inScope)for(const key of ['hourly_rate_cents','xero_employee_id','xero_earnings_rate_id'])delete result[key];
