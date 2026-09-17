@@ -1,28 +1,39 @@
+import { verifyActor, closeWithCounts, saleDetails, editSale } from "./pos-accountability.mjs";
+import { posPinHtml, posPinScript } from "./pos-pin-ui.mjs";
+import { exportServices, importServices } from "./service-excel.mjs";
+function escapeAccessHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }
 import * as XLSX from "xlsx";
+import { accessGate, protectData, publicIdentity, staffRoles, setStaffRole, scopeReportSql, scopeReportParams } from "./staff-access.mjs";
+import { accessPanelHtml, staffLoginPanelHtml, accessClientScript } from "./access-ui.mjs";
 
-export default {
+const application = {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
+      if (["POST", "PATCH"].includes(request.method) && (request.headers.get("content-type") || "").includes("application/json") && url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/branches/")) {
+        const body = await request.clone().json();
+        const branchId = clean(body.branchId) || clean(request.headers.get("x-branch-id"));
+        if (branchId && (await all(env, "SELECT id FROM branches WHERE id = ? AND status = 'Archived'", [branchId])).length) return jsonResponse({ error: "This branch is archived. Restore it before making changes." }, 409);
+      }
 
       if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/admin")) {
-        return htmlResponse(renderApp("", "overview", "admin"));
+        return htmlResponse(renderApp("", "overview", "admin", ctx.identity));
       }
 
       if (request.method === "GET" && url.pathname === "/pos") {
-        return htmlResponse(renderApp("", "pos", "staff"));
+        return htmlResponse(renderApp("", "pos", "staff", ctx.identity));
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/pos/")) {
-        return htmlResponse(renderApp(clean(url.pathname.replace("/pos/", "")), "pos", "staff"));
+        return htmlResponse(renderApp(clean(url.pathname.replace("/pos/", "")), "pos", "staff", ctx.identity));
       }
 
       if (request.method === "GET" && url.pathname === "/bookings") {
-        return htmlResponse(renderApp("", "bookings", "staff"));
+        return htmlResponse(renderApp("", "bookings", "staff", ctx.identity));
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/bookings/")) {
-        return htmlResponse(renderApp(clean(url.pathname.replace("/bookings/", "")), "bookings", "staff"));
+        return htmlResponse(renderApp(clean(url.pathname.replace("/bookings/", "")), "bookings", "staff", ctx.identity));
       }
 
       if (request.method === "GET" && url.pathname === "/api/branches-public") {
@@ -47,6 +58,8 @@ export default {
         return updateBooking(request, env, clean(url.pathname.replace("/api/bookings/", "")));
       }
 
+      if (request.method === "GET" && /^\/api\/sales\/[^/]+$/.test(url.pathname)) return saleDetails(request,env,decodeURIComponent(url.pathname.split("/")[3]));
+      if (request.method === "PATCH" && /^\/api\/sales\/[^/]+$/.test(url.pathname)) return editSale(request,env,decodeURIComponent(url.pathname.split("/")[3]),paymentLabel);
       if (request.method === "POST" && url.pathname === "/api/sales") {
         const auth = await authorizeSale(request, env);
         if (auth) return auth;
@@ -58,7 +71,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/daily-closing") {
         const auth = await authorizeBranch(request, env);
         if (auth) return auth;
-        return createDailyClosing(request, env);
+        return closeWithCounts(request, env, expectedClosingTotals, previousRemainingCash);
       }
 
       if (request.method === "POST" && url.pathname === "/api/time-clock") {
@@ -68,8 +81,8 @@ export default {
       }
 
       if (request.method === "GET" && url.pathname === "/api/app-data") return getAppData(env);
-      if (request.method === "GET" && url.pathname === "/api/reports") return getReports(url, env);
-      if (request.method === "GET" && url.pathname === "/api/reports/export") return exportReport(url, env);
+      if (request.method === "GET" && url.pathname === "/api/reports") return getReports(url, env, ctx.identity);
+      if (request.method === "GET" && url.pathname === "/api/reports/export") return exportReport(url, env, ctx.identity);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/daily-closing/")) return updateDailyClosing(request, env, clean(url.pathname.replace("/api/daily-closing/", "")));
       if (request.method === "POST" && url.pathname === "/api/customers") return createCustomer(request, env);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/customers/")) return updateCustomer(request, env, clean(url.pathname.replace("/api/customers/", "")));
@@ -77,15 +90,19 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/services") return createService(request, env);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/services/")) return updateService(request, env, clean(url.pathname.replace("/api/services/", "")));
       if (request.method === "POST" && url.pathname === "/api/products") return createProduct(request, env);
+      if (request.method === "GET" && url.pathname === "/api/services/export") return exportServices(env);
+      if (request.method === "POST" && url.pathname === "/api/services/import") return importServices(request, env);
       if (request.method === "GET" && url.pathname === "/api/products/export") return exportProducts(env);
       if (request.method === "POST" && url.pathname === "/api/products/import") return importProducts(request, env);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/products/")) return updateProduct(request, env, clean(url.pathname.replace("/api/products/", "")));
-      if (request.method === "POST" && url.pathname === "/api/staff") return createStaff(request, env);
-      if (request.method === "PATCH" && url.pathname.startsWith("/api/staff/")) return updateStaff(request, env, clean(url.pathname.replace("/api/staff/", "")));
+      if (request.method === "POST" && url.pathname === "/api/staff") return createStaff(request, env, ctx.identity);
+      if (request.method === "PATCH" && url.pathname.startsWith("/api/staff/")) return updateStaff(request, env, clean(url.pathname.replace("/api/staff/", "")), ctx.identity);
       if (request.method === "POST" && url.pathname === "/api/staff-roster") return saveStaffRoster(request, env);
       if (request.method === "DELETE" && url.pathname === "/api/staff-roster") return deleteStaffRoster(request, env, url);
       if (request.method === "POST" && url.pathname === "/api/staff-regular-days-off") return saveStaffRegularDaysOff(request, env);
-      if (request.method === "POST" && url.pathname === "/api/branches") return createBranch(request, env);
+      if (request.method === "POST" && url.pathname === "/api/branches") return saveBranch(request, env);
+      if (request.method === "POST" && url.pathname.startsWith("/api/branches/") && url.pathname.endsWith("/restore")) return restoreBranch(request, env, clean(url.pathname.split("/")[3]));
+      if (request.method === "PATCH" && url.pathname.startsWith("/api/branches/")) return saveBranch(request, env, clean(url.pathname.replace("/api/branches/", "")));
       if (request.method === "DELETE" && url.pathname.startsWith("/api/branches/")) return deleteBranch(request, env, clean(url.pathname.replace("/api/branches/", "")));
       if (request.method === "POST" && url.pathname === "/api/stock-movements") return createStockMovement(request, env);
       if (request.method === "POST" && url.pathname === "/api/branch-hours") return saveBranchHours(request, env);
@@ -154,6 +171,8 @@ async function getAppData(env) {
       ORDER BY te.clock_in DESC LIMIT 2000`)
   ]);
 
+  const accessRoles = new Map((await staffRoles(env)).map((row)=>[row.staff_id,row.role]));
+  staff.forEach((person)=>person.access_role=accessRoles.get(person.id)||"none");
   return jsonResponse({
     branches,
     staff,
@@ -407,6 +426,9 @@ async function createBranchBooking(request, env) {
 }
 
 async function updateBooking(request, env, bookingId) {
+  const record=await env.DB.prepare("SELECT branch_id FROM bookings WHERE id=?").bind(bookingId).first();
+  if(!record)return jsonResponse({error:"Booking not found."},404);
+  const auth=await verifyActor(request,env,record.branch_id,true);if(auth.response)return auth.response;
   const body = await request.json();
   const existing = (await all(env, "SELECT * FROM bookings WHERE id = ?", [bookingId]))[0];
   if (!existing) return jsonResponse({ error: "Booking not found." }, 404);
@@ -618,6 +640,8 @@ async function importProducts(request, env) {
 }
 
 async function recordTimeClock(request, env) {
+  const who=await verifyActor(request,env,request.headers.get("x-branch-id"));if(who.response)return who.response;
+  if(who.actor.staffId!==(await request.clone().json()).staffId)return jsonResponse({error:"Use the PIN of the selected staff member."},403);
   const body = await request.json();
   const branchId = clean(request.headers.get("x-branch-id"));
   const staffId = clean(body.staffId);
@@ -666,24 +690,26 @@ function reportHours(entry) {
   return Math.max(0, (new Date(entry.clock_out).getTime() - new Date(entry.clock_in).getTime()) / 3600000 - Number(entry.break_minutes || 0) / 60);
 }
 
-async function buildReportData(url, env) {
+async function buildReportData(url, env, accessUser) {
   const { from, to, branchId } = reportDateRange(url);
-  const params = [from, to, branchId, branchId];
+  const scopeParams = scopeReportParams(accessUser);
+  const scope = (column) => scopeReportSql(accessUser, column);
+  const params = [from, to, branchId, branchId, ...scopeParams];
   const [branches, staff, sales, saleItems, bookings, roster, timeEntries] = await Promise.all([
-    all(env, "SELECT * FROM branches WHERE (? = '' OR id = ?) ORDER BY name", [branchId, branchId]),
-    all(env, "SELECT * FROM staff WHERE status != 'Inactive' ORDER BY name"),
-    all(env, `SELECT s.*, br.name AS branch_name FROM sales s LEFT JOIN branches br ON br.id = s.branch_id
-      WHERE date(s.created_at) BETWEEN ? AND ? AND (? = '' OR s.branch_id = ?) ORDER BY s.created_at`, params),
-    all(env, `SELECT si.*, s.created_at, s.branch_id, br.name AS branch_name FROM sale_items si
+    all(env, `SELECT * FROM branches WHERE (? = '' OR id = ?)${scope("id")} ORDER BY name`, [branchId, branchId, ...scopeParams]),
+    all(env, "SELECT * FROM staff ORDER BY name"),
+    all(env, `SELECT s.*, date(s.created_at) AS report_date, br.name AS branch_name FROM sales s LEFT JOIN branches br ON br.id = s.branch_id
+      WHERE date(s.created_at) BETWEEN ? AND ? AND (? = '' OR s.branch_id = ?)${scope("s.branch_id")} ORDER BY s.created_at`, params),
+    all(env, `SELECT si.*, s.created_at, date(s.created_at) AS report_date, s.branch_id, br.name AS branch_name FROM sale_items si
       JOIN sales s ON s.id = si.sale_id LEFT JOIN branches br ON br.id = s.branch_id
-      WHERE date(s.created_at) BETWEEN ? AND ? AND (? = '' OR s.branch_id = ?) ORDER BY s.created_at`, params),
+      WHERE date(s.created_at) BETWEEN ? AND ? AND (? = '' OR s.branch_id = ?)${scope("s.branch_id")} ORDER BY s.created_at`, params),
     all(env, `SELECT b.*, br.name AS branch_name FROM bookings b LEFT JOIN branches br ON br.id = b.branch_id
-      WHERE b.booking_date BETWEEN ? AND ? AND (? = '' OR b.branch_id = ?) ORDER BY b.booking_date, b.booking_time`, params),
+      WHERE b.booking_date BETWEEN ? AND ? AND (? = '' OR b.branch_id = ?)${scope("b.branch_id")} ORDER BY b.booking_date, b.booking_time`, params),
     all(env, `SELECT sr.*, br.name AS branch_name FROM staff_roster sr LEFT JOIN branches br ON br.id = sr.branch_id
-      WHERE sr.roster_date BETWEEN ? AND ? AND (? = '' OR sr.branch_id = ?) AND sr.status = 'Working'`, params),
+      WHERE sr.roster_date BETWEEN ? AND ? AND (? = '' OR sr.branch_id = ?)${scope("sr.branch_id")} AND sr.status = 'Working'`, params),
     all(env, `SELECT te.*, st.name AS staff_name, st.role, st.hourly_rate_cents, st.xero_employee_id, st.xero_earnings_rate_id, br.name AS branch_name
       FROM time_entries te LEFT JOIN staff st ON st.id = te.staff_id LEFT JOIN branches br ON br.id = te.branch_id
-      WHERE date(te.clock_in) BETWEEN ? AND ? AND (? = '' OR te.branch_id = ?) ORDER BY te.clock_in`, params)
+      WHERE date(te.clock_in) BETWEEN ? AND ? AND (? = '' OR te.branch_id = ?)${scope("te.branch_id")} ORDER BY te.clock_in`, params)
   ]);
 
   const branchRows = branches.map((branch) => ({ branchId:branch.id, branch:branch.name, revenueCents:0, transactions:0, productsSold:0, servicesSold:0, onlineBookings:0, manualBookings:0, walkIns:0 }));
@@ -705,10 +731,26 @@ async function buildReportData(url, env) {
   });
 
   const staffRows = staff.map((person) => ({ staffId:person.id, staff:person.name, role:person.role || "Staff", creditedSalesCents:0, serviceItems:0, managerStoreSalesCents:0 }));
+  const staffDailyMap = new Map(), branchDailyMap = new Map();
+  const saleDate = (record) => record.report_date || String(record.created_at || "").slice(0, 10);
+  const dateBranchKey = (date, id) => JSON.stringify([date, id]);
+  for (const sale of sales) {
+    const date = saleDate(sale), key = dateBranchKey(date, sale.branch_id);
+    const row = branchDailyMap.get(key) || { date, branchId:sale.branch_id, branch:sale.branch_name || "Branch", revenueCents:0, transactions:0, productsSold:0, servicesSold:0 };
+    row.revenueCents += Number(sale.total_cents || 0);
+    row.transactions += 1;
+    branchDailyMap.set(key, row);
+  }
+  for (const item of saleItems) {
+    const row = branchDailyMap.get(dateBranchKey(saleDate(item), item.branch_id));
+    if (row) row[item.service_id ? "servicesSold" : "productsSold"] += Number(item.quantity || 0);
+  }
   saleItems.forEach((item) => {
     let ids = [], allocations = [];
     try { ids = JSON.parse(item.staff_ids || "[]"); } catch (_) { ids = []; }
     try { allocations = JSON.parse(item.staff_allocations || "[]"); } catch (_) { allocations = []; }
+    ids = Array.isArray(ids) ? [...new Set(ids)] : [];
+    if (!Array.isArray(allocations)) allocations = [];
     ids.forEach((staffId) => {
       const row = staffRows.find((entry) => entry.staffId === staffId);
       if (!row) return;
@@ -718,13 +760,29 @@ async function buildReportData(url, env) {
       if (!credit) credit = Math.round(Number(item.price_cents || 0) / Math.max(ids.length, 1));
       row.creditedSalesCents += credit;
       row.serviceItems += item.service_id ? Number(item.quantity || 0) : 0;
+      const date = saleDate(item), key = JSON.stringify([date, item.branch_id, staffId]);
+      const daily = staffDailyMap.get(key) || { date, staffId, staff:row.staff, role:row.role, branchId:item.branch_id, branch:item.branch_name || "Branch", creditedSalesCents:0, serviceItems:0, saleIds:new Set() };
+      daily.creditedSalesCents += credit;
+      daily.serviceItems += item.service_id ? Number(item.quantity || 0) : 0;
+      daily.saleIds.add(item.sale_id);
+      staffDailyMap.set(key, daily);
     });
   });
+  const managerDailyRows = [];
   staffRows.filter((row) => /manager/i.test(row.role)).forEach((manager) => {
-    const managerDays = roster.filter((entry) => entry.staff_id === manager.staffId);
-    const assignments = new Set(managerDays.map((entry) => `${entry.roster_date}|${entry.branch_id}`));
-    manager.managerStoreSalesCents = sales.filter((sale) => assignments.has(`${String(sale.created_at).slice(0, 10)}|${sale.branch_id}`)).reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
+    const assignments = new Map();
+    roster.filter((entry) => entry.staff_id === manager.staffId).forEach((entry) => assignments.set(dateBranchKey(entry.roster_date, entry.branch_id), entry));
+    for (const [key, assignment] of assignments) {
+      const branchDay = branchDailyMap.get(key);
+      const revenueCents = branchDay?.revenueCents || 0;
+      manager.managerStoreSalesCents += revenueCents;
+      managerDailyRows.push({ date:assignment.roster_date, staffId:manager.staffId, manager:manager.staff, branchId:assignment.branch_id, branch:assignment.branch_name || "Branch", revenueCents, transactions:branchDay?.transactions || 0 });
+    }
   });
+  const dailyOrder = (left, right) => right.date.localeCompare(left.date) || left.branch.localeCompare(right.branch) || String(left.staff || left.manager || "").localeCompare(String(right.staff || right.manager || ""));
+  const staffDailyRows = [...staffDailyMap.values()].map(({ saleIds, ...row }) => ({ ...row, transactions:saleIds.size })).sort(dailyOrder);
+  const branchDailyRows = [...branchDailyMap.values()].sort(dailyOrder);
+  managerDailyRows.sort(dailyOrder);
 
   const bookingMap = new Map();
   const addBookingRow = (branch, source, count, valueCents, completed = 0) => {
@@ -740,10 +798,10 @@ async function buildReportData(url, env) {
     return { id:entry.id, date:String(entry.clock_in || "").slice(0, 10), staffId:entry.staff_id, staff:entry.staff_name || "Staff", role:entry.role || "", branch:entry.branch_name || "Branch", clockIn:entry.clock_in, clockOut:entry.clock_out || "", breakMinutes:Number(entry.break_minutes || 0), hours, hourlyRateCents:Number(entry.hourly_rate_cents || 0), grossPayCents:Math.round(hours * Number(entry.hourly_rate_cents || 0)), xeroEmployeeId:entry.xero_employee_id || "", xeroEarningsRateId:entry.xero_earnings_rate_id || "", status:entry.clock_out ? "Complete" : entry.break_started_at ? "On break" : "Clocked in" };
   });
   const revenueCents = sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
-  return { range:{ from, to, branchId }, summary:{ revenueCents, transactions:sales.length, productsSold:[...productMap.values()].reduce((sum, row) => sum + row.quantity, 0), servicesSold:[...serviceMap.values()].reduce((sum, row) => sum + row.quantity, 0), onlineBookings:bookings.filter((booking) => booking.source !== "Manual" && !["Cancelled", "No show"].includes(booking.status)).length, walkIns:sales.filter((sale) => !bookedSaleIds.has(sale.id)).length, workedHours:payrollRows.reduce((sum, row) => sum + row.hours, 0) }, branchRows, staffRows, productRows:[...productMap.values()], serviceRows:[...serviceMap.values()], bookingRows:[...bookingMap.values()], payrollRows };
+  return { range:{ from, to, branchId }, summary:{ revenueCents, transactions:sales.length, productsSold:[...productMap.values()].reduce((sum, row) => sum + row.quantity, 0), servicesSold:[...serviceMap.values()].reduce((sum, row) => sum + row.quantity, 0), onlineBookings:bookings.filter((booking) => booking.source !== "Manual" && !["Cancelled", "No show"].includes(booking.status)).length, walkIns:sales.filter((sale) => !bookedSaleIds.has(sale.id)).length, workedHours:payrollRows.reduce((sum, row) => sum + row.hours, 0) }, branchRows, staffRows, staffDailyRows, managerDailyRows, branchDailyRows, productRows:[...productMap.values()], serviceRows:[...serviceMap.values()], bookingRows:[...bookingMap.values()], payrollRows };
 }
 
-async function getReports(url, env) { return jsonResponse(await buildReportData(url, env)); }
+async function getReports(url, env, accessUser) { return jsonResponse(await buildReportData(url, env, accessUser)); }
 
 function excelReportResponse(name, headers, rows) {
   const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
@@ -766,9 +824,12 @@ function excelReportResponse(name, headers, rows) {
 
 function csvCell(value) { const text = String(value ?? ""); return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; }
 
-async function exportReport(url, env) {
-  const report = await buildReportData(url, env);
+async function exportReport(url, env, accessUser) {
+  const report = await buildReportData(url, env, accessUser);
   const type = clean(url.searchParams.get("type"));
+  if (type === "staff-daily") return excelReportResponse("Staff Sales by Date", ["Date", "Staff", "Role", "Branch", "Credited Sales", "Services Credited", "Transactions"], report.staffDailyRows.map((row) => [row.date, row.staff, row.role, row.branch, row.creditedSalesCents / 100, row.serviceItems, row.transactions]));
+  if (type === "manager-daily") return excelReportResponse("Manager Sales by Date", ["Date", "Manager", "Branch", "Managed Store Sales", "Transactions"], report.managerDailyRows.map((row) => [row.date, row.manager, row.branch, row.revenueCents / 100, row.transactions]));
+  if (type === "branch-daily") return excelReportResponse("Branch Sales by Date", ["Date", "Branch", "Total Sales", "Transactions", "Products Sold", "Services Sold"], report.branchDailyRows.map((row) => [row.date, row.branch, row.revenueCents / 100, row.transactions, row.productsSold, row.servicesSold]));
   if (type === "branch") return excelReportResponse("Branch Sales", ["Branch", "Sales", "Transactions", "Products Sold", "Services Sold", "Online Bookings", "Manual Bookings", "Walk-ins"], report.branchRows.map((row) => [row.branch, row.revenueCents / 100, row.transactions, row.productsSold, row.servicesSold, row.onlineBookings, row.manualBookings, row.walkIns]));
   if (type === "staff") return excelReportResponse("Staff and Managers", ["Staff", "Role", "Credited Sales", "Services Sold", "Managed Store Sales"], report.staffRows.map((row) => [row.staff, row.role, row.creditedSalesCents / 100, row.serviceItems, row.managerStoreSalesCents / 100]));
   if (type === "products") return excelReportResponse("Products Sold", ["Product", "Quantity", "Sales"], report.productRows.map((row) => [row.name, row.quantity, row.revenueCents / 100]));
@@ -784,7 +845,7 @@ async function exportReport(url, env) {
   return jsonResponse({ error:"Choose a report to export." }, 400);
 }
 
-async function createStaff(request, env) {
+async function createStaff(request, env, accessUser) {
   const body = await request.json();
   const name = clean(body.name);
   if (!name) return jsonResponse({ error: "Staff name is required." }, 400);
@@ -792,19 +853,21 @@ async function createStaff(request, env) {
   await env.DB.prepare("INSERT INTO staff (id, branch_id, name, role, email, phone, status, hourly_rate_cents, xero_employee_id, xero_earnings_rate_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .bind(id, "", name, clean(body.role) || "Stylist", clean(body.email), clean(body.phone), clean(body.status) || "Active", Math.max(0, Math.round(Number(body.hourlyRate || 0) * 100)), clean(body.xeroEmployeeId), clean(body.xeroEarningsRateId))
     .run();
+  if (body.accessRole !== undefined) await setStaffRole(env, id, body.accessRole, accessUser);
   return jsonResponse({ ok: true, id }, 201);
 }
 
-async function updateStaff(request, env, staffId) {
+async function updateStaff(request, env, staffId, accessUser) {
   if (!staffId) return jsonResponse({ error: "Staff member is required." }, 400);
   const body = await request.json();
   const name = clean(body.name);
   if (!name) return jsonResponse({ error: "Staff name is required." }, 400);
-  const existing = await env.DB.prepare("SELECT id FROM staff WHERE id = ?").bind(staffId).first();
+  const existing = await env.DB.prepare("SELECT * FROM staff WHERE id = ?").bind(staffId).first();
   if (!existing) return jsonResponse({ error: "Staff member not found." }, 404);
   await env.DB.prepare("UPDATE staff SET branch_id = ?, name = ?, role = ?, email = ?, phone = ?, status = ?, hourly_rate_cents = ?, xero_employee_id = ?, xero_earnings_rate_id = ? WHERE id = ?")
-    .bind("", name, clean(body.role) || "Stylist", clean(body.email), clean(body.phone), clean(body.status) === "Inactive" ? "Inactive" : "Active", Math.max(0, Math.round(Number(body.hourlyRate || 0) * 100)), clean(body.xeroEmployeeId), clean(body.xeroEarningsRateId), staffId)
+    .bind("", name, clean(body.role) || "Stylist", clean(body.email), clean(body.phone), clean(body.status) === "Inactive" ? "Inactive" : "Active", body.hourlyRate === undefined ? existing.hourly_rate_cents : Math.max(0, Math.round(Number(body.hourlyRate || 0) * 100)), body.xeroEmployeeId === undefined ? existing.xero_employee_id : clean(body.xeroEmployeeId), body.xeroEarningsRateId === undefined ? existing.xero_earnings_rate_id : clean(body.xeroEarningsRateId), staffId)
     .run();
+  if (body.accessRole !== undefined) await setStaffRole(env, staffId, body.accessRole, accessUser);
   return jsonResponse({ ok: true });
 }
 
@@ -845,47 +908,82 @@ async function saveStaffRegularDaysOff(request, env) {
   return jsonResponse({ ok: true });
 }
 
-async function createBranch(request, env) {
+async function saveBranch(request, env, branchId = "") {
+  if(branchId){const auth=await verifyActor(request,env,branchId,true,false);if(auth.response)return auth.response;}
   const body = await request.json();
-  const name = clean(body.name);
-  const address = clean(body.address);
-  const phone = clean(body.phone);
-  const postCode = clean(body.postCode);
+  const name = clean(body.name), address = clean(body.address), phone = clean(body.phone);
+  const postCode = clean(body.postCode), status = clean(body.status) || "Open";
   if (!name || !address || !phone) return jsonResponse({ error: "Branch name, address, and phone are required." }, 400);
-  const id = `branch-${crypto.randomUUID()}`;
-  await env.DB.prepare("INSERT INTO branches (id, name, address, phone, post_code, pin_code, status) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .bind(id, name, address, phone, postCode, postCode, clean(body.status) || "Open")
-    .run();
-  return jsonResponse({ ok: true, id }, 201);
+  if (!["Open", "Closed"].includes(status)) return jsonResponse({ error: "Invalid branch status." }, 400);
+  const hours = body.hours || [], closedDates = body.closedDates || [], removedDates = body.removedDates || [];
+  if (!Array.isArray(hours) || !Array.isArray(closedDates) || !Array.isArray(removedDates) || hours.length > 7) return jsonResponse({ error: "Invalid branch schedule." }, 400);
+  const timePattern = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+  const seenDays = new Set();
+  for (const hour of hours) {
+    if (!hour || !Number.isInteger(hour.dayOfWeek) || hour.dayOfWeek < 0 || hour.dayOfWeek > 6 || seenDays.has(hour.dayOfWeek) || (!hour.isClosed && (!timePattern.test(hour.openTime) || !timePattern.test(hour.closeTime) || hour.openTime >= hour.closeTime))) return jsonResponse({ error: "Each open day needs valid opening and closing times, with closing after opening." }, 400);
+    seenDays.add(hour.dayOfWeek);
+  }
+  for (const date of closedDates) {
+    const value = clean(date?.closedDate);
+    const parsed = new Date(value + "T00:00:00Z");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) return jsonResponse({ error: "Enter a valid closed date." }, 400);
+  }
+  if (branchId && !(await all(env, "SELECT id FROM branches WHERE id = ? AND status != 'Archived'", [branchId])).length) return jsonResponse({ error: "Branch not found." }, 404);
+  const id = branchId || 'branch-' + crypto.randomUUID();
+  const statements = [branchId
+    ? env.DB.prepare("UPDATE branches SET name = ?, address = ?, phone = ?, post_code = ?, pin_code = ?, status = ? WHERE id = ?").bind(name, address, phone, postCode, postCode, status, id)
+    : env.DB.prepare("INSERT INTO branches (id, name, address, phone, post_code, pin_code, status) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, name, address, phone, postCode, postCode, status)];
+  for (const hour of hours) statements.push(env.DB.prepare("INSERT INTO branch_hours (branch_id, day_of_week, open_time, close_time, is_closed) VALUES (?, ?, ?, ?, ?) ON CONFLICT(branch_id, day_of_week) DO UPDATE SET open_time = excluded.open_time, close_time = excluded.close_time, is_closed = excluded.is_closed").bind(id, hour.dayOfWeek, clean(hour.openTime) || "09:00", clean(hour.closeTime) || "17:30", hour.isClosed ? 1 : 0));
+  for (const dateId of removedDates) statements.push(env.DB.prepare("DELETE FROM branch_closed_dates WHERE id = ? AND branch_id = ?").bind(clean(dateId), id));
+  for (const date of closedDates) statements.push(date.id
+    ? env.DB.prepare("UPDATE branch_closed_dates SET closed_date = ?, reason = ? WHERE id = ? AND branch_id = ?").bind(clean(date.closedDate), clean(date.reason) || "Closed", clean(date.id), id)
+    : env.DB.prepare("INSERT INTO branch_closed_dates (id, branch_id, closed_date, reason) VALUES (?, ?, ?, ?)").bind('closed-' + crypto.randomUUID(), id, clean(date.closedDate), clean(date.reason) || "Closed"));
+  await env.DB.batch(statements);
+  return jsonResponse({ ok: true, id }, branchId ? 200 : 201);
 }
 
+async function confirmBranchAction(request, env, branchId) {
+  const body = await request.json();
+  const branch = (await all(env, "SELECT * FROM branches WHERE id = ?", [branchId]))[0];
+  if (!branch) return { error: jsonResponse({ error: "Branch not found." }, 404) };
+  const expected = clean(env.BRANCH_ADMIN_PIN);
+  const supplied = clean(body.pin);
+  if (!expected) return { error: jsonResponse({ error: "The admin PIN has not been configured. Contact the administrator." }, 503) };
+  if (!supplied) return { error: jsonResponse({ error: "Enter the admin PIN to continue." }, 403) };
+  const encoder = new TextEncoder();
+  const [left, right] = await Promise.all([crypto.subtle.digest("SHA-256", encoder.encode(expected)), crypto.subtle.digest("SHA-256", encoder.encode(supplied))]);
+  let different = 0;
+  const x = new Uint8Array(left), y = new Uint8Array(right);
+  for (let i = 0; i < x.length; i++) different |= x[i] ^ y[i];
+  if (different) return { error: jsonResponse({ error: "Incorrect PIN. Nothing has been changed." }, 403) };
+  return { body, branch };
+}
 async function deleteBranch(request, env, branchId) {
-  if (!branchId) return jsonResponse({ error: "Branch is required." }, 400);
-  const branch = (await all(env, "SELECT id FROM branches WHERE id = ?", [branchId]))[0];
-  if (!branch) return jsonResponse({ error: "Branch not found." }, 404);
-  const dependencies = await Promise.all([
-    countBranchRows(env, "customers", branchId),
-    countBranchRows(env, "bookings", branchId),
-    countBranchRows(env, "sales", branchId),
-    countBranchRows(env, "stock_movements", branchId),
-    countBranchRows(env, "daily_closings", branchId),
-    countBranchRows(env, "staff_roster", branchId),
-    countBranchRows(env, "time_entries", branchId)
-  ]);
-  if (dependencies.some(Boolean)) return jsonResponse({ error: "This branch has business records and cannot be deleted. Set it to closed instead." }, 409);
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM inventory_stock WHERE branch_id = ?").bind(branchId),
-    env.DB.prepare("DELETE FROM branch_hours WHERE branch_id = ?").bind(branchId),
-    env.DB.prepare("DELETE FROM branch_closed_dates WHERE branch_id = ?").bind(branchId),
-    env.DB.prepare("UPDATE staff SET branch_id = '' WHERE branch_id = ?").bind(branchId),
-    env.DB.prepare("DELETE FROM branches WHERE id = ?").bind(branchId)
-  ]);
-  return jsonResponse({ ok: true });
+  const { body, branch, error } = await confirmBranchAction(request, env, branchId);
+  if (error) return error;
+  if (body.mode === "archive") {
+    await env.DB.prepare("UPDATE branches SET status = 'Archived' WHERE id = ?").bind(branchId).run();
+    return jsonResponse({ ok: true, archived: true });
+  }
+  if (body.mode !== "permanent" || body.confirmName !== branch.name) return jsonResponse({ error: "To permanently delete, enter the branch name exactly." }, 400);
+  if (branch.status !== "Archived") return jsonResponse({ error: "Archive this branch before permanently deleting it." }, 409);
+  const statements = [
+    env.DB.prepare("DELETE FROM customers WHERE branch_id = ? AND NOT EXISTS (SELECT 1 FROM bookings WHERE customer_id = customers.id AND branch_id != ?) AND NOT EXISTS (SELECT 1 FROM sales WHERE customer_id = customers.id AND branch_id != ?)").bind(branchId, branchId, branchId),
+    env.DB.prepare("UPDATE customers SET branch_id = '' WHERE branch_id = ?").bind(branchId),
+    env.DB.prepare("DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE branch_id = ?)").bind(branchId)
+  ];
+  for (const table of ["bookings", "sales", "inventory_stock", "stock_movements", "daily_closings", "staff_roster", "time_entries", "branch_hours", "branch_closed_dates"]) statements.push(env.DB.prepare("DELETE FROM " + table + " WHERE branch_id = ?").bind(branchId));
+  statements.push(env.DB.prepare("UPDATE staff SET branch_id = '' WHERE branch_id = ?").bind(branchId));
+  statements.push(env.DB.prepare("DELETE FROM branches WHERE id = ?").bind(branchId));
+  await env.DB.batch(statements);
+  return jsonResponse({ ok: true, deleted: true });
 }
-
-async function countBranchRows(env, table, branchId) {
-  const result = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE branch_id = ?`).bind(branchId).first();
-  return Number(result?.count || 0);
+async function restoreBranch(request, env, branchId) {
+  const { branch, error } = await confirmBranchAction(request, env, branchId);
+  if (error) return error;
+  if (branch.status !== "Archived") return jsonResponse({ error: "This branch is not archived." }, 409);
+  await env.DB.prepare("UPDATE branches SET status = 'Closed' WHERE id = ?").bind(branchId).run();
+  return jsonResponse({ ok: true });
 }
 
 async function createStockMovement(request, env) {
@@ -948,7 +1046,11 @@ async function createDailyClosing(request, env) {
 }
 
 async function updateDailyClosing(request, env, closingId) {
+  const record=await env.DB.prepare("SELECT branch_id FROM daily_closings WHERE id=?").bind(closingId).first();
+  if(!record)return jsonResponse({error:"Closing not found."},404);
+  const auth=await verifyActor(request,env,record.branch_id,true);if(auth.response)return auth.response;
   const body = await request.json();
+  body.approvedBy=auth.actor.name;
   const existing = (await all(env, "SELECT * FROM daily_closings WHERE id = ?", [closingId]))[0];
   if (!existing) return jsonResponse({ error: "Daily closing record not found." }, 404);
   const expected = await expectedClosingTotals(env, existing.branch_id, existing.closing_date);
@@ -1044,7 +1146,8 @@ async function createDiscount(request, env) {
 }
 
 async function createSale(request, env) {
-  const body = await request.json();
+  const body = await request.clone().json();
+  const auth=await verifyActor(request,env,clean(body.branchId));if(auth.response)return auth.response;
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
   const branchId = clean(body.branchId);
@@ -1122,15 +1225,15 @@ async function createSale(request, env) {
   const totalCents = saleItems.reduce((total, item) => total + item.priceCents, 0);
   const cashCents = Math.round(Number(body.cashAmount || 0) * 100);
   const cardCents = Math.round(Number(body.cardAmount || 0) * 100);
-  if (cashCents + cardCents < totalCents) {
+  if (![cashCents,cardCents,totalCents].every(Number.isSafeInteger) || cashCents<0 || cardCents<0 || cardCents>totalCents || cashCents + cardCents < totalCents) {
     return jsonResponse({ error: "Payment total must cover the sale amount." }, 400);
   }
   const paymentMethod = paymentLabel(cashCents, cardCents, totalCents, clean(body.paymentMethod));
   const changeCents = Math.max(0, cashCents + cardCents - totalCents);
 
   const saleStatements = [env.DB.prepare(
-    `INSERT INTO sales (id, created_at, branch_id, customer_id, staff_id, total_cents, payment_method, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO sales (id, created_at, branch_id, customer_id, staff_id, total_cents, payment_method, status, recorded_by_id, recorded_by_name, cash_cents, card_cents, change_cents)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -1140,7 +1243,7 @@ async function createSale(request, env) {
       null,
       totalCents,
       paymentMethod,
-      "Paid"
+      "Paid",auth.actor.id,auth.actor.name,cashCents,cardCents,changeCents
     ),
     ...saleItems.map((item) =>
       env.DB.prepare(
@@ -1256,52 +1359,10 @@ async function all(env, sql, params = []) {
   return result.results || [];
 }
 
-async function authorizeBranch(request, env) {
-  const branchId = clean(request.headers.get("x-branch-id"));
-  const branchPin = clean(request.headers.get("x-branch-pin"));
-  if (!branchId || !branchPin) {
-    return jsonResponse({ error: "Select a branch and enter the postcode PIN." }, 401);
-  }
-
-  const rows = await all(env, "SELECT post_code FROM branches WHERE id = ? AND status = 'Open'", [branchId]);
-  if (rows[0]?.post_code && rows[0].post_code === branchPin) {
-    return null;
-  }
-
-  return jsonResponse({ error: "Incorrect branch PIN." }, 401);
-}
-
-async function authorizeSale(request, env) {
-  const cloned = request.clone();
-  const body = await cloned.json();
-  const branchId = clean(body.branchId);
-  const branchPin = clean(request.headers.get("x-branch-pin"));
-  if (!branchId || !branchPin) {
-    return jsonResponse({ error: "Branch PIN is required for POS sales." }, 401);
-  }
-
-  const rows = await all(env, "SELECT post_code FROM branches WHERE id = ? AND status = 'Open'", [branchId]);
-  if (rows[0]?.post_code && rows[0].post_code === branchPin) {
-    return null;
-  }
-
-  return jsonResponse({ error: "Incorrect branch PIN." }, 401);
-}
-
-async function authorizeBookingEdit(request, env) {
-  const branchId = clean(request.headers.get("x-branch-id"));
-  const branchPin = clean(request.headers.get("x-branch-pin"));
-  if (!branchId || !branchPin) {
-    return jsonResponse({ error: "Branch PIN is required to edit bookings." }, 401);
-  }
-
-  const rows = await all(env, "SELECT post_code FROM branches WHERE id = ? AND status = 'Open'", [branchId]);
-  if (rows[0]?.post_code && rows[0].post_code === branchPin) {
-    return null;
-  }
-
-  return jsonResponse({ error: "Incorrect branch PIN." }, 401);
-}
+// Operational requests have already passed the central session and permission gate.
+async function authorizeBranch() { return null; }
+async function authorizeSale() { return null; }
+async function authorizeBookingEdit() { return null; }
 
 function clean(value) {
   return String(value ?? "").trim().slice(0, 500);
@@ -1355,7 +1416,7 @@ function bookingTimeOptions() {
   return '<option value="">Select time</option>' + options.join("");
 }
 
-function renderApp(initialBranchId, initialTab, mode = "admin") {
+function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
   const isAdmin = mode === "admin";
   return `<!doctype html>
 <html lang="en">
@@ -1393,13 +1454,15 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
         <p class="eyebrow">Cloud software for SMBs</p>
         <h1 id="appTitle">${isAdmin ? "Dashboard" : "Kunchas staff workspace"}</h1>
       </div>
-      ${isAdmin ? `<div class="admin-controls"><label class="branch-switcher"><span>Viewing</span><select id="globalBranchFilter" aria-label="Choose branch"><option value="">All branches</option></select></label><div class="admin-avatar"><span>AD</span><strong>Admin</strong></div></div>` : ""}
+      ${isAdmin ? `<div class="admin-controls"><label class="branch-switcher"><span>Viewing</span><select id="globalBranchFilter" aria-label="Choose branch"><option value="">All branches</option></select></label><div class="admin-avatar"><span>${escapeAccessHtml(accessUser.name.slice(0,2).toUpperCase())}</span><strong>${escapeAccessHtml(accessUser.name)}</strong></div></div>` : ""}
     </header>
+    <div class="account-tools"><span>${escapeAccessHtml(accessUser.name)}</span><a class="secondary button-link" href="${isAdmin ? "/pos" : "/admin"}">${isAdmin ? "Branch workspace" : "Dashboard"}</a><button class="secondary" type="button" id="changePinButton">Change my PIN</button><button class="secondary" type="button" id="signOutButton">Sign out</button></div>
 
+    <dialog id="changePinDialog" class="branch-dialog branch-action-dialog"><form id="changePinForm"><div class="branch-dialog-header"><h2>Change my PIN</h2></div><div class="branch-dialog-body"><label>Current PIN<input name="currentPin" type="password" inputmode="numeric" autocomplete="current-password" required></label><label>New PIN<input name="newPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6,12}" required></label><label>Confirm new PIN<input name="confirmPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6,12}" required></label><p class="hint">Use 6–12 digits. You will sign in again after changing it.</p><p id="changePinMessage" role="alert"></p></div><div class="branch-dialog-footer"><button class="secondary" type="button" id="cancelPinChange">Cancel</button><button class="primary" type="submit">Change PIN</button></div></form></dialog>
     <div class="load-row admin-only">
       <button class="primary" id="loadData" type="button">Refresh data</button>
     </div>
-    <p class="message" id="message">${isAdmin ? "Loading admin data." : "Open your branch with the postcode PIN."}</p>
+    <p class="message" id="message">${isAdmin ? "Loading your data." : "Choose a branch to open your workspace."}</p>
 
     <section class="tab admin-only ${initialTab === "overview" ? "active" : ""}" id="overview">
       <div class="dashboard-toolbar">
@@ -1422,12 +1485,12 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       </div>
     </section>
 
-    <div class="panel pos-login staff-only" id="posLogin">
+    ${posPinHtml()}<div class="panel pos-login staff-only" id="posLogin">
       <h2>Open branch workspace</h2>
-      <p class="hint">Select a branch and enter that branch postcode as the PIN. These are default PINs for now.</p>
+      <p class="hint">Choose a branch and enter its branch PIN. Each purchase and closing requires an individual staff PIN.</p>
       <div class="grid">
         <label>Branch<select id="posBranch" required></select></label>
-        <label>Postcode PIN<input id="posPin" inputmode="numeric" autocomplete="off" placeholder="Branch postcode"></label>
+        <label>Branch PIN<input type="password" id="posPin" inputmode="numeric" autocomplete="off" required></label>
       </div>
       <button class="primary" id="openPos" type="button">Open branch</button>
     </div>
@@ -1480,7 +1543,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
 
     <section class="tab staff-only" id="recent-sales">
-      <div class="panel"><h2>Recent sales</h2><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Total</th><th>Method</th><th>Status</th></tr></thead><tbody id="salesTable"></tbody></table></div></div>
+      <div class="panel"><h2>Recent sales</h2><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Total</th><th>Method</th><th>Status</th><th>Completed by</th><th>Edit</th></tr></thead><tbody id="salesTable"></tbody></table></div></div>
     </section>
 
     <section class="tab staff-only ${initialTab === "bookings" ? "active" : ""}" id="bookings">
@@ -1522,27 +1585,26 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
 
     <section class="tab admin-only" id="staff">
       <div class="split">
-        <form class="panel" id="staffForm"><h2>Add staff</h2><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Role<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01" value="0.00"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><fieldset class="day-off-fieldset"><legend>Regular day off</legend><p class="hint">Choose their usual weekly day or days off.</p><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary full" type="submit">Save staff</button></form>
+        <form class="panel" id="staffForm"><h2>Add staff</h2><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01" value="0.00"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><p class="hint">Choose their usual weekly day or days off.</p><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary full" type="submit">Save staff</button></form>
         <div class="panel"><h2>Staff</h2><p class="hint">Staff are shared across all branches and assigned through the roster.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Day off</th><th>Hourly rate</th><th>Status</th><th>Sales made</th></tr></thead><tbody id="staffTable"></tbody></table></div></div>
       </div>
-      <div class="panel staff-profile hidden" id="staffProfile"><div class="profile-heading"><div><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary" id="closeStaffProfile" type="button">Close</button></div><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Role<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary" type="submit">Save staff details</button></form><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div><div class="staff-hours-section"><div class="section-heading"><div><h3>Daily hours</h3><p class="hint">Last 14 days · Net hours exclude recorded breaks.</p></div><strong id="staffHoursSummary"></strong></div><div class="table-wrap"><table class="staff-hours-table"><thead><tr><th>Date</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Total hours</th><th>Estimated pay</th></tr></thead><tbody id="staffHoursTable"></tbody></table></div></div></div>
+      <div class="panel staff-profile hidden" id="staffProfile"><div class="profile-heading"><div><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary" id="closeStaffProfile" type="button">Close</button></div><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Hourly rate $<input name="hourlyRate" type="number" min="0" step="0.01"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary" type="submit">Save staff details</button></form><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div><div class="staff-hours-section"><div class="section-heading"><div><h3>Daily hours</h3><p class="hint">Last 14 days · Net hours exclude recorded breaks.</p></div><strong id="staffHoursSummary"></strong></div><div class="table-wrap"><table class="staff-hours-table"><thead><tr><th>Date</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Total hours</th><th>Estimated pay</th></tr></thead><tbody id="staffHoursTable"></tbody></table></div></div></div>
     </section>
     <section class="tab admin-only" id="roster">
       <div class="panel roster-day-panel"><div class="roster-toolbar"><div><p class="eyebrow">Schedule builder</p><h2 id="rosterDayTitle">Branch roster</h2><p class="hint">Choose one branch, then add or adjust staff shifts for the selected day.</p></div><div class="roster-toolbar-controls"><label>Branch<select id="rosterBranchSelect" aria-label="Roster branch"></select></label><label>Date<input id="rosterDay" type="date"></label></div></div><div class="roster-branch-board" id="rosterBranchBoard"></div></div>
       <div class="panel roster-calendar-panel"><div class="roster-toolbar"><div><h2>Roster calendar</h2><p class="hint">See coverage and bookings at a glance, then choose a day to edit above.</p></div><label>Month<input id="rosterMonth" type="month"></label></div><div class="month-calendar" id="rosterMonthCalendar"></div></div>
     </section>
     <section class="tab admin-only" id="services">
-      <div class="split">
-        <form class="panel service-editor" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<input name="category" list="serviceCategories" placeholder="Choose or enter a category" required></label></div><datalist id="serviceCategories"></datalist><div class="grid"><label>Sub-category<input name="subCategory" placeholder="e.g. Cuts, Styling" required></label><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label></div><div class="grid"><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary hidden" id="cancelServiceEdit" type="button">Cancel edit</button></div><p class="hint">Drag a service card onto another category to move it.</p></form>
-        <div class="panel"><h2>Shared services by category</h2><div id="serviceCategoriesList"></div></div>
-      </div>
+      <div class="section-heading page-heading"><h2>Services</h2><button class="primary" id="addServiceButton" type="button" aria-controls="serviceForm" aria-expanded="false">Add service</button></div>
+      <div class="panel"><div class="section-heading"><div><h3>Excel import and export</h3><p class="hint">Export all services, edit in Excel, then import. Keep Service IDs to update existing services. Leave the ID blank for new services; matching name, category and sub-category will update an existing entry.</p></div><div class="excel-actions"><a class="secondary button-link" href="/api/services/export">Export Excel</a><button class="primary" id="importServicesButton" type="button">Import Excel</button><input class="hidden" id="serviceImportFile" type="file" accept=".xlsx,.xls"></div></div><p id="serviceImportResult" role="status"></p></div><form class="panel service-editor hidden" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<select name="category" id="serviceCategorySelect" required></select></label></div><label id="newServiceCategoryLabel" class="hidden">New category<input name="newCategory" placeholder="Enter a new category" disabled></label><div class="grid"><label>Sub-category<select name="subCategory" id="serviceSubCategorySelect" required></select></label><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label></div><div class="grid"><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><label id="newServiceSubCategoryLabel" class="hidden">New sub-category<input name="newSubCategory" placeholder="Enter a new sub-category" disabled></label><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary" id="cancelServiceEdit" type="button">Cancel</button></div></form>
+      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2>All services</h2><p class="hint" id="serviceCount" aria-live="polite"></p></div><div class="product-table-controls"><label class="product-search"><span>Search services</span><input id="serviceSearch" type="search" placeholder="Name, category, sub-category or status"></label><label><span>Category</span><select id="serviceCategoryFilter"><option value="">All categories</option></select></label><label><span>Sub-category</span><select id="serviceSubCategoryFilter"><option value="">All sub-categories</option></select></label><label><span>Status</span><select id="serviceStatusFilter"><option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select></label></div></div><div class="table-wrap"><table class="product-table"><thead><tr><th>Service</th><th>Category</th><th>Sub-category</th><th>Duration</th><th>Price</th><th>Status</th><th aria-label="Actions"></th></tr></thead><tbody id="servicesTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="products">
       <div class="product-top-grid">
         <form class="panel product-editor" id="productForm"><div class="section-heading"><div><p class="eyebrow">Product details</p><h2 id="productFormTitle">Add product</h2></div><button class="secondary hidden" id="cancelProductEdit" type="button">Cancel edit</button></div><input name="productId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Brand<input name="brand"></label></div><div class="grid"><label>Category<input name="category" placeholder="Haircare"></label><label>SKU<input name="sku"></label></div><div class="grid"><label>Barcode<input name="barcode"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><div class="grid"><label>Cost $<input name="cost" type="number" min="0" step="0.01" value="0.00"></label><label>Retail $<input name="price" type="number" min="0.01" step="0.01" required></label></div><button class="primary full" id="productSaveButton" type="submit">Save product</button></form>
         <div class="panel product-excel-panel"><div class="excel-icon">${appIcon("products")}</div><p class="eyebrow">Excel tools</p><h2>Import or export products</h2><p class="hint">Export the current catalogue, edit it in Excel, then import it back. Existing products are matched by Product ID, SKU, or barcode.</p><div class="excel-actions"><a class="secondary button-link" href="/api/products/export">Export Excel</a><button class="primary" id="importProductsButton" type="button">Import Excel</button><input class="hidden" id="productImportFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"></div><p class="import-result" id="productImportResult"></p></div>
       </div>
-      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2 id="productTableTitle">All products</h2><p class="hint" id="productCount"></p></div><div class="product-table-controls"><label><span>Branch</span><select id="productBranchFilter" aria-label="Filter product stock by branch"><option value="">All branches</option></select></label><label class="product-search"><span>Search</span><input id="productSearch" type="search" placeholder="Name, SKU, brand or barcode"></label></div></div><div class="table-wrap"><table class="product-table"><thead><tr><th>Product</th><th>Brand</th><th>Category</th><th>SKU / barcode</th><th>Stock</th><th>Cost</th><th>Retail</th><th>Status</th><th></th></tr></thead><tbody id="productsTable"></tbody></table></div></div>
+      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2 id="productTableTitle">All products</h2><p class="hint" id="productCount" aria-live="polite"></p></div><div class="product-table-controls"><label><span>Branch</span><select id="productBranchFilter" aria-label="Filter product stock by branch"><option value="">All branches</option></select></label><label class="product-search"><span>Search</span><input id="productSearch" type="search" placeholder="Name, category, brand, SKU, barcode or status"></label><label><span>Category</span><select id="productCategoryFilter"><option value="">All categories</option></select></label><label><span>Brand</span><select id="productBrandFilter"><option value="">All brands</option></select></label><label><span>Status</span><select id="productStatusFilter"><option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select></label></div></div><div class="table-wrap"><table class="product-table"><thead><tr><th>Product</th><th>Brand</th><th>Category</th><th>SKU / barcode</th><th>Stock</th><th>Cost</th><th>Retail</th><th>Status</th><th></th></tr></thead><tbody id="productsTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="inventory">
       <div class="split">
@@ -1552,13 +1614,16 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
     </section>
     <section class="tab staff-only" id="closing">
       <div class="split">
-        <form class="panel" id="closingForm"><h2>Daily closing</h2><input name="branchId" type="hidden"><label>Date<input name="closingDate" type="date" required></label><div class="closing-summary" id="closingExpected"></div><div class="grid"><label>Yesterday cash $<input name="previousCash" type="number" min="0" step="0.01" readonly></label><label>Extra opening cash $<input name="openingFloat" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Actual cash counted $<input name="actualCash" type="number" min="0" step="0.01"></label><label>Cash taken $<input name="cashTaken" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Remaining cash $<input name="remainingCash" type="number" min="0" step="0.01" readonly></label><label>Actual card terminal total $<input name="actualCard" type="number" min="0" step="0.01"></label></div><div class="closing-summary" id="closingVariance"></div><label>Closed by<input name="closedBy" placeholder="Staff / manager name"></label><label>Notes<textarea name="notes"></textarea></label><button class="primary full" type="submit">Save daily closing</button></form>
+        <form class="panel" id="closingForm"><h2>Daily closing</h2><input name="branchId" type="hidden"><label>Date<input name="closingDate" type="date" required></label><div class="closing-summary" id="closingExpected"></div><fieldset><legend>Cash denomination counts</legend><div class="grid"><label>$100 count<input data-denomination="100" type="number" min="0" max="100000" step="1" value="0" required></label><label>$50 count<input data-denomination="50" type="number" min="0" max="100000" step="1" value="0" required></label><label>$20 count<input data-denomination="20" type="number" min="0" max="100000" step="1" value="0" required></label><label>$10 count<input data-denomination="10" type="number" min="0" max="100000" step="1" value="0" required></label><label>$5 count<input data-denomination="5" type="number" min="0" max="100000" step="1" value="0" required></label><label>$2 count<input data-denomination="2" type="number" min="0" max="100000" step="1" value="0" required></label><label>$1 count<input data-denomination="1" type="number" min="0" max="100000" step="1" value="0" required></label></div></fieldset><div class="grid"><label>Yesterday cash $<input name="previousCash" type="number" min="0" step="0.01" readonly></label><label>Extra opening cash $<input name="openingFloat" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Total cash counted $<input name="actualCash" type="number" min="0" step="0.01" readonly></label><label>Cash taken $<input name="cashTaken" type="number" min="0" step="0.01" placeholder="0.00"></label></div><div class="grid"><label>Remaining cash $<input name="remainingCash" type="number" min="0" step="0.01" readonly></label><label>Actual card terminal total $<input name="actualCard" type="number" min="0" step="0.01"></label></div><div class="closing-summary" id="closingVariance"></div><p class="hint">Your name is recorded when you confirm with your individual PIN.</p><label>Notes<textarea name="notes"></textarea></label><button class="primary full" type="submit">Save daily closing</button></form>
         <div class="panel"><h2>Closing records</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Cash taken</th><th>Remaining cash</th><th>Status</th></tr></thead><tbody id="closingTable"></tbody></table></div></div>
       </div>
     </section>
     <section class="tab admin-only" id="reports">
       <div class="panel report-filter-panel"><div><p class="eyebrow">Performance centre</p><h2>Business reports</h2><p class="hint">Filter once, then export any section.</p></div><div class="report-filters"><label>From<input id="reportFrom" type="date"></label><label>To<input id="reportTo" type="date"></label><label>Branch<select id="reportBranch"><option value="">All branches</option></select></label><button class="primary" id="applyReportFilters" type="button">Apply</button></div></div>
       <div class="metrics report-summary" id="reportMetrics"></div>
+      <div class="panel report-section"><div class="section-heading"><div><h2>Staff sales by date</h2><p class="hint">Daily credited sales for each staff member at each branch. Shared services use the recorded staff allocation.</p></div><a class="secondary button-link report-export" data-report-type="staff-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Role</th><th>Branch</th><th>Credited sales</th><th>Services credited</th><th>Transactions</th></tr></thead><tbody id="reportStaffDailyTable"></tbody></table></div></div>
+      <div class="panel report-section"><div class="section-heading"><div><h2>Manager sales by date</h2><p class="hint">Daily branch sales for each manager rostered there. If managers share a branch on the same day, each receives that branch total.</p></div><a class="secondary button-link report-export" data-report-type="manager-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Manager</th><th>Branch</th><th>Managed store sales</th><th>Transactions</th></tr></thead><tbody id="reportManagerDailyTable"></tbody></table></div></div>
+      <div class="panel report-section"><div class="section-heading"><div><h2>Branch sales by date</h2><p class="hint">Daily sales and transaction totals for each branch in the selected period.</p></div><a class="secondary button-link report-export" data-report-type="branch-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Total sales</th><th>Transactions</th><th>Products</th><th>Services</th></tr></thead><tbody id="reportBranchDailyTable"></tbody></table></div></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Sales by branch</h2><p class="hint">Store sales, transactions, product and service volume, bookings and walk-ins.</p></div><a class="secondary button-link report-export" data-report-type="branch">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Total sales</th><th>Transactions</th><th>Products</th><th>Services</th><th>Online</th><th>Manual</th><th>Walk-ins</th></tr></thead><tbody id="reportBranchTable"></tbody></table></div></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Staff and manager sales</h2><p class="hint">Staff credited sales; manager store sales add the branch totals for each day they were rostered there.</p></div><a class="secondary button-link report-export" data-report-type="staff">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Staff</th><th>Role</th><th>Credited sales</th><th>Services sold</th><th>Managed store sales</th></tr></thead><tbody id="reportStaffTable"></tbody></table></div></div>
       <div class="report-two-column"><div class="panel report-section"><div class="section-heading"><div><h2>Products sold</h2></div><a class="secondary button-link report-export" data-report-type="products">Export</a></div><div class="table-wrap"><table><thead><tr><th>Product</th><th>Qty</th><th>Sales</th></tr></thead><tbody id="reportProductsTable"></tbody></table></div></div><div class="panel report-section"><div class="section-heading"><div><h2>Services sold</h2></div><a class="secondary button-link report-export" data-report-type="services">Export</a></div><div class="table-wrap"><table><thead><tr><th>Service</th><th>Qty</th><th>Sales</th></tr></thead><tbody id="reportServicesTable"></tbody></table></div></div></div>
@@ -1567,22 +1632,25 @@ function renderApp(initialBranchId, initialTab, mode = "admin") {
       <div class="panel"><h2>Admin closing review</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Actual cash</th><th>Cash taken</th><th>Actual card</th><th>Status</th><th>Approved by</th><th></th></tr></thead><tbody id="adminClosingTable"></tbody></table></div></div>
     </section>
     <section class="tab admin-only" id="branches">
-      <div class="split">
-        <form class="panel" id="branchForm"><h2>Create branch</h2><label>Name<input name="name" required></label><label>Address<input name="address" required></label><div class="grid"><label>Phone<input name="phone" required></label><label>Postcode / PIN<input name="postCode" inputmode="numeric"></label></div><button class="primary full" type="submit">Create branch</button></form>
-        <div class="panel"><h2>Branch details</h2><label>Choose branch<select id="branchDetailSelect"></select></label><div id="branchDetail"></div></div>
-      </div>
-      <div class="split">
-        <form class="panel" id="hoursForm"><h2>Branch timetable</h2><label>Branch<select name="branchId" required></select></label><label>Day<select name="dayOfWeek"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select></label><div class="grid"><label>Open<input name="openTime" type="time" value="09:00"></label><label>Close<input name="closeTime" type="time" value="17:30"></label></div><label class="check"><input name="isClosed" type="checkbox">Closed every week on this day</label><button class="primary full" type="submit">Save timetable</button></form>
-        <form class="panel" id="closedDateForm"><h2>Closed date</h2><label>Branch<select name="branchId" required></select></label><label>Date<input name="closedDate" type="date" required></label><label>Reason<input name="reason" placeholder="Public holiday"></label><button class="primary full" type="submit">Add closed date</button></form>
-      </div>
-      <div class="panel"><h2>All branches</h2><div class="cards" id="branchCards"></div></div>
+      <div class="panel"><div class="section-heading"><div><p class="eyebrow">Locations</p><h2>Branches</h2><p class="hint">Manage your locations, opening hours and holidays.</p></div><button class="primary" id="createBranchButton" type="button">Create branch</button></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Address</th><th>Phone</th><th>Status</th><th>Actions</th></tr></thead><tbody id="branchTable"></tbody></table></div></div>
+      <details class="panel branch-archive"><summary>Archived branches <span id="branchArchiveCount" class="pill">0</span></summary><p class="hint">All records are retained. Restore a branch here, or permanently erase it.</p><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Address</th><th>Actions</th></tr></thead><tbody id="branchArchiveTable"></tbody></table></div></details>
+      <dialog id="branchEditor" class="branch-dialog" aria-labelledby="branchEditorTitle">
+        <form id="branchForm">
+          <div class="branch-dialog-header"><div><p class="eyebrow">Branch settings</p><h2 id="branchEditorTitle">Create branch</h2><p class="hint">Keep details, hours and holidays in one place.</p></div><button class="secondary branch-icon-button" id="closeBranchEditor" type="button" aria-label="Close branch editor">✕</button></div>
+          <div class="branch-dialog-body"><section class="branch-form-section"><h3>Branch details</h3><p class="hint">The information your team uses to identify this location.</p><input name="id" type="hidden"><label>Branch name<input name="name" required></label><label>Address<input name="address" required></label><div class="grid"><label>Phone<input name="phone" required></label><label>Postcode / PIN<input name="postCode" inputmode="numeric"></label></div><label>Status<select name="status"><option>Open</option><option>Closed</option></select></label></section>
+          <section class="branch-form-section"><div class="section-heading"><div><h3>Weekly timetable</h3><p class="hint">Set regular opening hours, or mark a day as closed.</p></div><button type="button" class="secondary small" id="copyBranchHours">Copy Monday to weekdays</button></div><div class="table-wrap"><table class="branch-hours-table"><thead><tr><th>Day</th><th>Open</th><th>Close</th><th>Closed</th></tr></thead><tbody id="branchHoursEditor"></tbody></table></div></section>
+          <section class="branch-form-section"><div class="section-heading"><div><h3>Closed dates</h3><p class="hint">Add public holidays and one-off closures.</p></div><button class="secondary" id="addBranchClosedDate" type="button">Add closed date</button></div><div id="branchClosedDatesEditor"></div></section></div>
+          <div class="branch-dialog-footer"><p id="branchEditorMessage" role="alert"></p><div class="section-heading"><button class="secondary" id="cancelBranchEditor" type="button">Cancel</button><button class="primary" id="saveBranchButton" type="submit">Create branch</button></div></div>
+        </form>
+      </dialog>
+      <dialog id="branchActionDialog" class="branch-dialog branch-action-dialog" aria-labelledby="branchActionTitle">
+        <form id="branchActionForm"><div class="branch-dialog-header"><div><p class="eyebrow">Confirm branch action</p><h2 id="branchActionTitle"></h2></div></div><div class="branch-dialog-body"><input name="branchId" type="hidden"><input name="mode" type="hidden"><div class="branch-action-warning" id="branchActionWarning"></div><label id="branchActionNameLabel" hidden>Type the branch name to confirm<input name="confirmName" autocomplete="off"></label><label>Admin PIN<input name="pin" type="password" inputmode="numeric" autocomplete="off" required placeholder="Enter PIN"></label><p class="hint">The separate admin PIN is required. Branch login PINs cannot approve this action.</p><p id="branchActionError" role="alert"></p></div><div class="branch-dialog-footer"><div class="section-heading"><button type="button" class="secondary" id="cancelBranchAction">Cancel</button><button type="submit" class="danger" id="confirmBranchAction"></button></div></div></form>
+      </dialog>
     </section>
-    <section class="tab admin-only" id="access">
-      <div class="section-heading page-heading"><div><p class="eyebrow">Security &amp; entry</p><h2>Branch access</h2><p class="hint">Access is managed separately from branch operations.</p></div></div>
-      <div class="panel"><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Branch workspace</th><th>Current PIN</th><th>Status</th></tr></thead><tbody id="accessTable"></tbody></table></div></div>
+    <section class="tab admin-only" id="access">${accessPanelHtml()}
     </section>
   </main>
-  <script>window.initialBranchId = ${JSON.stringify(initialBranchId)}; window.appMode = ${JSON.stringify(mode)}; window.uiIconPaths = ${JSON.stringify(UI_ICON_PATHS)}; ${clientScript()}</script>
+  <script>window.currentUser = ${JSON.stringify(publicIdentity(accessUser)).replace(/</g, "\\u003c")}; window.initialBranchId = ${JSON.stringify(initialBranchId)}; window.appMode = ${JSON.stringify(mode)}; window.uiIconPaths = ${JSON.stringify(UI_ICON_PATHS)}; ${clientScript()}</script>
 </body>
 </html>`;
 }
@@ -1591,10 +1659,10 @@ function clientScript() {
   return `
 let state = { branches: [], staff: [], services: [], products: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [] };
 let reportData = null;
+let reportRequestId = 0;
 let lastReceipt = null;
 let selectedPosBranchId = "";
 let selectedPosPin = "";
-let draggedServiceId = "";
 let draggedStaffId = "";
 let selectedDashboardPeriod = "today";
 let selectedGlobalBranchId = "";
@@ -1602,6 +1670,8 @@ let selectedRosterBranchId = "";
 let selectedProductBranchId = "";
 const appMode = window.appMode || "admin";
 const message = document.querySelector("#message");
+${accessClientScript()}
+${posPinScript()}
 document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => {
   showTab(button.dataset.tab);
 }));
@@ -1640,20 +1710,46 @@ document.querySelector("#rosterDay").addEventListener("change", () => { renderRo
 document.querySelector("#rosterBranchSelect").addEventListener("change", (event) => { selectedRosterBranchId = event.currentTarget.value; renderRosterMonthCalendar(); renderRosterBranchBoard(); });
 document.querySelector("#globalBranchFilter")?.addEventListener("change", (event) => { selectedGlobalBranchId = event.currentTarget.value; renderMetrics(); });
 document.querySelectorAll(".period-tab").forEach((button) => button.addEventListener("click", () => { selectedDashboardPeriod = button.dataset.period; document.querySelectorAll(".period-tab").forEach((item) => item.classList.toggle("active", item === button)); renderMetrics(); }));
-document.querySelector("#branchForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branches"));
-document.querySelector("#branchDetailSelect").addEventListener("change", renderBranchDetail);
+document.querySelector("#copyBranchHours").addEventListener("click", () => {
+  const rows = document.querySelectorAll("#branchHoursEditor tr"), first = rows[0];
+  for (let i = 1; i < 5; i++) {
+    for (const selector of [".branch-open", ".branch-close"]) rows[i].querySelector(selector).value = first.querySelector(selector).value;
+    rows[i].querySelector(".branch-closed").checked = first.querySelector(".branch-closed").checked;
+    rows[i].querySelector(".branch-closed").dispatchEvent(new Event("change"));
+  }
+});
+document.querySelector("#branchActionForm").addEventListener("submit", submitBranchAction);
+document.querySelector("#cancelBranchAction").addEventListener("click", () => document.querySelector("#branchActionDialog").close());
+document.querySelector("#branchActionDialog").addEventListener("close", () => document.querySelector("#branchActionForm").reset());
+document.querySelector("#branchForm").addEventListener("submit", submitBranchForm);
+document.querySelector("#createBranchButton").addEventListener("click", () => openBranchEditor());
+document.querySelector("#closeBranchEditor").addEventListener("click", () => document.querySelector("#branchEditor").close());
+document.querySelector("#cancelBranchEditor").addEventListener("click", () => document.querySelector("#branchEditor").close());
+document.querySelector("#addBranchClosedDate").addEventListener("click", () => addBranchClosedDate());
 document.querySelector("#serviceForm").addEventListener("submit", submitServiceForm);
+document.querySelector("#addServiceButton").addEventListener("click", () => { resetServiceForm(); openServiceForm(); });
 document.querySelector("#cancelServiceEdit").addEventListener("click", resetServiceForm);
+document.querySelector("#serviceSearch").addEventListener("input", renderServices);
+["#serviceCategoryFilter", "#serviceSubCategoryFilter", "#serviceStatusFilter"].forEach((selector) => document.querySelector(selector).addEventListener("change", renderServices));
+document.querySelector("#serviceCategorySelect").addEventListener("change", () => {
+  toggleNewServiceValue("category", true);
+  refreshServiceSubCategories();
+});
+document.querySelector("#serviceSubCategorySelect").addEventListener("change", () => toggleNewServiceValue("subCategory", true));
+document.querySelector('#serviceForm [name="newCategory"]').addEventListener("change", () => refreshServiceSubCategories());
 document.querySelector("#productForm").addEventListener("submit", submitProductForm);
 document.querySelector("#cancelProductEdit").addEventListener("click", resetProductForm);
 document.querySelector("#productSearch").addEventListener("input", renderProducts);
+["#productCategoryFilter", "#productBrandFilter", "#productStatusFilter"].forEach((selector) => document.querySelector(selector).addEventListener("change", renderProducts));
 document.querySelector("#productBranchFilter").addEventListener("change", (event) => { selectedProductBranchId = event.currentTarget.value; renderProducts(); });
+document.querySelector("#importServicesButton").addEventListener("click",()=>document.querySelector("#serviceImportFile").click());
+document.querySelector("#serviceImportFile").addEventListener("change",importServicesWorkbook);
 document.querySelector("#importProductsButton").addEventListener("click", () => document.querySelector("#productImportFile").click());
 document.querySelector("#productImportFile").addEventListener("change", importProductsWorkbook);
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
-document.querySelector("#closingForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/daily-closing"));
-document.querySelector("#hoursForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/branch-hours"));
-document.querySelector("#closedDateForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/closed-dates"));
+document.querySelector("#closingForm").addEventListener("submit", submitCountedClosing);
+
+
 document.querySelector("#applyReportFilters").addEventListener("click", loadReports);
 document.querySelector("#reportBranch").addEventListener("change", loadReports);
 addSaleItem();
@@ -1661,17 +1757,19 @@ updateCustomerMode();
 loadPublicBranches();
 setInitialRosterWeek();
 setInitialReportRange();
+applyAccessUi();
 if (appMode === "admin") loadData();
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (selectedPosBranchId && (path === "/api/pos-data" || path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/"))) {
+  if (selectedPosBranchId && (path === "/api/pos-data" || path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
     headers["x-branch-id"] = selectedPosBranchId;
-    headers["x-branch-pin"] = selectedPosPin;
+
   }
   if (options.body) headers["content-type"] = "application/json";
   const response = await fetch(path, { ...options, headers });
   const result = await response.json();
+  if (response.status === 401) { if(appMode!=="admin") throw new Error("Open the branch with its PIN again."); location.href="/login"; throw new Error("Please sign in again."); }
   if (!response.ok) throw new Error(result.error || "Request failed");
   return result;
 }
@@ -1699,11 +1797,12 @@ async function loadPublicBranches() {
 async function openPos() {
   selectedPosBranchId = document.querySelector("#posBranch").value;
   selectedPosPin = document.querySelector("#posPin").value;
-  if (!selectedPosBranchId || !selectedPosPin) {
-    message.textContent = "Select a branch and enter the postcode PIN.";
+  if (!selectedPosBranchId) {
+    message.textContent = "Select a branch.";
     return;
   }
-  await refreshPosData();
+  try { await api("/api/pos-login",{method:"POST",body:JSON.stringify({branchId:selectedPosBranchId,pin:selectedPosPin})}); } catch(error){message.textContent=error.message;return;} finally{selectedPosPin="";document.querySelector("#posPin").value="";}
+  if(!await refreshPosData())return;
   const branch = state.branches[0];
   document.querySelector("#posBranchName").textContent = branch ? branch.name : "Branch POS";
   document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
@@ -1714,7 +1813,8 @@ async function openPos() {
   document.querySelector("#posLogin").classList.add("hidden");
   document.querySelector("#posWorkspace").classList.remove("hidden");
 }
-function switchBranch() {
+async function switchBranch() {
+  await api("/api/pos-logout",{method:"POST"});
   selectedPosBranchId = "";
   selectedPosPin = "";
   state = normalizeState();
@@ -1733,9 +1833,9 @@ async function refreshPosData() {
     document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
     renderClosingPreview();
     message.textContent = "Workspace opened for " + (state.branch?.name || state.branches[0]?.name || "selected branch") + ".";
+    return true;
   } catch (error) {
-    message.textContent = error.message;
-    throw error;
+    message.textContent = error.message; return false;
   }
 }
 function renderTimeClockStatus() {
@@ -1750,7 +1850,8 @@ async function submitTimeClock(action) {
   if (!staffId) { message.textContent = "Choose a staff member first."; return; }
   try {
     message.textContent = action === "clock-in" ? "Clocking in..." : "Clocking out...";
-    const result = await api("/api/time-clock", { method:"POST", body:JSON.stringify({ staffId, action }) });
+    const actor=await askActor(selectedPosBranchId,false,"Confirm time clock with your PIN");if(!actor)return;
+    const result = await api("/api/time-clock", { method:"POST", body:JSON.stringify({ ...actor, staffId, action }) });
     await refreshPosData();
     document.querySelector("#timeClockStaff").value = staffId;
     renderTimeClockStatus();
@@ -1761,9 +1862,11 @@ function normalizeState(data = {}) {
   const arrayKeys = ["branches","staff","services","products","customers","bookings","sales","saleItems","branchHours","closedDates","discounts","inventoryStock","stockMovements","dailyClosings","staffRoster","staffRegularDaysOff","timeEntries"];
   const normalized = { ...data };
   arrayKeys.forEach((key) => { if (!Array.isArray(normalized[key])) normalized[key] = []; });
+  normalized.archivedBranches = normalized.branches.filter((b) => b.status === "Archived");
+  normalized.branches = normalized.branches.filter((b) => b.status !== "Archived");
   return normalized;
 }
-function renderAll() { fillSelects(); renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); }
+function renderAll() { fillSelects(); renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); applyAccessUi(); }
 function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
   const staffSelectOptions = '<option value="">Unassigned</option>' + state.staff.map((s) => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join("");
@@ -1883,36 +1986,94 @@ function renderMetrics() {
   }).join("") || '<p class="empty-state">No activity in this period.</p>';
 }
 function renderBranches() {
-  document.querySelector("#branchCards").innerHTML = state.branches.map((b) => '<article><div class="branch-card-top"><div class="branch-icon">' + esc(b.name.slice(0, 1)) + '</div><span class="pill">' + esc(b.status) + '</span></div><strong>' + esc(b.name) + '</strong><span>' + esc(b.address) + '</span><span>' + esc(b.phone) + '</span><button class="danger delete-branch" data-branch-id="' + esc(b.id) + '" type="button">Delete branch</button></article>').join("");
+  document.querySelector("#branchTable").innerHTML = state.branches.map((b) => '<tr><td><strong>' + esc(b.name) + '</strong></td><td>' + esc(b.address) + '</td><td>' + esc(b.phone) + '</td><td><span class="pill">' + esc(b.status) + '</span></td><td><a class="secondary button-link" href="/pos/' + encodeURIComponent(b.id) + '">POS</a> <button class="secondary branch-icon-button edit-branch" data-branch-id="' + esc(b.id) + '" type="button" aria-label="Edit ' + esc(b.name) + '" title="Edit branch">✎</button> <button class="danger branch-icon-button delete-branch" data-branch-id="' + esc(b.id) + '" type="button" aria-label="Archive branch" title="Archive branch">' + branchTrashIcon() + '</button></td></tr>').join("") || '<tr><td colspan="5" class="empty-cell">No branches yet. Create your first branch.</td></tr>';
+  const archived = state.archivedBranches || [];
+  document.querySelector("#branchArchiveCount").textContent = archived.length;
+  document.querySelector("#branchArchiveTable").innerHTML = archived.map((b) => '<tr><td><strong>' + esc(b.name) + '</strong></td><td>' + esc(b.address) + '</td><td><button class="secondary small restore-branch" type="button" data-branch-id="' + esc(b.id) + '">Restore</button> <button class="danger branch-icon-button purge-branch" type="button" data-branch-id="' + esc(b.id) + '" aria-label="Permanently delete branch" title="Permanently delete">' + branchTrashIcon() + '</button></td></tr>').join("") || '<tr><td colspan="3" class="empty-cell">No archived branches.</td></tr>';
+  document.querySelectorAll(".restore-branch").forEach((button) => button.addEventListener("click", () => openBranchAction(button.dataset.branchId, "restore")));
+  document.querySelectorAll(".purge-branch").forEach((button) => button.addEventListener("click", () => openBranchAction(button.dataset.branchId, "permanent")));
+  document.querySelectorAll(".edit-branch").forEach((button) => button.addEventListener("click", () => openBranchEditor(button.dataset.branchId)));
   document.querySelectorAll(".delete-branch").forEach((button) => button.addEventListener("click", deleteBranch));
-  const detailSelect = document.querySelector("#branchDetailSelect");
-  const current = detailSelect.value;
-  detailSelect.innerHTML = state.branches.map((b) => '<option value="' + esc(b.id) + '">' + esc(b.name) + '</option>').join("");
-  if (state.branches.some((b) => b.id === current)) detailSelect.value = current;
-  renderBranchDetail();
 }
-function renderAccess() {
-  const table = document.querySelector("#accessTable");
-  if (!table) return;
-  table.innerHTML = state.branches.map((branch) => '<tr><td><strong>' + esc(branch.name) + '</strong><div class="hint">' + esc(branch.address) + '</div></td><td><a class="branch-pos" href="/pos/' + esc(branch.id) + '">Open workspace</a></td><td><span class="pin-code">' + esc(branch.post_code || "Not set") + '</span></td><td><span class="pill">' + esc(branch.status) + '</span></td></tr>').join("") || '<tr><td colspan="4" class="empty-cell">No branches available.</td></tr>';
+function openBranchEditor(branchId = "") {
+  const branch = state.branches.find((b) => b.id === branchId);
+  const form = document.querySelector("#branchForm");
+  form.reset();
+  form.elements.id.value = branchId;
+  for (const key of ["name", "address", "phone", "status"]) form.elements[key].value = branch?.[key] || (key === "status" ? "Open" : "");
+  form.elements.postCode.value = branch?.post_code || "";
+  document.querySelector("#branchEditorTitle").textContent = branch ? "Edit branch" : "Create branch";
+  document.querySelector("#saveBranchButton").textContent = branch ? "Save branch" : "Create branch";
+  document.querySelector("#branchEditorMessage").textContent = "";
+  document.querySelector("#branchHoursEditor").innerHTML = [1,2,3,4,5,6,0].map((day) => {
+    const hour = state.branchHours.find((h) => h.branch_id === branchId && Number(h.day_of_week) === day);
+    return '<tr data-day="' + day + '"><td>' + dayName(day) + '</td><td><input aria-label="' + dayName(day) + ' opening time" class="branch-open" type="time" required value="' + esc(hour?.open_time || '09:00') + '"></td><td><input aria-label="' + dayName(day) + ' closing time" class="branch-close" type="time" required value="' + esc(hour?.close_time || '17:30') + '"></td><td><input aria-label="' + dayName(day) + ' closed" class="branch-closed" type="checkbox"' + (hour?.is_closed ? ' checked' : '') + '></td></tr>';
+  }).join("");
+  document.querySelectorAll("#branchHoursEditor tr").forEach((row) => {
+    const toggle = () => row.querySelectorAll('input[type="time"]').forEach((input) => { input.disabled = row.querySelector(".branch-closed").checked; });
+    row.querySelector(".branch-closed").addEventListener("change", toggle); toggle();
+  });
+  document.querySelector("#branchClosedDatesEditor").replaceChildren();
+  state.closedDates.filter((d) => d.branch_id === branchId).forEach(addBranchClosedDate);
+  document.querySelector("#branchEditor").showModal();
 }
-function renderBranchDetail() {
-  const branchId = document.querySelector("#branchDetailSelect").value;
-  const branch = state.branches.find((item) => item.id === branchId);
-  const box = document.querySelector("#branchDetail");
-  if (!branch) { box.innerHTML = '<p class="hint">Create or select a branch.</p>'; return; }
-  const hours = (state.branchHours || []).filter((item) => item.branch_id === branchId).sort((a, b) => Number(a.day_of_week) - Number(b.day_of_week));
-  const closedDates = (state.closedDates || []).filter((item) => item.branch_id === branchId).sort((a, b) => String(a.closed_date).localeCompare(String(b.closed_date)));
-  box.innerHTML = '<div class="branch-detail-heading"><div class="branch-icon">' + esc(branch.name.slice(0, 1)) + '</div><div><strong>' + esc(branch.name) + '</strong><span>' + esc(branch.address) + '</span><span>' + esc(branch.phone) + '</span></div><span class="pill">' + esc(branch.status) + '</span></div>' +
-    '<h3>Opening timetable</h3><div class="timetable-list">' + (hours.length ? hours.map((item) => '<div><strong>' + dayName(item.day_of_week) + '</strong><span>' + (item.is_closed ? 'Closed' : esc(item.open_time + '–' + item.close_time)) + '</span></div>').join('') : '<p class="hint">No timetable saved.</p>') + '</div>' +
-    '<h3>Upcoming closures</h3><div class="closure-list">' + (closedDates.length ? closedDates.map((item) => '<span class="closure-chip">' + esc(formatDashboardDate(item.closed_date)) + (item.reason ? ' · ' + esc(item.reason) : '') + '</span>').join('') : '<p class="hint">No closure dates set.</p>') + '</div>';
+function addBranchClosedDate(date = {}) {
+  const row = document.createElement("div");
+  row.className = "grid branch-closure-row";
+  row.dataset.id = date.id || "";
+  row.innerHTML = '<label>Date<input class="closure-date" type="date" required value="' + esc(date.closed_date || '') + '"></label><label>Reason<input class="closure-reason" placeholder="Public holiday" value="' + esc(date.reason || '') + '"></label><button class="secondary" type="button" aria-label="Remove closed date">Remove</button>';
+  row.querySelector("button").addEventListener("click", () => row.remove());
+  document.querySelector("#branchClosedDatesEditor").append(row);
 }
-async function deleteBranch(event) {
-  const branchId = event.currentTarget.dataset.branchId;
-  const branch = state.branches.find((item) => item.id === branchId);
-  if (!branch || !confirm('Delete ' + branch.name + '? Only branches without business records can be deleted.')) return;
-  try { await api('/api/branches/' + encodeURIComponent(branchId), { method:'DELETE' }); message.textContent = 'Branch deleted.'; await loadData(); }
-  catch (error) { message.textContent = error.message; }
+async function submitBranchForm(event) {
+  event.preventDefault();
+  const form = event.currentTarget, button = document.querySelector("#saveBranchButton");
+  const body = Object.fromEntries(new FormData(form));
+  body.hours = Array.from(document.querySelectorAll("#branchHoursEditor tr"), (row) => ({ dayOfWeek:Number(row.dataset.day), openTime:row.querySelector(".branch-open").value, closeTime:row.querySelector(".branch-close").value, isClosed:row.querySelector(".branch-closed").checked }));
+  body.closedDates = Array.from(document.querySelectorAll(".branch-closure-row"), (row) => ({ id:row.dataset.id, closedDate:row.querySelector(".closure-date").value, reason:row.querySelector(".closure-reason").value }));
+  body.removedDates = state.closedDates.filter((d) => d.branch_id === body.id && !body.closedDates.some((date) => date.id === d.id)).map((d) => d.id);
+  if (body.hours.some((h) => !h.isClosed && h.openTime >= h.closeTime)) { document.querySelector("#branchEditorMessage").textContent = "Closing time must be after opening time."; return; }
+  button.disabled = true;
+  try {
+    if(body.id){const actor=await askActor(body.id,true,"Authorize branch edit",false);if(!actor)return;Object.assign(body,actor);}
+    await api(body.id ? "/api/branches/" + encodeURIComponent(body.id) : "/api/branches", { method:body.id ? "PATCH" : "POST", body:JSON.stringify(body) });
+    document.querySelector("#branchEditor").close();
+    await loadData();
+  } catch (error) { document.querySelector("#branchEditorMessage").textContent = error.message; }
+  finally { button.disabled = false; }
+}
+function renderAccess() { if (canManageAccess()) loadAccessSettings(); }
+function branchTrashIcon() { return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>'; }
+function deleteBranch(event) { openBranchAction(event.currentTarget.dataset.branchId, "archive"); }
+function openBranchAction(branchId, mode) {
+  const branch = [...state.branches, ...(state.archivedBranches || [])].find((b) => b.id === branchId);
+  if (!branch) return;
+  const form = document.querySelector("#branchActionForm"); form.reset();
+  form.elements.branchId.value = branchId; form.elements.mode.value = mode;
+  const permanent = mode === "permanent", restore = mode === "restore";
+  document.querySelector("#branchActionTitle").textContent = (permanent ? "Permanently delete " : restore ? "Restore " : "Archive ") + branch.name + "?";
+  document.querySelector("#branchActionWarning").textContent = permanent
+    ? "This permanently erases the branch, its bookings, sales, stock, schedules, payroll time entries, closing records and branch-only customer profiles. Shared customer and staff profiles remain. No archive copy is kept in this app and you cannot restore it here. Type “" + branch.name + "” to continue."
+    : restore ? "This restores the branch and all its retained records. It returns as Closed; use Edit branch to reopen it when you are ready."
+    : "This removes the branch from active locations and disables its workspace. All records are kept in Archived branches and can be restored later. Existing bookings are retained; review any upcoming appointments before archiving.";
+  document.querySelector("#branchActionNameLabel").hidden = !permanent;
+  form.elements.confirmName.required = permanent;
+  document.querySelector("#branchActionError").textContent = "";
+  document.querySelector("#confirmBranchAction").textContent = permanent ? "Delete permanently" : restore ? "Restore branch" : "Archive branch";
+  document.querySelector("#branchActionDialog").showModal();
+}
+async function submitBranchAction(event) {
+  event.preventDefault();
+  const form = event.currentTarget, body = Object.fromEntries(new FormData(form));
+  const controls = [...form.querySelectorAll("input, button")]; controls.forEach((el) => el.disabled = true);
+  const dialog = document.querySelector("#branchActionDialog");
+  const preventCancel = (event) => event.preventDefault(); dialog.addEventListener("cancel", preventCancel);
+  try {
+    await api('/api/branches/' + encodeURIComponent(body.branchId) + (body.mode === "restore" ? '/restore' : ''), { method:body.mode === "restore" ? 'POST' : 'DELETE', body:JSON.stringify(body) });
+    dialog.close(); await loadData();
+    message.textContent = body.mode === "restore" ? "Branch restored. Edit it to reopen when ready." : body.mode === "permanent" ? "Branch permanently deleted." : "Branch archived. You can restore it from Archived branches.";
+  } catch (error) { document.querySelector("#branchActionError").textContent = error.message; form.elements.pin.value = ""; }
+  finally { controls.forEach((el) => el.disabled = false); dialog.removeEventListener("cancel", preventCancel); }
 }
 function dayName(day) { return ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][Number(day)] || ''; }
 function staffDaysOff(staffId) { return state.staffRegularDaysOff.filter((item) => item.staff_id === staffId).map((item) => Number(item.day_of_week)); }
@@ -1922,7 +2083,7 @@ function dayOffChecksHtml(staffId = "") {
   return [[1,"Mon"],[2,"Tue"],[3,"Wed"],[4,"Thu"],[5,"Fri"],[6,"Sat"],[0,"Sun"]].map(([value, label]) => '<label class="day-chip"><input type="checkbox" name="days" value="' + value + '"' + (selected.includes(value) ? ' checked' : '') + '><span>' + label + '</span></label>').join("");
 }
 function renderStaff() {
-  document.querySelector("#staffTable").innerHTML = state.staff.map((staff) => '<tr class="staff-row" data-staff-id="' + esc(staff.id) + '" tabindex="0"><td><strong>' + esc(staff.name) + '</strong><div class="hint">' + esc(staff.email || staff.phone || "") + '</div></td><td>' + esc(staff.role || "") + '</td><td>' + esc(dayOffLabel(staff.id)) + '</td><td>' + money(staff.hourly_rate_cents || 0) + '</td><td><span class="pill">' + esc(staff.status) + '</span></td><td><strong>' + money(staffSalesTotal(staff.id)) + '</strong></td></tr>').join("");
+  document.querySelector("#staffTable").innerHTML = state.staff.map((staff) => '<tr class="staff-row" data-staff-id="' + esc(staff.id) + '" tabindex="0"><td><strong>' + esc(staff.name) + '</strong><div class="hint">' + esc(staff.email || staff.phone || "") + '</div></td><td>' + esc(staff.role || "") + '<div class="hint">Access: ' + esc(roleName(staff.access_role)) + '</div></td><td>' + esc(dayOffLabel(staff.id)) + '</td><td>' + money(staff.hourly_rate_cents || 0) + '</td><td><span class="pill">' + esc(staff.status) + '</span></td><td><strong>' + money(staffSalesTotal(staff.id)) + '</strong></td></tr>').join("");
   document.querySelector("#staffForm [data-day-off-checks]").innerHTML = dayOffChecksHtml();
   document.querySelectorAll(".staff-row").forEach((row) => {
     row.addEventListener("click", () => openStaffProfile(row.dataset.staffId));
@@ -1976,6 +2137,7 @@ function openStaffProfile(staffId) {
   form.elements.staffId.value = staff.id;
   form.elements.name.value = staff.name;
   form.elements.role.value = staff.role || "";
+  form.elements.accessRole.value = staff.access_role || "none";
   form.elements.email.value = staff.email || "";
   form.elements.phone.value = staff.phone || "";
   form.elements.hourlyRate.value = dollars(staff.hourly_rate_cents || 0);
@@ -1988,6 +2150,7 @@ function openStaffProfile(staffId) {
   document.querySelector("#staffProfileSummary").textContent = rows.length + " service sale" + (rows.length === 1 ? "" : "s") + " · " + money(staffSalesTotal(staffId)) + " credited sales";
   document.querySelector("#staffSalesTable").innerHTML = rows.length ? rows.map((item) => '<tr><td>' + esc(formatCustomerDate(item.created_at)) + '</td><td>' + esc(item.branch_name || branchName(item.branch_id)) + '</td><td>' + esc(item.item_name) + '</td><td>' + money(item.price_cents) + '</td><td><strong>' + money(item.credit) + '</strong></td></tr>').join("") : '<tr><td colspan="5" class="empty-cell">No credited sales yet.</td></tr>';
   renderStaffHours(staff);
+  renderStaffLogin();
   document.querySelector("#staffProfile").classList.remove("hidden");
   document.querySelector("#staffProfile").scrollIntoView({ behavior:"smooth", block:"start" });
 }
@@ -1997,10 +2160,13 @@ async function submitStaffForm(event) {
   const data = Object.fromEntries(new FormData(form));
   const days = [...form.querySelectorAll('input[name="days"]:checked')].map((input) => Number(input.value));
   try {
+    const login=staffLoginValues(form);
     message.textContent = "Saving staff...";
-    const result = await api("/api/staff", { method:"POST", body:JSON.stringify(data) });
+    const result = form.elements.staffId.value ? (await api("/api/staff/"+encodeURIComponent(form.elements.staffId.value), {method:"PATCH",body:JSON.stringify(data)}), {id:form.elements.staffId.value}) : await api("/api/staff", { method:"POST", body:JSON.stringify(data) });
+    form.elements.staffId.value=result.id;
+    await saveStaffLogin(result.id,login);
     await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId:result.id, days }) });
-    form.reset(); await loadData(); message.textContent = "Staff member saved.";
+    form.reset(); await loadData(); openStaffProfile(result.id); message.textContent = "Staff member saved.";
   } catch (error) { message.textContent = error.message; }
 }
 async function submitStaffProfile(event) {
@@ -2008,7 +2174,7 @@ async function submitStaffProfile(event) {
   const data = Object.fromEntries(new FormData(event.currentTarget));
   const staffId = data.staffId;
   const days = [...event.currentTarget.querySelectorAll('input[name="days"]:checked')].map((input) => Number(input.value));
-  try { message.textContent = "Saving staff details..."; await api("/api/staff/" + encodeURIComponent(staffId), { method:"PATCH", body:JSON.stringify(data) }); await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId, days }) }); await loadData(); openStaffProfile(staffId); message.textContent = "Staff details and day off saved."; }
+  try { const login=staffLoginValues(event.currentTarget); message.textContent = "Saving staff details..."; await api("/api/staff/" + encodeURIComponent(staffId), { method:"PATCH", body:JSON.stringify(data) }); await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId, days }) }); await saveStaffLogin(staffId,login); await loadData(); openStaffProfile(staffId); message.textContent = "Staff details saved."; }
   catch (error) { message.textContent = error.message; }
 }
 function closeStaffProfile() { document.querySelector("#staffProfile").classList.add("hidden"); }
@@ -2089,32 +2255,89 @@ async function removeRosterRow(event) {
     await loadData(); message.textContent = "Shift removed.";
   } catch (error) { message.textContent = error.message; }
 }
-function renderServices() {
-  const categoryOrder = ["Special for limited time", "Threading", "Eye treatment", "Waxing", "Bleach", "Facial", "Makeup & hairstyle", "Hair cut", "Hair color", "Treatment", "Keratin", "Permanent", "Temporary"];
-  const categories = [...new Set(state.services.map((service) => service.category || "General"))].sort((left, right) => {
-    const leftIndex = categoryOrder.indexOf(left);
-    const rightIndex = categoryOrder.indexOf(right);
-    if (leftIndex >= 0 && rightIndex >= 0) return leftIndex - rightIndex;
-    if (leftIndex >= 0) return -1;
-    if (rightIndex >= 0) return 1;
-    return left.localeCompare(right);
-  });
-  document.querySelector("#serviceCategories").innerHTML = categories.map((category) => '<option value="' + esc(category) + '"></option>').join("");
-  document.querySelector("#serviceCategoriesList").innerHTML = categories.map((category) => {
-    const services = state.services.filter((service) => (service.category || "General") === category);
-    return '<section class="service-category" data-category="' + esc(category) + '"><div class="category-heading"><h3>' + esc(category) + '</h3><span>' + services.length + ' services</span></div><div class="cards service-drop-zone">' + services.map((service) => '<article class="service-card ' + (service.status === "Inactive" ? "service-inactive" : "") + '" draggable="true" data-service-id="' + esc(service.id) + '"><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button><strong>' + esc(service.name) + '</strong><span>' + service.duration_minutes + ' min · ' + esc(service.status) + '</span><em>' + money(service.price_cents) + '</em></article>').join("") + '</div></section>';
-  }).join("");
-  document.querySelectorAll(".edit-service").forEach((button) => button.addEventListener("click", editService));
-  document.querySelectorAll(".service-card").forEach((card) => {
-    card.addEventListener("dragstart", startServiceDrag);
-    card.addEventListener("dragend", endServiceDrag);
-  });
-  document.querySelectorAll(".service-category").forEach((section) => {
-    section.addEventListener("dragover", allowServiceDrop);
-    section.addEventListener("dragleave", leaveServiceDrop);
-    section.addEventListener("drop", dropService);
-  });
+function catalogueTextCompare(left, right) {
+  return String(left || "").localeCompare(String(right || ""), "en", { numeric:true, sensitivity:"base" });
 }
+function refreshCatalogueFilter(selector, values, allLabel) {
+  const select = document.querySelector(selector), current = select.value;
+  const options = [...new Set(values)].sort(catalogueTextCompare);
+  select.innerHTML = '<option value="">' + esc(allLabel) + '</option>' + options.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join("");
+  select.value = options.includes(current) ? current : "";
+  return select.value;
+}
+function catalogueGroups(items, field, fallback) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = item[field] || fallback;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return [...groups.entries()].sort(([left], [right]) => catalogueTextCompare(left, right));
+}
+function catalogueGroupHeading(name, count, columns, subGroup = false) {
+  return '<tr class="catalogue-' + (subGroup ? 'subgroup' : 'group') + '"><th colspan="' + columns + '"><span>' + esc(name) + '</span><span class="catalogue-group-count">' + count + (count === 1 ? ' item' : ' items') + '</span></th></tr>';
+}
+function populateServiceSelect(field, values, selected = "") {
+  const select = document.querySelector("#serviceForm").elements[field];
+  const label = field === "category" ? "category" : "sub-category";
+  const options = [...new Set(values.filter(Boolean))].sort(catalogueTextCompare);
+  select.innerHTML = '<option value="" disabled selected>Choose a ' + label + '</option>' + options.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join("") + '<option value="" data-new-value="true">+ Add new ' + label + '…</option>';
+  if (selected && options.includes(selected)) select.value = selected;
+  toggleNewServiceValue(field);
+}
+function toggleNewServiceValue(field, focus = false) {
+  const form = document.querySelector("#serviceForm");
+  const select = form.elements[field];
+  const custom = select.selectedOptions[0]?.dataset.newValue === "true";
+  const input = form.elements[field === "category" ? "newCategory" : "newSubCategory"];
+  const label = document.querySelector(field === "category" ? "#newServiceCategoryLabel" : "#newServiceSubCategoryLabel");
+  label.classList.toggle("hidden", !custom);
+  input.disabled = !custom;
+  input.required = custom;
+  select.required = !custom;
+  if (custom && focus) input.focus();
+}
+function selectedServiceCategory() {
+  const form = document.querySelector("#serviceForm");
+  return form.elements.category.selectedOptions[0]?.dataset.newValue === "true" ? form.elements.newCategory.value.trim() : form.elements.category.value;
+}
+function refreshServiceSubCategories(selected, preserve = false) {
+  const form = document.querySelector("#serviceForm");
+  const category = selectedServiceCategory();
+  const current = selected === undefined ? form.elements.subCategory.value : selected;
+  const values = ["General", ...state.services.filter((service) => (service.category || "General") === category).map((service) => service.sub_category || "General")];
+  if (preserve && current) values.push(current);
+  populateServiceSelect("subCategory", values, current);
+}
+function refreshServiceEditor(category = "", subCategory = "") {
+  populateServiceSelect("category", ["General", ...state.services.map((service) => service.category || "General"), category], category);
+  refreshServiceSubCategories(subCategory, true);
+}
+function renderServices() {
+  const query = document.querySelector("#serviceSearch").value.trim().toLowerCase();
+  const category = refreshCatalogueFilter("#serviceCategoryFilter", state.services.map((service) => service.category || "General"), "All categories");
+  const categoryServices = state.services.filter((service) => !category || (service.category || "General") === category);
+  const subCategory = refreshCatalogueFilter("#serviceSubCategoryFilter", categoryServices.map((service) => service.sub_category || "General"), "All sub-categories");
+  const status = document.querySelector("#serviceStatusFilter").value;
+  const filtered = Boolean(query || category || subCategory || status);
+  const services = categoryServices.filter((service) => (!subCategory || (service.sub_category || "General") === subCategory) && (!status || (service.status || "Active") === status) && (!query || [service.name, service.category || "General", service.sub_category || "General", service.status || "Active"].some((value) => String(value).toLowerCase().includes(query))));
+  if (document.querySelector("#serviceForm").classList.contains("hidden")) refreshServiceEditor();
+  document.querySelector("#serviceCount").textContent = services.length + " of " + state.services.length + " services · Grouped by category and sub-category";
+  document.querySelector("#servicesTable").innerHTML = catalogueGroups(services, "category", "General").map(([category, categoryServices]) => {
+    return catalogueGroupHeading(category, categoryServices.length, 7) + catalogueGroups(categoryServices, "sub_category", "General").map(([subCategory, group]) => {
+      return catalogueGroupHeading(subCategory, group.length, 7, true) + group.map((service) => '<tr><td><strong>' + esc(service.name) + '</strong></td><td>' + esc(service.category || "General") + '</td><td>' + esc(service.sub_category || "General") + '</td><td>' + esc(service.duration_minutes) + ' min</td><td><strong>' + money(service.price_cents) + '</strong></td><td><span class="status-pill ' + (service.status === "Inactive" ? "inactive" : "") + '">' + esc(service.status || "Active") + '</span></td><td><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button></td></tr>').join("");
+    }).join("");
+  }).join("") || '<tr><td colspan="7" class="empty-cell">' + (filtered ? 'No services match these filters or search.' : 'No services yet. Click Add service to create one.') + '</td></tr>';
+  document.querySelectorAll(".edit-service").forEach((button) => button.addEventListener("click", editService));
+}
+function openServiceForm() {
+  const form = document.querySelector("#serviceForm");
+  form.classList.remove("hidden");
+  document.querySelector("#addServiceButton").setAttribute("aria-expanded", "true");
+  form.scrollIntoView({ behavior:"smooth", block:"start" });
+  form.elements.name.focus({ preventScroll:true });
+}
+
 function editService(event) {
   event.stopPropagation();
   const service = state.services.find((item) => item.id === event.currentTarget.dataset.serviceId);
@@ -2122,31 +2345,35 @@ function editService(event) {
   const form = document.querySelector("#serviceForm");
   form.elements.serviceId.value = service.id;
   form.elements.name.value = service.name;
-  form.elements.category.value = service.category;
-  form.elements.subCategory.value = service.sub_category || "General";
+  refreshServiceEditor(service.category || "General", service.sub_category || "General");
   form.elements.durationMinutes.value = service.duration_minutes;
   form.elements.price.value = (Number(service.price_cents || 0) / 100).toFixed(2);
   form.elements.status.value = service.status || "Active";
-  form.elements.category.readOnly = true;
   document.querySelector("#serviceFormTitle").textContent = "Edit service";
   document.querySelector("#serviceSaveButton").textContent = "Update service";
-  document.querySelector("#cancelServiceEdit").classList.remove("hidden");
-  form.scrollIntoView({ behavior:"smooth", block:"start" });
+  openServiceForm();
 }
 function resetServiceForm() {
   const form = document.querySelector("#serviceForm");
   form.reset();
   form.elements.serviceId.value = "";
-  form.elements.category.readOnly = false;
+  refreshServiceEditor();
   document.querySelector("#serviceFormTitle").textContent = "Add service";
   document.querySelector("#serviceSaveButton").textContent = "Save service";
-  document.querySelector("#cancelServiceEdit").classList.add("hidden");
+  form.classList.add("hidden");
+  document.querySelector("#addServiceButton").setAttribute("aria-expanded", "false");
+  document.querySelector("#addServiceButton").focus({ preventScroll:true });
 }
 async function submitServiceForm(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const payload = Object.fromEntries(new FormData(form));
   const serviceId = payload.serviceId;
+  payload.category = selectedServiceCategory();
+  payload.subCategory = form.elements.subCategory.selectedOptions[0]?.dataset.newValue === "true" ? form.elements.newSubCategory.value.trim() : form.elements.subCategory.value;
+  delete payload.newCategory;
+  delete payload.newSubCategory;
+  if (!payload.category || !payload.subCategory) { message.textContent = "Choose or enter a category and sub-category."; return; }
   try {
     message.textContent = serviceId ? "Updating service..." : "Saving service...";
     await api(serviceId ? "/api/services/" + encodeURIComponent(serviceId) : "/api/services", { method:serviceId ? "PATCH" : "POST", body:JSON.stringify(payload) });
@@ -2155,51 +2382,26 @@ async function submitServiceForm(event) {
     message.textContent = serviceId ? "Service updated." : "Service added.";
   } catch (error) { message.textContent = error.message; }
 }
-function startServiceDrag(event) {
-  draggedServiceId = event.currentTarget.dataset.serviceId;
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", draggedServiceId);
-  event.currentTarget.classList.add("dragging");
-}
-function endServiceDrag(event) {
-  event.currentTarget.classList.remove("dragging");
-  document.querySelectorAll(".service-category.drag-over").forEach((section) => section.classList.remove("drag-over"));
-  draggedServiceId = "";
-}
-function allowServiceDrop(event) {
-  event.preventDefault();
-  event.dataTransfer.dropEffect = "move";
-  event.currentTarget.classList.add("drag-over");
-}
-function leaveServiceDrop(event) {
-  if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.classList.remove("drag-over");
-}
-async function dropService(event) {
-  event.preventDefault();
-  const section = event.currentTarget;
-  section.classList.remove("drag-over");
-  const serviceId = draggedServiceId || event.dataTransfer.getData("text/plain");
-  const service = state.services.find((item) => item.id === serviceId);
-  const category = section.dataset.category;
-  if (!service || !category || service.category === category) return;
-  try {
-    message.textContent = "Moving " + service.name + " to " + category + "...";
-    await api("/api/services/" + encodeURIComponent(service.id), { method:"PATCH", body:JSON.stringify({ name:service.name, category, durationMinutes:service.duration_minutes, price:Number(service.price_cents || 0) / 100, status:service.status }) });
-    await loadData();
-    message.textContent = service.name + " moved to " + category + ".";
-  } catch (error) { message.textContent = error.message; }
-}
 function renderProducts() {
   const query = document.querySelector("#productSearch")?.value.trim().toLowerCase() || "";
-  const products = (state.products || []).filter((product) => !query || [product.name, product.brand, product.category, product.sku, product.barcode].some((value) => String(value || "").toLowerCase().includes(query)));
+  const category = refreshCatalogueFilter("#productCategoryFilter", state.products.map((product) => product.category || "Retail"), "All categories");
+  const categoryProducts = state.products.filter((product) => !category || (product.category || "Retail") === category);
+  const brand = refreshCatalogueFilter("#productBrandFilter", categoryProducts.map((product) => product.brand || "Unbranded"), "All brands");
+  const status = document.querySelector("#productStatusFilter").value;
+  const filtered = Boolean(query || category || brand || status);
+  const stockByProduct = new Map();
+  for (const item of state.inventoryStock || []) {
+    if (!selectedProductBranchId || item.branch_id === selectedProductBranchId) stockByProduct.set(item.product_id, (stockByProduct.get(item.product_id) || 0) + Number(item.quantity || 0));
+  }
+  const products = categoryProducts.filter((product) => (!brand || (product.brand || "Unbranded") === brand) && (!status || (product.status || "Active") === status) && (!query || [product.name, product.brand, product.category || "Retail", product.sku, product.barcode, product.status || "Active"].some((value) => String(value || "").toLowerCase().includes(query)))).map((product) => ({ ...product, stock:stockByProduct.get(product.id) || 0 }));
   const branch = state.branches.find((item) => item.id === selectedProductBranchId);
   const stockLabel = branch ? branch.name : "All branches";
   document.querySelector("#productTableTitle").textContent = branch ? branch.name + " products" : "All products";
   document.querySelector("#productCount").textContent = products.length + " of " + (state.products || []).length + " product" + ((state.products || []).length === 1 ? "" : "s") + " · Stock for " + stockLabel;
-  document.querySelector("#productsTable").innerHTML = products.length ? products.map((product) => {
-    const stock = (state.inventoryStock || []).filter((item) => item.product_id === product.id && (!selectedProductBranchId || item.branch_id === selectedProductBranchId)).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  document.querySelector("#productsTable").innerHTML = products.length ? catalogueGroups(products, "category", "Retail").map(([category, group]) => catalogueGroupHeading(category, group.length, 9) + group.map((product) => {
+    const stock = product.stock;
     return '<tr><td><strong>' + esc(product.name) + '</strong><span class="table-subtext">' + esc(product.id) + '</span></td><td>' + esc(product.brand || "—") + '</td><td>' + esc(product.category || "Retail") + '</td><td><strong>' + esc(product.sku || "—") + '</strong><span class="table-subtext">' + esc(product.barcode || "No barcode") + '</span></td><td><strong class="stock-quantity">' + stock + '</strong><span class="table-subtext">' + esc(branch ? branch.name : "combined") + '</span></td><td>' + money(product.cost_cents) + '</td><td><strong>' + money(product.price_cents) + '</strong></td><td><span class="status-pill ' + (product.status === "Inactive" ? "inactive" : "") + '">' + esc(product.status || "Active") + '</span></td><td><button class="secondary compact-button edit-product" type="button" data-product-id="' + esc(product.id) + '">Edit</button></td></tr>';
-  }).join("") : '<tr><td colspan="9" class="empty-cell">No products match this search.</td></tr>';
+  }).join("")).join("") : '<tr><td colspan="9" class="empty-cell">' + (filtered ? 'No products match these filters or search.' : 'No products yet. Add a product to get started.') + '</td></tr>';
   document.querySelectorAll(".edit-product").forEach((button) => button.addEventListener("click", editProduct));
 }
 function editProduct(event) {
@@ -2241,6 +2443,20 @@ async function submitProductForm(event) {
     await loadData();
     message.textContent = productId ? "Product updated." : "Product added.";
   } catch (error) { message.textContent = error.message; }
+}
+async function importServicesWorkbook(event) {
+  const input=event.currentTarget,file=input.files?.[0];if(!file)return;
+  const button=document.querySelector('#importServicesButton'),resultBox=document.querySelector('#serviceImportResult');
+  button.disabled=true;
+  try{
+    if(file.size>5*1024*1024)throw Error('The workbook must be smaller than 5 MB.');
+    resultBox.textContent='Importing services...';
+    const response=await fetch('/api/services/import',{method:'POST',headers:{'content-type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'},body:file});
+    const result=await response.json();if(!response.ok)throw Error(result.error||'Service import failed.');
+    await loadData();
+    resultBox.textContent=result.created+' created · '+result.updated+' updated · '+result.skipped+' skipped'+(result.errors?.length?' — '+result.errors.join(' '):'');
+  }catch(error){resultBox.textContent=error.message;}
+  finally{input.value='';button.disabled=!userCan('services',true)||!currentUser.allBranches;}
 }
 async function importProductsWorkbook(event) {
   const file = event.currentTarget.files?.[0];
@@ -2299,6 +2515,7 @@ function customerSaleStaff(item) {
 function formatCustomerDate(value) { return value ? new Date(value).toLocaleString("en-AU", { dateStyle:"medium", timeStyle:"short" }) : ""; }
 function closeCustomerProfile() { document.querySelector("#customerProfile").classList.add("hidden"); }
 function showTab(tabId) {
+  if (!canViewTab(tabId)) return;
   document.querySelectorAll(".nav,.tab").forEach((item) => item.classList.remove("active"));
   document.querySelector('.nav[data-tab="' + cssEsc(tabId) + '"]')?.classList.add("active");
   document.querySelector("#" + tabId)?.classList.add("active");
@@ -2399,7 +2616,7 @@ function openBookingDetail(bookingId) {
   detail.querySelector(".cancel-booking-detail")?.addEventListener("click", async () => { if (!window.confirm('Cancel this booking?')) return; try { await api('/api/bookings/' + encodeURIComponent(booking.id), { method:'PATCH', body:JSON.stringify({ status:'Cancelled' }) }); await refreshPosData(); detail.classList.add("hidden"); message.textContent = 'Booking cancelled.'; } catch (error) { message.textContent = error.message; } });
   detail.querySelector(".checkout-booking-detail")?.addEventListener("click", () => { document.querySelector("#bookingCheckout").value = booking.id; selectBookingForCheckout(); showTab("pos"); });
 }
-function renderSales() { document.querySelector("#salesTable").innerHTML = state.sales.map((s) => '<tr><td>' + esc(s.branch_name) + '</td><td>' + money(s.total_cents) + '</td><td>' + esc(s.payment_method) + '</td><td><span class="pill">' + esc(s.status) + '</span></td></tr>').join(""); }
+function renderSales() { document.querySelector("#salesTable").innerHTML = state.sales.map(s=>'<tr><td>'+esc(s.branch_name)+'</td><td>'+money(s.total_cents)+'</td><td>'+esc(s.payment_method)+'</td><td>'+esc(s.status)+'</td><td>'+esc(s.recorded_by_name||'Not recorded')+'</td><td><button type="button" class="secondary" data-edit-sale="'+esc(s.id)+'">Edit sale</button></td></tr>').join('');document.querySelectorAll('[data-edit-sale]').forEach(button=>button.addEventListener('click',()=>openSaleEditor(button.dataset.editSale))); }
 function inventoryRows() {
   return state.branches.flatMap((branch) => (state.products || []).map((product) => {
     const stock = (state.inventoryStock || []).find((item) => item.branch_id === branch.id && item.product_id === product.id);
@@ -2420,7 +2637,7 @@ function renderInventory() {
   document.querySelector("#inventoryTable").innerHTML = matrix.body;
 }
 function renderClosings() {
-  document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + '</div></td><td>' + money(c.cash_taken_cents || 0) + '</td><td>' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '<div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
+  document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '<div class="hint">Closed by '+esc(c.closed_by||'Not recorded')+'</div></td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + '</div></td><td>' + money(c.cash_taken_cents || 0) + '</td><td>' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '<div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
   document.querySelector("#adminClosingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr data-closing-id="' + esc(c.id) + '"><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + ' / sales cash ' + money(c.expected_cash_cents) + ' / card ' + money(c.expected_card_cents) + '</div></td><td><input name="actualCash" type="number" min="0" step="0.01" value="' + dollars(c.actual_cash_cents) + '"><div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><input name="cashTaken" type="number" min="0" step="0.01" value="' + dollars(c.cash_taken_cents || 0) + '"><div class="hint">Remaining ' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '</div></td><td><input name="actualCard" type="number" min="0" step="0.01" value="' + dollars(c.actual_card_cents) + '"><div class="hint">Variance ' + money(c.card_variance_cents) + '</div></td><td><select name="status"><option' + selected(c.status, "Balanced") + '>Balanced</option><option' + selected(c.status, "Variance") + '>Variance</option><option' + selected(c.status, "Manager Review") + '>Manager Review</option><option' + selected(c.status, "Approved") + '>Approved</option></select></td><td><input name="approvedBy" value="' + esc(c.approved_by || "") + '" placeholder="Manager"><textarea name="notes" placeholder="Notes">' + esc(c.notes || "") + '</textarea></td><td><button class="secondary save-closing" type="button">Save</button></td></tr>').join("");
   document.querySelectorAll(".save-closing").forEach((button) => button.addEventListener("click", saveClosingRow));
 }
@@ -2428,18 +2645,26 @@ function reportQuery() {
   return new URLSearchParams({ from:document.querySelector("#reportFrom").value, to:document.querySelector("#reportTo").value, branchId:document.querySelector("#reportBranch").value }).toString();
 }
 async function loadReports() {
-  if (appMode !== "admin") return;
+  if (appMode !== "admin" || (!userCan("reports") && !userCan("payroll"))) return;
+  const requestId = ++reportRequestId;
+  const query = reportQuery();
   try {
     document.querySelector("#reportMetrics").innerHTML = '<article><span>Reports</span><strong>Loading…</strong></article>';
-    reportData = await api("/api/reports?" + reportQuery());
+    const result = await api("/api/reports?" + query);
+    if (requestId !== reportRequestId) return;
+    reportData = result;
     renderReports();
-  } catch (error) { message.textContent = error.message; }
+    applyAccessUi();
+  } catch (error) { if (requestId === reportRequestId) message.textContent = error.message; }
 }
 function reportEmpty(cols, label = "No records for this period.") { return '<tr><td colspan="' + cols + '" class="empty-cell">' + esc(label) + '</td></tr>'; }
 function reportTime(value) { return value ? new Date(value).toLocaleString("en-AU", { day:"2-digit", month:"short", hour:"numeric", minute:"2-digit" }) : "—"; }
 function renderReports() {
   if (!reportData) return;
   const summary = reportData.summary || {};
+  document.querySelector("#reportStaffDailyTable").innerHTML = reportData.staffDailyRows?.length ? reportData.staffDailyRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong></td><td>' + esc(row.role) + '</td><td>' + esc(row.branch) + '</td><td><strong>' + money(row.creditedSalesCents) + '</strong></td><td>' + row.serviceItems + '</td><td>' + row.transactions + '</td></tr>').join("") : reportEmpty(7, "No staff sales for this period.");
+  document.querySelector("#reportManagerDailyTable").innerHTML = reportData.managerDailyRows?.length ? reportData.managerDailyRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.manager) + '</strong></td><td>' + esc(row.branch) + '</td><td><strong>' + money(row.revenueCents) + '</strong></td><td>' + row.transactions + '</td></tr>').join("") : reportEmpty(5, "No manager roster assignments for this period.");
+  document.querySelector("#reportBranchDailyTable").innerHTML = reportData.branchDailyRows?.length ? reportData.branchDailyRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.branch) + '</strong></td><td><strong>' + money(row.revenueCents) + '</strong></td><td>' + row.transactions + '</td><td>' + row.productsSold + '</td><td>' + row.servicesSold + '</td></tr>').join("") : reportEmpty(6, "No branch sales for this period.");
   document.querySelector("#reportMetrics").innerHTML = [["Total sales", money(summary.revenueCents)], ["Transactions", summary.transactions || 0], ["Products sold", summary.productsSold || 0], ["Services sold", summary.servicesSold || 0], ["Online bookings", summary.onlineBookings || 0], ["Walk-ins", summary.walkIns || 0], ["Worked hours", Number(summary.workedHours || 0).toFixed(2)]].map(([label, value]) => '<article><span>' + label + '</span><strong>' + value + '</strong></article>').join("");
   document.querySelector("#reportBranchTable").innerHTML = reportData.branchRows.length ? reportData.branchRows.map((row) => '<tr><td><strong>' + esc(row.branch) + '</strong></td><td><strong>' + money(row.revenueCents) + '</strong></td><td>' + row.transactions + '</td><td>' + row.productsSold + '</td><td>' + row.servicesSold + '</td><td>' + row.onlineBookings + '</td><td>' + row.manualBookings + '</td><td>' + row.walkIns + '</td></tr>').join("") : reportEmpty(8);
   document.querySelector("#reportStaffTable").innerHTML = reportData.staffRows.length ? reportData.staffRows.map((row) => '<tr><td><strong>' + esc(row.staff) + '</strong></td><td>' + esc(row.role) + '</td><td>' + money(row.creditedSalesCents) + '</td><td>' + row.serviceItems + '</td><td><strong>' + money(row.managerStoreSalesCents) + '</strong></td></tr>').join("") : reportEmpty(5);
@@ -2447,7 +2672,8 @@ function renderReports() {
   document.querySelector("#reportServicesTable").innerHTML = reportData.serviceRows.length ? reportData.serviceRows.map((row) => '<tr><td><strong>' + esc(row.name) + '</strong></td><td>' + row.quantity + '</td><td>' + money(row.revenueCents) + '</td></tr>').join("") : reportEmpty(3, "No services sold.");
   document.querySelector("#reportBookingsTable").innerHTML = reportData.bookingRows.length ? reportData.bookingRows.map((row) => '<tr><td><strong>' + esc(row.branch) + '</strong></td><td><span class="source-pill">' + esc(row.source) + '</span></td><td>' + row.count + '</td><td>' + money(row.valueCents) + '</td><td>' + row.completed + '</td></tr>').join("") : reportEmpty(5);
   document.querySelector("#reportPayrollTable").innerHTML = reportData.payrollRows.length ? reportData.payrollRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong><span class="table-subtext">' + esc(row.role) + '</span></td><td>' + esc(row.branch) + '</td><td>' + esc(reportTime(row.clockIn)) + '</td><td>' + Number(row.breakMinutes || 0) + ' min</td><td>' + esc(reportTime(row.clockOut)) + '</td><td><strong>' + Number(row.hours || 0).toFixed(2) + '</strong></td><td>' + money(row.hourlyRateCents) + '</td><td><strong>' + money(row.grossPayCents) + '</strong></td><td><span class="status-pill ' + (row.status === "Complete" ? "" : "inactive") + '">' + esc(row.status) + '</span></td></tr>').join("") : reportEmpty(10, "No clock-in records for this period.");
-  document.querySelectorAll(".report-export").forEach((link) => { link.href = "/api/reports/export?type=" + encodeURIComponent(link.dataset.reportType) + "&" + reportQuery(); });
+  const exportQuery = new URLSearchParams(reportData.range).toString();
+  document.querySelectorAll(".report-export").forEach((link) => { link.href = "/api/reports/export?type=" + encodeURIComponent(link.dataset.reportType) + "&" + exportQuery; });
 }
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
@@ -2587,9 +2813,11 @@ async function submitSale(event) {
     setSaleMessage("Enter cash and/or card payment covering the " + money(saleTotal) + " sale total.", true);
     return;
   }
+  let actor;try{actor=await askActor(data.get("branchId"),false,"Complete purchase — staff PIN");}catch(error){setSaleMessage(error.message,true);return;}if(!actor)return;
   submitButton.disabled = true;
   submitButton.textContent = "Processing purchase...";
   await submitJson("/api/sales", {
+    ...actor,
     branchId:data.get("branchId"),
     bookingId:data.get("bookingId"),
     customerMode,
@@ -2632,16 +2860,19 @@ function updateCustomerMode() {
 }
 async function saveBookingRow(event) {
   const row = event.target.closest("tr");
-  await api("/api/bookings/" + row.dataset.bookingId, { method:"PATCH", body:JSON.stringify({ bookingDate:row.querySelector('input[name="bookingDate"]').value, bookingTime:row.querySelector('input[name="bookingTime"]').value, staffId:row.querySelector('select[name="staffId"]').value, status:row.querySelector('select[name="status"]').value }) });
+  const booking=state.bookings.find(b=>b.id===row.dataset.bookingId);const actor=await askActor(booking.branch_id,true,"Authorize booking edit");if(!actor)return;
+  await api("/api/bookings/" + row.dataset.bookingId, { method:"PATCH", body:JSON.stringify({...actor, bookingDate:row.querySelector('input[name="bookingDate"]').value, bookingTime:row.querySelector('input[name="bookingTime"]').value, staffId:row.querySelector('select[name="staffId"]').value, status:row.querySelector('select[name="status"]').value }) });
   message.textContent = "Booking updated.";
   await refreshPosData();
 }
 async function saveClosingRow(event) {
   const row = event.target.closest("tr");
-  await api("/api/daily-closing/" + row.dataset.closingId, { method:"PATCH", body:JSON.stringify({ actualCash:row.querySelector('input[name="actualCash"]').value, cashTaken:row.querySelector('input[name="cashTaken"]').value, actualCard:row.querySelector('input[name="actualCard"]').value, status:row.querySelector('select[name="status"]').value, approvedBy:row.querySelector('input[name="approvedBy"]').value, notes:row.querySelector('textarea[name="notes"]').value }) });
+  const closing=state.dailyClosings.find(c=>c.id===row.dataset.closingId);const actor=await askActor(closing.branch_id,true,"Authorize closing edit");if(!actor)return;
+  await api("/api/daily-closing/" + row.dataset.closingId, { method:"PATCH", body:JSON.stringify({...actor, actualCash:row.querySelector('input[name="actualCash"]').value, cashTaken:row.querySelector('input[name="cashTaken"]').value, actualCard:row.querySelector('input[name="actualCard"]').value, status:row.querySelector('select[name="status"]').value, approvedBy:row.querySelector('input[name="approvedBy"]').value, notes:row.querySelector('textarea[name="notes"]').value }) });
   message.textContent = "Daily closing updated.";
   await loadData();
 }
+document.querySelectorAll("[data-denomination]").forEach(input=>input.addEventListener("input",renderClosingPreview));
 function renderClosingPreview() {
   const expectedBox = document.querySelector("#closingExpected");
   const varianceBox = document.querySelector("#closingVariance");
@@ -2651,7 +2882,8 @@ function renderClosingPreview() {
   const totals = expectedClosingPreview(closingDate);
   const previousCash = previousClosingCashPreview(closingDate);
   const openingFloat = Math.round(Number(form.querySelector('input[name="openingFloat"]').value || 0) * 100);
-  const actualCash = Math.round(Number(form.querySelector('input[name="actualCash"]').value || 0) * 100);
+  const actualCash = [...form.querySelectorAll("[data-denomination]")].reduce((sum,input)=>sum+Number(input.dataset.denomination)*100*Number(input.value||0),0);
+  form.elements.actualCash.value=dollars(actualCash);
   const cashTaken = Math.round(Number(form.querySelector('input[name="cashTaken"]').value || 0) * 100);
   const remainingCash = Math.max(0, actualCash - cashTaken);
   const actualCard = Math.round(Number(form.querySelector('input[name="actualCard"]').value || 0) * 100);
@@ -2792,7 +3024,7 @@ function printLastReceipt() {
   receipt.focus();
   receipt.print();
 }
-function branchName(id) { return state.branches.find((branch) => branch.id === id)?.name || "No branch"; }
+function branchName(id) { return [...state.branches, ...(state.archivedBranches || [])].find((branch) => branch.id === id)?.name || "No branch"; }
 function money(cents) { return new Intl.NumberFormat("en-AU", { style:"currency", currency:"AUD" }).format(Number(cents || 0) / 100); }
 function dollars(cents) { return (Number(cents || 0) / 100).toFixed(2); }
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c])); }`;
@@ -2825,6 +3057,10 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .full { width:100%; }
 .hidden { display:none; }
 .admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
+[hidden] { display:none!important; }
+.account-tools { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; padding:12px 40px; background:#fff; border-bottom:1px solid var(--line); font-size:13px; }
+#access .panel { margin-top:20px; }
+#accessPolicyRows select { min-width:170px; max-width:260px; }
 .hint { margin:8px 0 0; color:var(--muted); font-size:13px; }
 .sale-message { min-height:22px; margin:10px 0 0; color:#087f5b; font-size:13px; font-weight:800; }
 .sale-message:empty { display:none; }
@@ -2915,9 +3151,9 @@ legend { grid-column:1/-1; }
 .button-link { display:inline-flex; align-items:center; justify-content:center; text-decoration:none; }
 .import-result { position:relative; z-index:1; margin:14px 0 0; color:var(--brand); font-size:12px; font-weight:800; }
 .product-table-panel { margin-top:20px; padding:0; overflow:hidden; }
-.product-table-heading { padding:20px 22px; background:#fff; border-bottom:1px solid var(--line); }
+.product-table-heading { flex-wrap:wrap; gap:16px; padding:20px 22px; background:#fff; border-bottom:1px solid var(--line); }
 .product-table-heading h2 { margin-top:2px; }
-.product-table-controls { display:flex; align-items:end; gap:10px; }
+.product-table-controls { display:flex; flex-wrap:wrap; align-items:end; gap:10px; max-width:100%; }
 .product-table-controls label { width:min(230px,26vw); color:var(--muted); font-size:11px; text-transform:uppercase; }
 .product-table-controls select,.product-table-controls input { margin:4px 0 0; min-height:40px; color:var(--ink); text-transform:none; }
 .product-table-controls .product-search { width:min(330px,34vw); }
@@ -2925,6 +3161,10 @@ legend { grid-column:1/-1; }
 .product-table th:first-child,.product-table td:first-child { padding-left:22px; }
 .product-table th:last-child,.product-table td:last-child { padding-right:22px; text-align:right; }
 .product-table tbody tr:hover { background:#fdfafd; }
+.product-table .catalogue-group th { padding:15px 22px; text-align:left; background:var(--brand-soft); color:var(--brand); font-size:14px; text-transform:none; border-top:2px solid var(--line); }
+.product-table .catalogue-subgroup th { padding:10px 22px 10px 34px; text-align:left; background:#f7f8fa; color:var(--ink); font-size:12px; text-transform:none; }
+.catalogue-group-count { display:inline-block; margin-left:12px; color:var(--muted); font-size:11px; font-weight:500; }
+#newServiceCategoryLabel.hidden,#newServiceSubCategoryLabel.hidden { display:none; }
 .table-subtext { display:block; max-width:230px; margin-top:3px; overflow:hidden; color:var(--muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
 .status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; color:#087f5b; background:#e9f8f2; border-radius:999px; font-size:11px; font-weight:800; }
 .status-pill::before { width:6px; height:6px; content:""; background:currentColor; border-radius:50%; }
@@ -2967,7 +3207,7 @@ legend { grid-column:1/-1; }
 .report-export-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .source-pill { display:inline-flex; padding:5px 9px; color:var(--brand); background:var(--brand-soft); border-radius:999px; font-size:11px; font-weight:800; }
 .payroll-report table { min-width:1120px; }
-.service-editor { position:sticky; top:20px; align-self:start; }
+.service-editor { max-width:760px; margin-bottom:20px; }
 .service-category { margin-top:22px; }
 .service-category:first-child { margin-top:12px; }
 .category-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--line); }
@@ -2978,7 +3218,7 @@ legend { grid-column:1/-1; }
 .service-card { position:relative; padding-right:54px !important; cursor:grab; user-select:none; }
 .service-card:active { cursor:grabbing; }
 .service-card.dragging { opacity:.35; }
-.edit-service { position:absolute; top:10px; right:10px; width:32px; min-height:32px; padding:0; color:#9b3444; background:#fff; border:1px solid #eadbd6; border-radius:50%; font-size:19px; line-height:1; cursor:pointer; }
+.edit-service { position:static; width:40px; min-height:40px; padding:0; color:#9b3444; background:#fff; border:1px solid #eadbd6; border-radius:50%; font-size:19px; line-height:1; cursor:pointer; }
 .edit-service:hover,.edit-service:focus-visible { color:#fff; background:#9b3444; outline:none; }
 .staff-branch-group { padding:10px; margin:12px -10px 0; border:2px solid transparent; border-radius:10px; transition:.15s ease; }
 .staff-branch-group.drag-over { background:#fff3ef; border-color:#9b3444; }
@@ -3134,5 +3374,46 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search{width:100%}.time-clock-panel,.report-filters{grid-template-columns:1fr}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
+
+/* Branch management */
+.branch-hours-table { min-width:480px; width:100%; table-layout:fixed; }.branch-hours-table th:last-child { width:68px; }.branch-hours-table td,.branch-hours-table th { padding:10px 8px; }.branch-hours-table input { width:100%; }
+.branch-dialog { width:min(800px,calc(100vw - 32px)); max-height:90dvh; padding:0; border:1px solid #e1e6ed; border-radius:20px; color:var(--ink); background:#fff; box-shadow:0 24px 80px #18213438; }
+.branch-dialog::backdrop { background:#17213788; backdrop-filter:blur(3px); }
+.branch-dialog-header { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; padding:24px 28px; border-bottom:1px solid var(--line); background:#fff; }
+.branch-dialog h2,.branch-dialog h3 { margin:0; }.branch-dialog .hint { margin:6px 0 0; line-height:1.5; }
+.branch-dialog-body { padding:24px 28px; background:#f7f9fb; }
+.branch-form-section { padding:20px; margin-bottom:18px; background:#fff; border:1px solid var(--line); border-radius:12px; }.branch-form-section:last-child { margin-bottom:0; }
+.branch-dialog-footer { position:sticky; bottom:0; padding:16px 28px; border-top:1px solid var(--line); background:#fff; }.branch-dialog-footer p:empty { display:none; }.branch-dialog-footer .section-heading { margin:0; }
+.branch-dialog [role=alert] { color:#a32937; font-size:13px; }
+.branch-icon-button { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; min-height:32px; padding:0!important; border-radius:8px; vertical-align:middle; }
+.branch-icon-button.danger { background:#fff; color:#ad3c48; border:1px solid #efdae0; }.branch-icon-button.danger:hover { background:#fff0f2; }
+.branch-dialog .small,.branch-archive .small { padding:7px 10px; font-size:12px; }
+.branch-archive { margin-top:18px; }.branch-archive summary { cursor:pointer; font-weight:700; }.branch-archive summary .pill { margin-left:8px; }
+#branchHoursEditor input[type=time] { min-width:108px; padding:8px; margin:0; }#branchHoursEditor input[type=checkbox] { width:18px; height:18px; accent-color:#405e88; }#branchHoursEditor input:disabled { opacity:.45; }
+.branch-closure-row { grid-template-columns:1fr 1.4fr auto; align-items:end; gap:12px; }.branch-closure-row button { margin-bottom:14px; padding:9px 12px; font-size:12px; }
+#branchClosedDatesEditor:empty::after { content:"No closed dates added. Your weekly timetable applies every day."; display:block; padding:16px; border:1px dashed #d7dfe8; border-radius:8px; font-size:13px; color:#67758a; }
+.branch-action-dialog { width:min(520px,calc(100vw - 32px)); }.branch-action-warning { padding:16px; border:1px solid #eed7b4; background:#fff8eb; color:#715321; border-radius:10px; font-size:14px; line-height:1.6; margin-bottom:20px; }
+.branch-dialog [hidden] { display:none!important; }
+@media(max-width:700px){.branch-dialog-header,.branch-dialog-body{padding:18px}.branch-dialog-footer{padding:14px 18px}.branch-form-section{padding:14px}.branch-form-section .section-heading{flex-wrap:wrap;gap:12px}.branch-closure-row{grid-template-columns:1fr}.branch-closure-row button{justify-self:start}.branch-dialog .grid{gap:0}}
 `;
 }
+
+export default {
+  async fetch(request, env, ctx) {
+    try {
+      const access = await accessGate(request, env);
+      if (access.response) return access.response;
+      const response = await application.fetch(request, env, { identity:access.user, waitUntil:(promise)=>ctx.waitUntil(promise) });
+      const protectedResponse = await protectData(response, request, access.user, env);
+      const headers = new Headers(protectedResponse.headers);
+      headers.set("cache-control", "no-store");
+      headers.set("x-frame-options", "DENY");
+      headers.set("x-content-type-options", "nosniff");
+      headers.set("referrer-policy", "same-origin");
+      return new Response(protectedResponse.body, { status:protectedResponse.status, headers });
+    } catch (error) {
+      console.error("Access request failed", error.message);
+      return Response.json({ error:"Unable to complete the request. Please sign in again or contact an administrator." }, { status:500, headers:{"cache-control":"no-store"} });
+    }
+  }
+};

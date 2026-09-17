@@ -10,7 +10,9 @@
     "db:local": "wrangler d1 execute kunchas-db --local --file=./schema.sql && wrangler d1 execute kunchas-db --local --file=./services-upgrade.sql && wrangler d1 execute kunchas-db --local --file=./roster-upgrade.sql && wrangler d1 execute kunchas-db --local --file=./staff-no-default-branch.sql && wrangler d1 execute kunchas-db --local --file=./reporting-upgrade.sql && wrangler d1 execute kunchas-db --local --file=./time-break-upgrade.sql",
     "db:remote": "wrangler d1 execute kunchas-db --remote --file=./schema.sql && wrangler d1 execute kunchas-db --remote --file=./services-upgrade.sql && wrangler d1 execute kunchas-db --remote --file=./roster-upgrade.sql && wrangler d1 execute kunchas-db --remote --file=./staff-no-default-branch.sql && wrangler d1 execute kunchas-db --remote --file=./reporting-upgrade.sql && wrangler d1 execute kunchas-db --remote --file=./time-break-upgrade.sql",
     "db:service-subcategory:local": "wrangler d1 execute kunchas-db --local --file=./service-subcategory-upgrade.sql",
-    "db:service-subcategory:remote": "wrangler d1 execute kunchas-db --remote --file=./service-subcategory-upgrade.sql"
+    "db:service-subcategory:remote": "wrangler d1 execute kunchas-db --remote --file=./service-subcategory-upgrade.sql",
+    "db:access:local": "wrangler d1 execute kunchas-db --local --file=./staff-access.sql",
+    "db:access:remote": "wrangler d1 execute kunchas-db --remote --file=./staff-access.sql"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
