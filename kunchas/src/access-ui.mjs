@@ -11,6 +11,7 @@ function canManageAccess() { return ["owner","admin"].includes(currentUser?.role
 function canViewTab(tab) { return tab === "access" ? canManageAccess() : tab === "reports" ? userCan("reports") || userCan("payroll") : userCan(tabPermissions[tab]); }
 function roleName(role) { return ({owner:"SuperAdmin (Owner)",admin:"Admin",manager:"Manager",staff:"Staff",none:"No access"})[role] || "No access"; }
 function applyAccessUi() {
+  document.querySelector("#addStaffButton").hidden=!userCan("staff",true)||!currentUser.allBranches;
   if(currentUser.role==="branch"){document.querySelector("#changePinButton").hidden=true;document.querySelector("#signOutButton").hidden=true;}
   document.querySelector("#importServicesButton").hidden=!userCan("services",true)||!currentUser.allBranches;
   document.querySelector("#importProductsButton").hidden=!userCan("products",true)||!currentUser.allBranches;

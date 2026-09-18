@@ -170,7 +170,7 @@ export async function accessGate(request,env){
   let section='';
   if(p==='/api/pos-data')section=['pos','bookings','closing','time_clock'].find(key=>can(user,key))||'pos';
   else if(p.startsWith('/api/reports'))section=['payroll','xero'].includes(url.searchParams.get('type'))?'payroll':'reports';
-  else if(p==='/api/sales')section='pos';
+  else if(p==='/api/sales'||p==='/api/checkout-bookings')section='pos';
   else if(p==='/api/time-clock')section='time_clock';
   else if(p.startsWith('/api/branch-bookings')||p.startsWith('/api/bookings'))section='bookings';
   else if(p.startsWith('/api/customers'))section='customers';
@@ -179,7 +179,7 @@ export async function accessGate(request,env){
   else if(p.startsWith('/api/staff-roster')||p.startsWith('/api/staff-regular-days-off'))section='roster';
   else if(p.startsWith('/api/staff'))section='staff';
   else if(p.startsWith('/api/stock-movements'))section='inventory';
-  else if(p.startsWith('/api/daily-closing'))section='closing';
+  else if(p.startsWith('/api/daily-closing')||p==='/api/cash-drawer-open')section='closing';
   else if(p.startsWith('/api/branches')||p==='/api/branch-hours'||p==='/api/closed-dates')section='branches';
   else if(p==='/api/discounts')section='pos';
   else return {response:denied()};
@@ -237,7 +237,7 @@ export async function protectData(response,request,user,env){
     if(!can(user,'reports')){for(const key of ['branchRows','staffRows','staffDailyRows','managerDailyRows','branchDailyRows','productRows','serviceRows','bookingRows'])data[key]=[];data.summary={workedHours:data.summary.workedHours};}
     return reply(data);
   }
-  for(const key of ['branches','bookings','sales','saleItems','branchHours','closedDates','inventoryStock','stockMovements','dailyClosings','staffRoster','timeEntries','customers'])if(Array.isArray(data[key]))data[key]=data[key].filter(row=>hasBranch(user,key==='branches'?row.id:row.branch_id));
+  for(const key of ['branches','bookings','sales','saleItems','branchHours','closedDates','inventoryStock','stockMovements','dailyClosings','cashDrawerOpens','staffRoster','timeEntries','customers'])if(Array.isArray(data[key]))data[key]=data[key].filter(row=>hasBranch(user,key==='branches'?row.id:row.branch_id));
   for(const branch of data.branches||[]){delete branch.pin_code;if(!can(user,'branches'))delete branch.post_code;}
   if(data.branch){delete data.branch.pin_code;if(!can(user,'branches'))delete data.branch.post_code;}
   if(p==='/api/branches-public')return reply(data);
@@ -253,7 +253,7 @@ export async function protectData(response,request,user,env){
   if(!allowed('pos','reports','dashboard','closing','staff')){data.sales=[];data.saleItems=[];}
   if(!allowed('inventory','products','pos','dashboard'))data.inventoryStock=[];
   if(!allowed('inventory'))data.stockMovements=[];
-  if(!allowed('closing','reports'))data.dailyClosings=[];
+  if(!allowed('closing','reports')){data.dailyClosings=[];data.cashDrawerOpens=[];}
   if(!allowed('roster','staff','dashboard')){data.staffRoster=[];data.staffRegularDaysOff=[];}
   if(!can(user,'payroll'))data.timeEntries=(data.timeEntries||[]).filter(row=>user.role==='branch'||row.staff_id===user.staffId).map(({hourly_rate_cents,...row})=>row);
   const employeeIds=new Set([user.staffId,...(data.staffRoster||[]).map(row=>row.staff_id),...(data.timeEntries||[]).map(row=>row.staff_id)]);

@@ -82,7 +82,12 @@ test('role-specific dashboard pages render valid client scripts',async()=>{
   const response=await worker.fetch(f.req(path),f.env,{waitUntil(){}});
   assert.equal(response.status,200);
   const html=await response.text();assert.ok(html.includes(role==='owner'?'SuperAdmin Dashboard (Owner)':role==='admin'?'Admin Dashboard':'Manager Dashboard'));
+  assert.equal((html.match(/id="changePinButton"/g)||[]).length,1);
+  assert.equal((html.match(/id="signOutButton"/g)||[]).length,1);
+  assert.match(html,/<details class="account-dropdown"[^>]*>[\s\S]*?id="changePinButton"[\s\S]*?id="signOutButton"[\s\S]*?<\/details>/);
+  assert.ok(!html.includes('>Branch workspace<'));
+  assert.match(html,/<form class="panel staff-editor" id="staffForm" hidden>/);
+  assert.ok(html.includes('id="addStaffButton"'));
   for(const match of html.matchAll(/<script>([\s\S]*?)<\/script>/g))new vm.Script(match[1]);
  }
 });
-

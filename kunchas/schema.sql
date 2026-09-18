@@ -199,6 +199,17 @@ CREATE TABLE IF NOT EXISTS daily_closings (
   approved_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS cash_drawer_opens (
+  id TEXT PRIMARY KEY,
+  opened_at TEXT NOT NULL,
+  branch_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_name TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('checkout', 'daily_closing')),
+  reason TEXT NOT NULL DEFAULT '',
+  sale_id TEXT
+);
+
 INSERT OR IGNORE INTO branches (id, name, address, phone, post_code, pin_code, status) VALUES
   ('branch-city', 'Kunchas City', 'City branch', '02 9000 1001', '2000', '2000', 'Open'),
   ('branch-parramatta', 'Kunchas Parramatta', 'Parramatta branch', '02 9000 1002', '2150', '2150', 'Open'),
@@ -246,5 +257,6 @@ CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_branch_closed_dates ON branch_closed_dates(branch_id, closed_date);
 CREATE INDEX IF NOT EXISTS idx_stock_movements_product ON stock_movements(product_id, branch_id);
 CREATE INDEX IF NOT EXISTS idx_daily_closings_branch_date ON daily_closings(branch_id, closing_date);
+CREATE INDEX IF NOT EXISTS idx_cash_drawer_opens_branch_time ON cash_drawer_opens(branch_id, opened_at DESC);
 CREATE INDEX IF NOT EXISTS idx_time_entries_staff_clock ON time_entries(staff_id, clock_in);
 CREATE INDEX IF NOT EXISTS idx_time_entries_branch_clock ON time_entries(branch_id, clock_in);

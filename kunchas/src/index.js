@@ -1,5 +1,7 @@
 import { verifyActor, closeWithCounts, saleDetails, editSale } from "./pos-accountability.mjs";
 import { posPinHtml, posPinScript } from "./pos-pin-ui.mjs";
+import { checkoutBookings } from "./checkout-bookings.mjs";
+import { recordCashDrawerOpen } from "./cash-drawer.mjs";
 import { brandLogo } from "./brand-logo.mjs";
 import { publicBookingRoute } from "./public-booking.mjs";
 import { branchWindow, validDate, minutesOf } from "./booking-schedule.mjs";
@@ -43,6 +45,7 @@ const application = {
         return listPublicBranches(env);
       }
 
+      if (request.method === "GET" && url.pathname === "/api/checkout-bookings") return checkoutBookings(request, env);
       if (request.method === "GET" && url.pathname === "/api/pos-data") {
         const auth = await authorizeBranch(request, env);
         if (auth) return auth;
@@ -52,8 +55,11 @@ const application = {
         const branchId = clean(request.headers.get('x-branch-id'));
         const date = clean(url.searchParams.get('date'));
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return jsonResponse({error:'Choose a valid closing date.'},400);
-        const sales = await all(env,"SELECT s.*,b.name AS branch_name FROM sales s JOIN branches b ON b.id=s.branch_id WHERE s.branch_id=? AND substr(s.created_at,1,10)=? ORDER BY s.created_at DESC",[branchId,date]);
-        return jsonResponse({sales});
+        const [sales, drawerOpens] = await Promise.all([
+          all(env,"SELECT s.*,b.name AS branch_name FROM sales s JOIN branches b ON b.id=s.branch_id WHERE s.branch_id=? AND substr(s.created_at,1,10)=? ORDER BY s.created_at DESC",[branchId,date]),
+          all(env,"SELECT * FROM cash_drawer_opens WHERE branch_id=? AND substr(opened_at,1,10)=? ORDER BY opened_at DESC",[branchId,date])
+        ]);
+        return jsonResponse({sales,drawerOpens});
       }
       if (request.method === 'GET' && url.pathname === '/api/recent-sales') {
         const branchId = clean(request.headers.get('x-branch-id'));
@@ -97,6 +103,8 @@ const application = {
         if (auth) return auth;
         return closeWithCounts(request, env, expectedClosingTotals, previousRemainingCash);
       }
+
+      if (request.method === "POST" && url.pathname === "/api/cash-drawer-open") return recordCashDrawerOpen(request, env);
 
       if (request.method === "POST" && url.pathname === "/api/time-clock") {
         const auth = await authorizeBranch(request, env);
@@ -229,7 +237,7 @@ async function listPublicBranches(env) {
 
 async function getPosData(request, env) {
   const branchId = request.headers.get("x-branch-id");
-  const [branch, staff, services, products, customers, bookings, sales, branchHours, closedDates, dailyClosings, timeEntries] = await Promise.all([
+  const [branch, staff, services, products, customers, bookings, sales, branchHours, closedDates, dailyClosings, cashDrawerOpens, timeEntries] = await Promise.all([
     all(env, "SELECT id, name, address, phone, post_code FROM branches WHERE id = ?", [branchId]),
     all(env, `SELECT st.*, br.name AS branch_name
       FROM staff st
@@ -260,6 +268,7 @@ async function getPosData(request, env) {
       LEFT JOIN branches br ON br.id = dc.branch_id
       WHERE dc.branch_id = ?
       ORDER BY dc.closing_date DESC LIMIT 60`, [branchId]),
+    all(env, "SELECT * FROM cash_drawer_opens WHERE branch_id=? ORDER BY opened_at DESC LIMIT 200", [branchId]),
     all(env, `SELECT te.*, st.name AS staff_name
       FROM time_entries te
       LEFT JOIN staff st ON st.id = te.staff_id
@@ -282,6 +291,7 @@ async function getPosData(request, env) {
     branchHours,
     closedDates,
     dailyClosings,
+    cashDrawerOpens,
     timeEntries
   });
 }
@@ -1321,7 +1331,7 @@ async function createSale(request, env) {
   }
 
   const branch = (await all(env, "SELECT name, address, phone FROM branches WHERE id = ?", [branchId]))[0];
-  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod, payments } });
+  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, branchId, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod, payments } });
 }
 
 function parseIdList(value) {
@@ -1491,12 +1501,12 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       <button ${(can(accessUser, "branches")) ? "" : "hidden"} class="nav" data-tab="branches">${appIcon("branches")}<span>Branches</span></button>
       <button ${(["owner", "admin"].includes(accessUser.role) && can(accessUser, "access", true)) ? "" : "hidden"} class="nav" data-tab="access">${appIcon("access")}<span>Access</span></button>` : `
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">${appIcon("pos")}<span>POS</span></button>
-      <button class="nav" data-tab="staff-clock">${appIcon("staff")}<span>Staff</span></button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">${appIcon("bookings")}<span>Bookings</span></button>
-      <button class="nav" data-tab="closing">${appIcon("closing")}<span>Daily Closing</span></button>`}
-      ${isAdmin ? "" : `<button class="nav" data-tab="recent-sales">${appIcon("sales")}<span>Recent Sales</span></button>`}
+      <button class="nav" data-tab="closing">${appIcon("closing")}<span>Daily Closing</span></button>
+      <button class="nav" data-tab="recent-sales">${appIcon("sales")}<span>Recent Sales</span></button>
+      <button class="nav" data-tab="staff-clock">${appIcon("staff")}<span>Staff</span></button>`}
     </nav>
-    <div class="sidebar-footer staff-only"><button class="nav" id="switchBranch" type="button">${appIcon("branches")}<span>Change branch</span></button></div>
+    <div class="sidebar-footer staff-only"><button class="nav" id="switchBranch" type="button">${appIcon("branches")}<span>Change branch</span></button><button class="nav" id="managerDashboardButton" type="button">${appIcon("dashboard")}<span>Manager dashboard</span></button></div>
   </aside>
 
   <main class="app">
@@ -1505,12 +1515,13 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
         <p class="eyebrow">${isAdmin ? dashboardTitle : "Branch POS"}</p>
         <h1 id="appTitle">${isAdmin ? dashboardTitle : "Kunchas branch"}</h1>
       </div>
-      ${isAdmin ? `<div class="admin-controls"><label class="branch-switcher"><span>Viewing</span><select id="globalBranchFilter" aria-label="Choose branch"><option value="">All branches</option></select></label><div class="admin-avatar"><span>${escapeAccessHtml(accessUser.name.slice(0,2).toUpperCase())}</span><strong>${escapeAccessHtml(accessUser.name)}</strong></div></div>` : ""}
+      ${isAdmin ? `<div class="admin-controls"><button class="secondary" id="printLastReceiptButton" type="button" disabled>Print last receipt</button><label class="branch-switcher"><span>Viewing</span><select id="globalBranchFilter" aria-label="Choose branch"><option value="">All branches</option></select></label><details class="account-dropdown" id="accountDropdown"><summary class="admin-avatar" aria-label="Account menu"><span>${escapeAccessHtml(accessUser.name.slice(0,2).toUpperCase())}</span><strong>${escapeAccessHtml(accessUser.name)}</strong><b aria-hidden="true">⌄</b></summary><div class="account-dropdown-panel"><p>${escapeAccessHtml(dashboardTitle)}</p><button type="button" id="changePinButton">Change PIN</button><button type="button" id="signOutButton">Sign out</button></div></details></div>` : ""}
     </header>
-    <div class="account-tools"><span>${escapeAccessHtml(accessUser.name)}</span>${isAdmin ? '<a class="secondary button-link" href="/pos">Branch workspace</a>' : '<button class="secondary" type="button" id="managerDashboardButton">Manager dashboard</button>'}<button class="secondary" type="button" id="changePinButton">Change my PIN</button><button class="secondary" type="button" id="signOutButton">Sign out</button></div>
+    ${isAdmin ? "" : '<div class="account-tools"><button class="secondary" id="printLastReceiptButton" type="button" disabled>Print last receipt</button><button class="secondary" type="button" id="changePinButton">Change my PIN</button><button class="secondary" type="button" id="signOutButton">Sign out</button></div>'}
 
     <dialog id="changePinDialog" class="branch-dialog branch-action-dialog"><form id="changePinForm"><div class="branch-dialog-header"><h2>Change my PIN</h2></div><div class="branch-dialog-body"><label>Current PIN<input name="currentPin" type="password" inputmode="numeric" autocomplete="current-password" required></label><label>New PIN<input name="newPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6,12}" required></label><label>Confirm new PIN<input name="confirmPin" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{6,12}" required></label><p class="hint">Use 6–12 digits. You will sign in again after changing it.</p><p id="changePinMessage" role="alert"></p></div><div class="branch-dialog-footer"><button class="secondary" type="button" id="cancelPinChange">Cancel</button><button class="primary" type="submit">Change PIN</button></div></form></dialog>
     <dialog id="managerDashboardDialog" class="branch-dialog branch-action-dialog"><form id="managerDashboardForm"><div class="branch-dialog-header"><div><p class="eyebrow">Manager access</p><h2>Open manager dashboard</h2></div></div><div class="branch-dialog-body"><label>Manager PIN<input name="pin" type="password" inputmode="numeric" autocomplete="off" pattern="[0-9]{6,12}" required autofocus></label><p class="hint">Your manager PIN opens only this branch. Menus and editing follow the permissions set by the owner.</p><p id="managerDashboardError" role="alert"></p></div><div class="branch-dialog-footer"><button class="secondary" type="button" id="cancelManagerDashboard">Cancel</button><button class="primary" type="submit">Open dashboard</button></div></form></dialog>
+    <dialog id="checkoutCompleteDialog" class="branch-dialog branch-action-dialog" aria-labelledby="checkoutCompleteTitle"><form method="dialog"><div class="branch-dialog-header"><div><p class="eyebrow">Checkout complete</p><h2 id="checkoutCompleteTitle">Would you like a receipt?</h2></div></div><div class="branch-dialog-body"><p id="checkoutCompleteSummary"></p><div class="checkout-complete-actions"><button class="primary" id="checkoutPrintReceipt" type="button">Print receipt</button><button class="secondary" id="openCashDrawer" type="button" hidden>Open cash drawer</button></div><p class="hint" id="cashDrawerStatus" role="status"></p></div><div class="branch-dialog-footer"><button class="secondary" id="declineReceipt" type="submit" value="no-receipt">No receipt</button></div></form></dialog>
     <div class="load-row admin-only">
       <button class="primary" id="loadData" type="button">Refresh data</button>
     </div>
@@ -1561,7 +1572,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <p class="eyebrow">Point of sale</p><h2>New sale</h2>
           <input name="branchId" type="hidden">
           <input name="bookingId" type="hidden">
-          <label>Checkout a booking<select id="bookingCheckout"><option value="">New walk-in sale</option></select></label>
+          <label>Search bookings<input id="bookingCheckoutSearch" type="search" placeholder="Search customer, phone, service or date" aria-controls="bookingCheckout"></label><p class="hint" id="bookingCheckoutSearchStatus" role="status">Today’s bookings. Search to find previous dates.</p><label>Checkout a booking<select id="bookingCheckout"><option value="">New walk-in sale</option></select></label>
           <p class="hint booking-checkout-hint">Choose an unpaid booking to preload its customer, services, and assigned staff.</p>
           <label>Customer type<select name="customerMode"><option value="walkin">Walking customer</option><option value="existing">Existing customer</option><option value="new">Add new customer</option></select></label>
           <div class="customer-existing hidden">
@@ -1598,8 +1609,6 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           </div>
           <button class="primary full hidden" id="completeSale" type="submit" disabled>Complete payment</button>
           <p class="sale-message" id="saleMessage" aria-live="polite"></p>
-          <button class="secondary full hidden" id="printReceipt" type="button">Print receipt / open cash drawer</button>
-          <p class="hint">Cash drawer opens only when it is connected to the receipt printer and configured to open on receipt print.</p>
         </form>
         <div class="panel cart-panel"><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total</span><strong id="cartTotal">$0.00</strong></div><div class="cart-payment-summary" id="cartPaymentSummary"></div></div>
       </div>
@@ -1655,9 +1664,10 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
     </section>
 
     <section class="tab admin-only" id="staff">
-      <div class="split">
-        <form class="panel" id="staffForm"><h2>Add staff</h2><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><p class="hint">Choose their usual weekly day or days off.</p><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary full" type="submit">Save staff</button></form>
-        <div class="panel"><h2>Staff</h2><p class="hint">Staff are shared across all branches and assigned through the roster.</p><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Day off</th><th>Status</th><th>Sales made</th></tr></thead><tbody id="staffTable"></tbody></table></div></div>
+      <div class="section-heading page-heading"><div><p class="eyebrow">Your team</p><h2>Staff</h2><p class="hint">Manage staff details, access and working hours.</p></div><button class="primary" id="addStaffButton" type="button" aria-controls="staffForm" aria-expanded="false">+ Add staff</button></div>
+      <div class="staff-directory">
+        <form class="panel staff-editor" id="staffForm" hidden><div class="section-heading"><h2>Add staff</h2><button class="secondary" id="cancelStaffAdd" type="button">Cancel</button></div><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><p class="hint">Choose their usual weekly day or days off.</p><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary full" type="submit">Save staff</button></form>
+        <div class="panel"><div class="section-heading staff-list-heading"><div><h3>Team directory</h3><p class="hint" id="staffCount" aria-live="polite"></p></div><div class="staff-list-filters"><label>Search staff<input id="staffSearch" type="search" placeholder="Name, role, email or phone"></label><label>Status<select id="staffStatusFilter"><option value="">All statuses</option><option>Active</option><option>Inactive</option></select></label></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Day off</th><th>Status</th><th>Sales made</th></tr></thead><tbody id="staffTable"></tbody></table></div></div>
       </div>
       <div class="panel staff-profile hidden" id="staffProfile"><div class="profile-heading"><div><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary" id="closeStaffProfile" type="button">Close</button></div><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><button class="primary" type="submit">Save staff details</button></form><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div><div class="staff-hours-section"><div class="section-heading"><div><h3>Daily hours</h3><p class="hint">Last 14 days · Net hours exclude recorded breaks.</p></div><strong id="staffHoursSummary"></strong></div><div class="table-wrap"><table class="staff-hours-table"><thead><tr><th>Date</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Total hours</th></tr></thead><tbody id="staffHoursTable"></tbody></table></div></div></div>
     </section>
@@ -1688,6 +1698,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
         <form class="panel" id="closingForm">
           <div class="section-heading"><div><h2>Daily closing</h2><p class="hint" id="closingDateTitle"></p></div><label>Date<input name="closingDate" type="date" required></label></div>
           <input name="branchId" type="hidden">
+          <div class="drawer-closing-control"><div><strong>Cash drawer</strong><p class="hint">Open the drawer before counting. Daily closing does not require a reason.</p></div><button class="secondary" id="closingOpenCashDrawer" type="button">Open cash drawer</button><p class="hint" id="closingCashDrawerStatus" role="status"></p></div>
           <div class="table-wrap" id="closingExpected"></div>
           <fieldset class="cash-counter"><legend>Count cash in the drawer</legend><div class="denomination-grid">
             <label>$100<input aria-label="$100 count" data-denomination="100" type="number" min="0" max="100000" step="1" value="0" required></label>
@@ -1712,6 +1723,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <button class="primary" type="submit">Close register</button>
         </form>
         <div class="panel"><div class="section-heading"><h2>Sales for this day</h2><span class="pill" id="closingSalesCount"></span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Sale</th><th>Payment</th><th>Total</th><th>Completed by</th><th>Edit</th></tr></thead><tbody id="closingSalesTable"></tbody></table></div><p class="hint">Editing a sale requires a manager PIN and a reason. Both are recorded in the edit history.</p></div>
+        <details class="panel" open><summary>Cash drawer opening history</summary><div class="table-wrap"><table><thead><tr><th>Date and time</th><th>Opened by</th><th>Source</th><th>Reason</th></tr></thead><tbody id="cashDrawerHistoryTable"></tbody></table></div></details>
         <details class="panel"><summary>Previous closing records</summary><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Cash taken</th><th>Remaining cash</th><th>Status</th></tr></thead><tbody id="closingTable"></tbody></table></div></details>
       </div>
     </section>
@@ -1754,15 +1766,18 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 
 function clientScript() {
   return `
-let state = { branches: [], staff: [], services: [], products: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [] };
+let state = { branches: [], staff: [], services: [], products: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], cashDrawerOpens: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [] };
 let reportData = null;
 let reportRequestId = 0;
 let lastReceipt = null;
+try { lastReceipt = JSON.parse(sessionStorage.getItem("kunchasLastReceipt") || "null"); } catch {}
 let salePayments = [];
 let paymentTotalSnapshot = 0;
 let closingSalesKey = '';
 let closingSalesLoading = false;
 let closingSalesRequest = 0;
+let checkoutBookingRequest = 0;
+let checkoutBookingTimer;
 let recentSales = [];
 let recentSalesRequest = 0;
 let recentSalesLoading = false;
@@ -1777,7 +1792,7 @@ const appMode = window.appMode || "admin";
 const message = document.querySelector("#message");
 ${accessClientScript()}
 ${posPinScript()}
-document.querySelectorAll(".nav").forEach((button) => button.addEventListener("click", () => {
+document.querySelectorAll(".nav[data-tab]").forEach((button) => button.addEventListener("click", () => {
   showTab(button.dataset.tab);
 }));
 document.querySelector("#loadData").addEventListener("click", loadData);
@@ -1797,9 +1812,14 @@ document.querySelector("#clockOutButton").addEventListener("click", () => submit
 document.querySelector("#timeClockStaff").addEventListener("change", renderTimeClockStatus);
 document.querySelector("#addSaleItem").addEventListener("click", () => addSaleItem());
 document.querySelector("#bookingCheckout").addEventListener("change", selectBookingForCheckout);
+document.querySelector("#bookingCheckoutSearch").addEventListener("input", () => { clearTimeout(checkoutBookingTimer); checkoutBookingRequest++; checkoutBookingTimer = setTimeout(renderBookingCheckoutOptions, 250); });
 document.querySelector("#showPaymentMethods").addEventListener("click", showPaymentMethods);
 document.querySelectorAll("[data-payment-method]").forEach((button) => button.addEventListener("click", () => addPayment(button.dataset.paymentMethod)));
-document.querySelector("#printReceipt").addEventListener("click", printLastReceipt);
+document.querySelector("#printLastReceiptButton").addEventListener("click", printLastReceipt);
+document.querySelector("#checkoutPrintReceipt").addEventListener("click", () => { printLastReceipt(); document.querySelector("#checkoutCompleteDialog").close("printed"); });
+document.querySelector("#openCashDrawer").addEventListener("click", () => openCashDrawer("checkout"));
+document.querySelector("#closingOpenCashDrawer").addEventListener("click", () => openCashDrawer("daily_closing"));
+document.querySelector("#checkoutCompleteDialog").addEventListener("close", clearCheckoutReceiptPrompt);
 document.querySelector("#customerForm").addEventListener("submit", submitCustomer);
 document.querySelector("#customerProfileForm").addEventListener("submit", submitCustomerProfile);
 document.querySelector("#closeCustomerProfile").addEventListener("click", closeCustomerProfile);
@@ -1817,6 +1837,35 @@ document.querySelector('#closingForm input[name="actualCash"]').addEventListener
 document.querySelector('#closingForm input[name="cashTaken"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCard"]').addEventListener("input", renderClosingPreview);
 document.querySelector("#staffForm").addEventListener("submit", submitStaffForm);
+document.querySelector("#addStaffButton").addEventListener("click", () => {
+  if (!userCan("staff", true) || !currentUser.allBranches) return;
+  const form = document.querySelector("#staffForm");
+  form.hidden = false;
+  document.querySelector("#addStaffButton").setAttribute("aria-expanded", "true");
+  closeStaffProfile();
+  form.scrollIntoView({ behavior:"smooth", block:"start" });
+  form.elements.name.focus({ preventScroll:true });
+});
+document.querySelector("#cancelStaffAdd").addEventListener("click", () => {
+  const form = document.querySelector("#staffForm");
+  form.reset(); form.elements.staffId.value = ""; renderStaffLogin(form);
+  closeStaffAdd(); document.querySelector("#addStaffButton").focus();
+});
+document.querySelector("#staffSearch").addEventListener("input", renderStaff);
+document.querySelector("#staffStatusFilter").addEventListener("change", renderStaff);
+document.addEventListener("click", (event) => {
+  const menu = document.querySelector("#accountDropdown");
+  if (menu && (!menu.contains(event.target) || event.target.closest("button"))) menu.open = false;
+});
+document.addEventListener("keydown", (event) => {
+  const menu = document.querySelector("#accountDropdown");
+  if (event.key === "Escape" && menu?.open) { menu.open = false; menu.querySelector("summary").focus(); }
+});
+function closeStaffAdd() {
+  document.querySelector("#staffForm").hidden = true;
+  document.querySelector("#addStaffButton").setAttribute("aria-expanded", "false");
+}
+syncLastReceiptButton();
 document.querySelector("#staffProfileForm").addEventListener("submit", submitStaffProfile);
 document.querySelector("#closeStaffProfile").addEventListener("click", closeStaffProfile);
 document.querySelector("#rosterMonth").addEventListener("change", renderRosterMonthCalendar);
@@ -1878,7 +1927,7 @@ async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (appMode === "staff") headers["x-pos-workspace"] = "1";
   else if (currentUser.managerBranchId) headers["x-branch-id"] = currentUser.managerBranchId;
-  if (selectedPosBranchId && (path === "/api/pos-data" || path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
+  if (selectedPosBranchId && (path.startsWith("/api/checkout-bookings") || path === "/api/pos-data" || path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
     headers["x-branch-id"] = selectedPosBranchId;
 
   }
@@ -1939,6 +1988,8 @@ async function openPos() {
   const button = document.querySelector("#openPos");
   if (button.disabled) return;
   selectedPosBranchId = document.querySelector("#posBranch").value;
+  document.querySelector("#bookingCheckoutSearch").value = "";
+  checkoutBookingRequest++;
   selectedPosPin = document.querySelector("#posPin").value;
   if (!selectedPosBranchId) {
     message.textContent = "Select a branch.";
@@ -2021,7 +2072,7 @@ async function submitTimeClock(action) {
   } catch (error) { message.textContent = error.message; }
 }
 function normalizeState(data = {}) {
-  const arrayKeys = ["branches","staff","services","products","customers","bookings","sales","saleItems","branchHours","closedDates","discounts","inventoryStock","stockMovements","dailyClosings","staffRoster","staffRegularDaysOff","timeEntries"];
+  const arrayKeys = ["branches","staff","services","products","customers","bookings","sales","saleItems","branchHours","closedDates","discounts","inventoryStock","stockMovements","dailyClosings","cashDrawerOpens","staffRoster","staffRegularDaysOff","timeEntries"];
   const normalized = { ...data };
   arrayKeys.forEach((key) => { if (!Array.isArray(normalized[key])) normalized[key] = []; });
   normalized.archivedBranches = normalized.branches.filter((b) => b.status === "Archived");
@@ -2246,8 +2297,13 @@ function dayOffChecksHtml(staffId = "") {
   return [[1,"Mon"],[2,"Tue"],[3,"Wed"],[4,"Thu"],[5,"Fri"],[6,"Sat"],[0,"Sun"]].map(([value, label]) => '<label class="day-chip"><input type="checkbox" name="days" value="' + value + '"' + (selected.includes(value) ? ' checked' : '') + '><span>' + label + '</span></label>').join("");
 }
 function renderStaff() {
-  document.querySelector("#staffTable").innerHTML = state.staff.map((staff) => '<tr class="staff-row" data-staff-id="' + esc(staff.id) + '" tabindex="0"><td><strong>' + esc(staff.name) + '</strong><div class="hint">' + esc(staff.email || staff.phone || "") + '</div></td><td>' + esc(staff.role || "") + '<div class="hint">Access: ' + esc(roleName(staff.access_role)) + '</div></td><td>' + esc(dayOffLabel(staff.id)) + '</td><td>' + '<span class="pill">' + esc(staff.status) + '</span></td><td><strong>' + money(staffSalesTotal(staff.id)) + '</strong></td></tr>').join("");
-  document.querySelector("#staffForm [data-day-off-checks]").innerHTML = dayOffChecksHtml();
+  const search = document.querySelector("#staffSearch").value.trim().toLowerCase();
+  const status = document.querySelector("#staffStatusFilter").value;
+  const staffRows = state.staff.filter(person => (!status || person.status === status) && [person.name,person.role,person.email,person.phone].join(" ").toLowerCase().includes(search));
+  document.querySelector("#staffCount").textContent = staffRows.length + " of " + state.staff.length + " staff · " + state.staff.filter(person => person.status === "Active").length + " active";
+  document.querySelector("#staffTable").innerHTML = staffRows.map((staff) => '<tr class="staff-row" data-staff-id="' + esc(staff.id) + '" tabindex="0"><td><strong>' + esc(staff.name) + '</strong><div class="hint">' + esc(staff.email || staff.phone || "") + '</div></td><td>' + esc(staff.role || "") + '<div class="hint">Access: ' + esc(roleName(staff.access_role)) + '</div></td><td>' + esc(dayOffLabel(staff.id)) + '</td><td>' + '<span class="pill">' + esc(staff.status) + '</span></td><td><strong>' + money(staffSalesTotal(staff.id)) + '</strong></td></tr>').join("");
+  if (!staffRows.length) document.querySelector("#staffTable").innerHTML = '<tr><td colspan="5" class="empty-state">No staff match your search.</td></tr>';
+  if (document.querySelector("#staffForm").hidden) document.querySelector("#staffForm [data-day-off-checks]").innerHTML = dayOffChecksHtml();
   document.querySelectorAll(".staff-row").forEach((row) => {
     row.addEventListener("click", () => openStaffProfile(row.dataset.staffId));
     row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openStaffProfile(row.dataset.staffId); } });
@@ -2329,7 +2385,7 @@ async function submitStaffForm(event) {
     form.elements.staffId.value=result.id;
     await saveStaffLogin(result.id,login);
     await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId:result.id, days }) });
-    form.reset(); await loadData(); openStaffProfile(result.id); message.textContent = "Staff member saved.";
+    form.reset(); closeStaffAdd(); await loadData(); openStaffProfile(result.id); message.textContent = "Staff member saved.";
   } catch (error) { message.textContent = error.message; }
 }
 async function submitStaffProfile(event) {
@@ -2690,14 +2746,39 @@ function showTab(tabId) {
 function canCheckoutBooking(booking) {
   return !booking.sale_id && booking.payment_status !== "Paid" && !["Cancelled", "No show"].includes(booking.status);
 }
-function renderBookingCheckoutOptions() {
+function checkoutBookingOption(booking) {
+  return '<option value="' + esc(booking.id) + '">' + esc(booking.booking_date + " " + booking.booking_time + " — " + booking.customer_name + " — " + booking.service_names + " — " + money(booking.total_cents)) + '</option>';
+}
+async function renderBookingCheckoutOptions() {
   const select = document.querySelector("#bookingCheckout");
-  const currentValue = select.value;
-  const options = state.bookings.filter(canCheckoutBooking).map((booking) =>
-    '<option value="' + esc(booking.id) + '">' + esc(booking.booking_date + " " + booking.booking_time + " — " + booking.customer_name + " — " + booking.service_names + " — " + money(booking.total_cents)) + '</option>'
-  ).join("");
-  select.innerHTML = '<option value="">New walk-in sale</option>' + options;
-  if ([...select.options].some((option) => option.value === currentValue)) select.value = currentValue;
+  const branchId = selectedPosBranchId || currentUser.managerBranchId;
+  if (!branchId) { select.innerHTML = '<option value="">New walk-in sale</option>'; return; }
+  const search = document.querySelector("#bookingCheckoutSearch").value.trim();
+  const requestId = ++checkoutBookingRequest;
+  const status = document.querySelector("#bookingCheckoutSearchStatus");
+  status.textContent = "Loading bookings…";
+  try {
+    const result = await api("/api/checkout-bookings?branchId=" + encodeURIComponent(branchId) + "&search=" + encodeURIComponent(search));
+    if (requestId !== checkoutBookingRequest || branchId !== (selectedPosBranchId || currentUser.managerBranchId)) return;
+    const current = document.querySelector("#saleForm").elements.bookingId.value;
+    for (const booking of result.bookings) { const index = state.bookings.findIndex(b => b.id === booking.id); if (index < 0) state.bookings.push(booking); else state.bookings[index] = booking; }
+    for (const customer of result.customers) { const index = state.customers.findIndex(c => c.id === customer.id); if (index < 0) state.customers.push(customer); else state.customers[index] = { ...state.customers[index], ...customer }; }
+    const options = result.bookings.filter(canCheckoutBooking);
+    // Keep an appointment already in the cart selected while searching; never silently change the sale.
+    const selected = state.bookings.find(b => b.id === current && canCheckoutBooking(b));
+    if (selected && !options.some(b => b.id === current)) options.unshift(selected);
+    select.innerHTML = '<option value="">New walk-in sale</option>' + options.map(checkoutBookingOption).join("");
+    if (selected) select.value = current;
+    status.textContent = result.hasMore ? "Showing 100 matches. Refine your search." : result.bookings.length ? (search ? result.bookings.length + " matching bookings across dates." : "Today’s bookings. Search to find previous dates.") : (search ? "No matching unpaid bookings." : "No unpaid bookings today. Search to find previous dates.");
+  } catch (error) { if (requestId === checkoutBookingRequest) status.textContent = error.message; }
+}
+function loadCheckoutBooking(bookingId) {
+  const booking = state.bookings.find(b => b.id === bookingId);
+  if (!booking || !canCheckoutBooking(booking)) return;
+  const select = document.querySelector("#bookingCheckout");
+  if (![...select.options].some(option => option.value === bookingId)) select.insertAdjacentHTML("beforeend", checkoutBookingOption(booking));
+  select.value = bookingId;
+  selectBookingForCheckout();
 }
 function selectBookingForCheckout() {
   const form = document.querySelector("#saleForm");
@@ -2738,8 +2819,7 @@ function selectBookingForCheckout() {
 function checkoutBookingFromRow(event) {
   const bookingId = event.target.closest("tr").dataset.bookingId;
   showTab("pos");
-  document.querySelector("#bookingCheckout").value = bookingId;
-  selectBookingForCheckout();
+  loadCheckoutBooking(bookingId);
   document.querySelector("#saleForm").scrollIntoView({ behavior:"smooth", block:"start" });
 }
 function parseClientIdList(value) {
@@ -2794,7 +2874,7 @@ function openBookingDetail(bookingId) {
   async function changeBookingStatus(status) { try { const approval=await askActor(booking.branch_id,true,status==='No show'?'Mark booking as no show':'Cancel booking');if(!approval)return;await api('/api/bookings/'+encodeURIComponent(booking.id),{method:'PATCH',body:JSON.stringify({...approval,status})});await refreshPosData();detail.classList.add('hidden');message.textContent='Booking marked '+status.toLowerCase()+'.';}catch(error){message.textContent=error.message;} }
   detail.querySelector('.cancel-booking-detail')?.addEventListener('click',()=>changeBookingStatus('Cancelled'));
   detail.querySelector('.no-show-booking-detail')?.addEventListener('click',()=>changeBookingStatus('No show'));
-  detail.querySelector(".checkout-booking-detail")?.addEventListener("click", () => { document.querySelector("#bookingCheckout").value = booking.id; selectBookingForCheckout(); showTab("pos"); });
+  detail.querySelector(".checkout-booking-detail")?.addEventListener("click", () => { loadCheckoutBooking(booking.id); showTab("pos"); });
 }
 function localSalesDate() { const now=new Date();return now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0'); }
 async function loadRecentSales() {
@@ -3050,10 +3130,11 @@ async function submitJson(path, payload, form) {
     const result = await api(path, { method:"POST", body:JSON.stringify(payload) });
     if (result.receipt) {
       lastReceipt = result.receipt;
-      document.querySelector("#printReceipt").classList.remove("hidden");
+      try { sessionStorage.setItem("kunchasLastReceipt", JSON.stringify(lastReceipt)); } catch {}
+      syncLastReceiptButton();
     }
     form.reset();
-    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; document.querySelector("#bookingCustomerCard").classList.add("hidden"); document.querySelector("#bookingCustomerCard").innerHTML = ""; addSaleItem(); updateCustomerMode(); resetPaymentUi(); setSaleMessage(result.receipt?.changeCents ? "Purchase complete. Return " + money(result.receipt.changeCents) + " change." : "Purchase completed successfully."); }
+    if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; document.querySelector("#bookingCustomerCard").classList.add("hidden"); document.querySelector("#bookingCustomerCard").innerHTML = ""; addSaleItem(); updateCustomerMode(); resetPaymentUi(); setSaleMessage(result.receipt?.changeCents ? "Purchase complete. Return " + money(result.receipt.changeCents) + " change." : "Purchase completed successfully."); if (result.receipt) showCheckoutReceiptPrompt(result.receipt); }
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
@@ -3093,6 +3174,7 @@ function renderClosingPreview() {
     api('/api/closing-sales?date=' + encodeURIComponent(closingDate),{headers:{'x-branch-id':selectedPosBranchId}}).then((result)=>{
       if (requestId !== closingSalesRequest) return;
       state.sales = state.sales.filter((sale)=>!(sale.branch_id===selectedPosBranchId && String(sale.created_at||'').slice(0,10)===closingDate)).concat(result.sales);
+      state.cashDrawerOpens = state.cashDrawerOpens.filter((entry)=>!(entry.branch_id===selectedPosBranchId && String(entry.opened_at||'').slice(0,10)===closingDate)).concat(result.drawerOpens || []);
       closingSalesLoading = false;
       renderClosingPreview();
     }).catch((error)=>{ if(requestId===closingSalesRequest){ message.textContent=error.message; document.querySelector('#closingSalesTable').innerHTML='<tr><td colspan="6">Could not load sales. Reopen the branch to retry.</td></tr>'; } });
@@ -3123,9 +3205,17 @@ function renderClosingPreview() {
   document.querySelector('#closingSalesCount').textContent = daySales.length + ' sales';
   document.querySelector('#closingSalesTable').innerHTML = daySales.length ? daySales.map((sale)=>'<tr><td>'+esc(new Date(sale.created_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}))+'</td><td>'+esc(sale.id)+'</td><td>'+esc(sale.payment_method)+'</td><td>'+money(sale.total_cents)+'</td><td>'+esc(sale.recorded_by_name||'Not recorded')+'</td><td><button type="button" class="closing-sale-edit" aria-label="Edit sale" title="Manager PIN and reason required" data-closing-edit="'+esc(sale.id)+'"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5"/></svg></button></td></tr>').join('') : '<tr><td colspan="6" class="empty-cell">No sales for this day.</td></tr>';
   document.querySelectorAll('[data-closing-edit]').forEach((button)=>button.addEventListener('click',()=>openSaleEditor(button.dataset.closingEdit)));
+  renderCashDrawerHistory();
   const cashVariance = actualCash - expectedDrawerCash;
   const cardVariance = actualCard - totals.cardCents;
   varianceBox.innerHTML = '<article><span>Cash difference</span><strong>' + money(cashVariance) + '</strong></article><article><span>Card difference</span><strong>' + money(cardVariance) + '</strong></article><article class="' + (cashVariance || cardVariance ? 'closing-unbalanced' : 'closing-balanced') + '" role="status"><span>Status</span><strong>' + (cashVariance || cardVariance ? 'Not balanced' : 'Balanced') + '</strong></article>';
+}
+function renderCashDrawerHistory() {
+  const body = document.querySelector("#cashDrawerHistoryTable");
+  if (!body) return;
+  const closingDate = document.querySelector('#closingForm input[name="closingDate"]').value;
+  const entries = (state.cashDrawerOpens || []).filter((entry) => entry.branch_id === selectedPosBranchId && (!closingDate || String(entry.opened_at || "").slice(0,10) === closingDate));
+  body.innerHTML = entries.length ? entries.map((entry) => '<tr><td>' + esc(new Date(entry.opened_at).toLocaleString("en-AU")) + '</td><td>' + esc(entry.actor_name || "Not recorded") + '</td><td>' + esc(entry.source === "daily_closing" ? "Daily closing" : "Checkout") + '</td><td>' + esc(entry.reason || (entry.source === "daily_closing" ? "Not required" : "")) + '</td></tr>').join("") : '<tr><td colspan="4" class="empty-cell">No cash drawer openings recorded for this date.</td></tr>';
 }
 function previousClosingCashPreview(date) {
   const branchId = selectedPosBranchId || document.querySelector('#closingForm input[name="branchId"]')?.value || "";
@@ -3385,13 +3475,74 @@ function updateSaleQuickFind(value) {
 function staffLabel(s) { return s.name + " | " + (s.phone || "No phone") + " | " + (s.email || "No email") + " | " + (s.branch_name || branchName(s.branch_id)); }
 function cssEsc(value) { return String(value).replace(/"/g, '\\"'); }
 function selected(value, expected) { return value === expected ? " selected" : ""; }
+function syncLastReceiptButton() {
+  const button = document.querySelector("#printLastReceiptButton");
+  if (button) button.disabled = !lastReceipt;
+}
+function receiptHasCash(receipt) {
+  if (!receipt) return false;
+  if (Number(receipt.cashCents || 0) > 0) return true;
+  return Array.isArray(receipt.payments) && receipt.payments.some((payment) => payment.method === "Cash" && Number(payment.amountCents || 0) > 0);
+}
+function showCheckoutReceiptPrompt(receipt) {
+  const dialog = document.querySelector("#checkoutCompleteDialog");
+  const drawerButton = document.querySelector("#openCashDrawer");
+  document.querySelector("#checkoutCompleteSummary").textContent = "Payment of " + money(receipt.totalCents) + " was completed successfully.";
+  drawerButton.hidden = !receiptHasCash(receipt);
+  drawerButton.disabled = false;
+  document.querySelector("#cashDrawerStatus").textContent = drawerButton.hidden ? "" : "Open cash drawer prints a tiny dash so the receipt printer can trigger the drawer.";
+  if (!dialog.open) dialog.showModal();
+  document.querySelector("#checkoutPrintReceipt").focus();
+}
+function clearCheckoutReceiptPrompt() {
+  const drawerButton = document.querySelector("#openCashDrawer");
+  drawerButton.hidden = true;
+  drawerButton.disabled = false;
+  document.querySelector("#cashDrawerStatus").textContent = "";
+}
+async function openCashDrawer(source) {
+  const fromClosing = source === "daily_closing";
+  const button = document.querySelector(fromClosing ? "#closingOpenCashDrawer" : "#openCashDrawer");
+  const status = document.querySelector(fromClosing ? "#closingCashDrawerStatus" : "#cashDrawerStatus");
+  const branchId = fromClosing ? selectedPosBranchId : (lastReceipt?.branchId || selectedPosBranchId);
+  if (!fromClosing && !receiptHasCash(lastReceipt)) { status.textContent = "The cash drawer is available only for a cash payment."; return; }
+  if (!branchId) { status.textContent = "Open a branch workspace first."; return; }
+  const drawerJob = window.open("", "kunchasDrawer", "width=260,height=220");
+  if (!drawerJob) { status.textContent = "Allow pop-ups so the drawer print job can open."; return; }
+  drawerJob.document.write('<!doctype html><html><head><title>Cash drawer</title></head><body style="font-family:Arial,sans-serif;text-align:center;padding:24px">Preparing drawer slip…</body></html>');
+  drawerJob.document.close();
+  button.disabled = true;
+  try {
+    let actor = {};
+    if (fromClosing) {
+      actor = await askActor(branchId, false, "Open cash drawer for daily closing", false);
+      if (!actor) { drawerJob.close(); return; }
+    }
+    status.textContent = "Recording cash drawer opening…";
+    const result = await api("/api/cash-drawer-open", { method:"POST", body:JSON.stringify({ ...actor, branchId, source, saleId:fromClosing ? "" : lastReceipt.saleId }) });
+    state.cashDrawerOpens.unshift(result.record);
+    renderCashDrawerHistory();
+    printCashDrawerSlip(drawerJob);
+    status.textContent = "Recorded at " + new Date(result.record.opened_at).toLocaleString("en-AU") + ". Print the small dash to open the drawer.";
+  } catch (error) {
+    drawerJob.close();
+    status.textContent = error.message;
+  } finally { button.disabled = false; }
+}
+function printCashDrawerSlip(drawerJob) {
+  drawerJob.document.open();
+  drawerJob.document.write('<!doctype html><html><head><title>Open cash drawer</title><style>@page{size:58mm 5mm;margin:0!important}html,body{width:58mm;height:5mm;margin:0!important;padding:0!important;overflow:hidden}body{font:1px/1px Arial,sans-serif;color:#000}@media print{html,body{width:58mm!important;height:5mm!important}}</style></head><body>-</body></html>');
+  drawerJob.document.close();
+  drawerJob.onafterprint = () => drawerJob.close();
+  setTimeout(() => { drawerJob.focus(); drawerJob.print(); }, 150);
+}
 function printLastReceipt() {
   if (!lastReceipt) { message.textContent = "Complete a sale first."; return; }
-  const drawerNote = "If your cash drawer is connected to the receipt printer, it should open when this receipt prints.";
   const receipt = window.open("", "kunchasReceipt", "width=380,height=640");
+  if (!receipt) { message.textContent = "Allow pop-ups to print the receipt."; return; }
   const detailedPayments = Array.isArray(lastReceipt.payments) ? lastReceipt.payments.filter((payment) => Number(payment.amountCents || 0) > 0) : [];
   const paymentRows = (detailedPayments.length ? detailedPayments.map((payment) => '<div class="row"><span>' + esc(payment.method) + ' paid</span><strong>' + money(payment.amountCents) + '</strong></div>').join("") : (lastReceipt.cashCents ? '<div class="row"><span>Cash paid</span><strong>' + money(lastReceipt.cashCents) + '</strong></div>' : '') + (lastReceipt.cardCents ? '<div class="row"><span>Card paid</span><strong>' + money(lastReceipt.cardCents) + '</strong></div>' : '') + (!lastReceipt.cashCents && !lastReceipt.cardCents ? '<div class="row"><span>Payment</span><strong>' + esc(lastReceipt.paymentMethod || "Paid") + '</strong></div>' : '')) + (lastReceipt.changeCents ? '<div class="row total"><span>Change to return</span><span>' + money(lastReceipt.changeCents) + '</span></div>' : '');
-  receipt.document.write('<!doctype html><html><head><title>Kunchas receipt</title><style>body{font-family:Arial,sans-serif;margin:18px;color:#111}.center{text-align:center}h1{font-size:20px;margin:0}.line{border-top:1px dashed #999;margin:12px 0}.row{display:flex;justify-content:space-between;gap:12px;margin:6px 0}.total{font-weight:800;font-size:18px}.note{font-size:12px;color:#555}</style></head><body><div class="center"><img alt="Kuncha’s Hair &amp; Beauty Art" style="width:200px;max-width:100%;height:auto" src="' + esc(document.querySelector('.brand img').src) + '"><div>' + esc(lastReceipt.branch?.name || "") + '</div><div>' + esc(lastReceipt.branch?.phone || "") + '</div></div><div class="line"></div><div>Receipt: ' + esc(lastReceipt.saleId) + '</div><div>' + esc(new Date(lastReceipt.createdAt).toLocaleString("en-AU")) + '</div><div class="line"></div>' + lastReceipt.items.map((item) => '<div class="row"><span>' + esc(item.name) + '</span><strong>' + money(item.priceCents) + '</strong></div>').join("") + '<div class="line"></div><div class="row total"><span>Total</span><span>' + money(lastReceipt.totalCents) + '</span></div>' + paymentRows + '<p class="center">Thank you</p><p class="note">' + drawerNote + '</p></body></html>');
+  receipt.document.write('<!doctype html><html><head><title>Kunchas receipt</title><style>body{font-family:Arial,sans-serif;margin:18px;color:#111}.center{text-align:center}h1{font-size:20px;margin:0}.line{border-top:1px dashed #999;margin:12px 0}.row{display:flex;justify-content:space-between;gap:12px;margin:6px 0}.total{font-weight:800;font-size:18px}</style></head><body><div class="center"><img alt="Kuncha’s Hair &amp; Beauty Art" style="width:200px;max-width:100%;height:auto" src="' + esc(document.querySelector('.brand img').src) + '"><div>' + esc(lastReceipt.branch?.name || "") + '</div><div>' + esc(lastReceipt.branch?.phone || "") + '</div></div><div class="line"></div><div>Receipt: ' + esc(lastReceipt.saleId) + '</div><div>' + esc(new Date(lastReceipt.createdAt).toLocaleString("en-AU")) + '</div><div class="line"></div>' + lastReceipt.items.map((item) => '<div class="row"><span>' + esc(item.name) + '</span><strong>' + money(item.priceCents) + '</strong></div>').join("") + '<div class="line"></div><div class="row total"><span>Total</span><span>' + money(lastReceipt.totalCents) + '</span></div>' + paymentRows + '<p class="center">Thank you</p></body></html>');
   receipt.document.close();
   receipt.focus();
   receipt.print();
@@ -3408,7 +3559,7 @@ function styles() {
 * { box-sizing:border-box; }
 body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; }
 .sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; overflow-y:auto; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
-.sidebar-footer { margin-top:auto; padding-top:24px; }
+.sidebar-footer { display:grid; gap:8px; margin-top:auto; padding-top:24px; }
 .sidebar-footer .nav { width:100%; border-top:1px solid #ffffff30; border-radius:0; }
 body.pos-locked { grid-template-columns:1fr; }
 .pos-locked .sidebar,.pos-locked .topbar,.pos-locked .account-tools,.pos-locked .tab { display:none!important; }
@@ -3446,6 +3597,8 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .sale-message { min-height:22px; margin:10px 0 0; color:#087f5b; font-size:13px; font-weight:800; }
 .sale-message:empty { display:none; }
 .sale-message.error { color:#b42318; }
+.checkout-complete-actions { display:flex; gap:12px; }
+.checkout-complete-actions button { flex:1; }
 button:disabled { cursor:wait; opacity:.65; }
 .load-row { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
 .admin-mode .load-row { display:none; }
@@ -3463,6 +3616,20 @@ button:disabled { cursor:wait; opacity:.65; }
 .metric-icon .ui-icon { width:19px; height:19px; }
 .tone-purple { color:#71328a; background:#eadcf5; }.tone-green { color:#168044; background:#e2f3d7; }.tone-orange { color:#d36d13; background:#fff0dc; }.tone-blue { color:#3f6fce; background:#e4edff; }.tone-teal { color:#168487; background:#def2f1; }.tone-pink { color:#d14e7b; background:#fbe2eb; }
 .panel { padding:22px; }
+.account-dropdown { position:relative; }
+.account-dropdown summary { cursor:pointer; list-style:none; min-height:44px; border-radius:12px; padding:4px 8px; }
+.account-dropdown summary::-webkit-details-marker { display:none; }
+.account-dropdown summary:focus-visible { outline:3px solid var(--brand); outline-offset:3px; }
+.account-dropdown-panel { position:absolute; right:0; top:calc(100% + 10px); z-index:50; width:230px; max-width:calc(100vw - 40px); padding:8px; background:#fff; border:1px solid var(--line); border-radius:14px; box-shadow:0 12px 36px #251c2c20; }
+.account-dropdown-panel p { margin:6px 10px 10px; color:var(--muted); font-size:12px; }
+.account-dropdown-panel button { display:block; width:100%; min-height:44px; padding:10px 12px; border:0; border-radius:8px; background:transparent; text-align:left; font:inherit; cursor:pointer; }
+.account-dropdown-panel button:hover,.account-dropdown-panel button:focus-visible { background:#fff0f6; color:var(--brand); }
+.staff-directory { display:grid; gap:20px; }
+.staff-editor { scroll-margin-top:24px; }
+.staff-list-filters { display:flex; align-items:end; gap:14px; flex-wrap:wrap; }
+.staff-list-filters label { margin:0; }
+.staff-list-filters input { min-width:240px; }
+@media(max-width:640px) { .staff-list-heading { align-items:stretch; flex-direction:column; } .staff-list-filters { display:grid; grid-template-columns:1fr; } .staff-list-filters input { min-width:0; } .account-dropdown summary strong { max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } }
 .admin-controls,.admin-avatar { display:flex; align-items:center; gap:14px; }
 .branch-switcher { min-width:250px; margin:0; }
 .branch-switcher span { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; }
@@ -3715,11 +3882,13 @@ legend { grid-column:1/-1; }
 .closing-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:10px 0 14px; }
 .closing-layout { display:grid; grid-template-columns:minmax(0,1fr); gap:18px; }
 .closing-layout .panel { margin:0; min-width:0; }
+.drawer-closing-control { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; margin:0 0 18px; padding:14px; background:#fff8e6; border:1px solid #edcf83; border-radius:10px; }
+.drawer-closing-control p { margin:3px 0 0; }.drawer-closing-control>p { grid-column:1/-1; }
 .closing-overview { margin:12px 0 20px; width:100%; }
 .closing-overview th { background:#e5e8ec; white-space:nowrap; }.closing-overview td { background:#f4f6f8; }
 .cash-counter { display:block; }.denomination-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:12px; }
 .closing-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-@media(max-width:700px){.denomination-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.closing-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.denomination-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.closing-fields{grid-template-columns:repeat(2,minmax(0,1fr))}.drawer-closing-control{grid-template-columns:1fr}.drawer-closing-control button{width:100%}}
 .closing-summary article { padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .closing-summary span { display:block; color:var(--muted); font-size:12px; font-weight:800; }
 .closing-summary strong { display:block; margin-top:4px; font-size:20px; }

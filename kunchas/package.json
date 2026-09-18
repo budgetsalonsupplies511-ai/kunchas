@@ -12,7 +12,9 @@
     "db:service-subcategory:local": "wrangler d1 execute kunchas-db --local --file=./service-subcategory-upgrade.sql",
     "db:service-subcategory:remote": "wrangler d1 execute kunchas-db --remote --file=./service-subcategory-upgrade.sql",
     "db:access:local": "wrangler d1 execute kunchas-db --local --file=./staff-access.sql",
-    "db:access:remote": "wrangler d1 execute kunchas-db --remote --file=./staff-access.sql"
+    "db:access:remote": "wrangler d1 execute kunchas-db --remote --file=./staff-access.sql",
+    "db:cash-drawer:local": "wrangler d1 execute kunchas-db --local --file=./cash-drawer-upgrade.sql",
+    "db:cash-drawer:remote": "wrangler d1 execute kunchas-db --remote --file=./cash-drawer-upgrade.sql"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

@@ -36,7 +36,7 @@ export async function branchGate(request,env,personal){
   const saleAuthorization=method==='POST'&&/^\/api\/sales\/[^/]+\/authorize$/.test(p);
   const special=p==='/api/pos-actors'||/^\/api\/sales\/[^/]+$/.test(p)||saleAuthorization;
   if(!shared&&!special)return null;
-  const allowed=(method==='GET'&&['/api/pos-data','/api/pos-actors'].includes(p))||(method==='POST'&&['/api/sales','/api/daily-closing','/api/branch-bookings','/api/time-clock'].includes(p))||(['GET','PATCH'].includes(method)&&/^\/api\/sales\/[^/]+$/.test(p))||(method==='PATCH'&&/^\/api\/(bookings|daily-closing)\/[^/]+$/.test(p));
+  const allowed=(method==='GET'&&['/api/pos-data','/api/pos-actors','/api/checkout-bookings'].includes(p))||(method==='POST'&&['/api/sales','/api/daily-closing','/api/cash-drawer-open','/api/branch-bookings','/api/time-clock'].includes(p))||(['GET','PATCH'].includes(method)&&/^\/api\/sales\/[^/]+$/.test(p))||(method==='PATCH'&&/^\/api\/(bookings|daily-closing)\/[^/]+$/.test(p));
   if(!allowed&&!saleAuthorization&&!(method==='GET'&&['/api/closing-sales','/api/recent-sales'].includes(p)))return personal?null:{response:json({error:'Use an individual login to access the dashboard.'},403)};
   if(!shared&&special&&personal&&!can(personal,'pos')&&!(p==='/api/pos-actors'&&(can(personal,'branches',true)||can(personal,'closing',true))))return {response:json({error:'Your account does not have POS access.'},403)};
   const user=(personal&&!request.headers.get("x-branch-id")&&special)?personal:(shared||personal);if(!user)return {response:json({error:'Open a branch with its PIN first.'},401)};
