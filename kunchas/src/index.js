@@ -237,7 +237,7 @@ async function listPublicBranches(env) {
 
 async function getPosData(request, env) {
   const branchId = request.headers.get("x-branch-id");
-  const [branch, staff, services, products, customers, bookings, sales, branchHours, closedDates, dailyClosings, cashDrawerOpens, timeEntries] = await Promise.all([
+  const [branch, staff, services, products, customers, bookings, sales, branchHours, closedDates, dailyClosings, cashDrawerOpens, timeEntries, inventoryStock, stockMovements] = await Promise.all([
     all(env, "SELECT id, name, address, phone, post_code FROM branches WHERE id = ?", [branchId]),
     all(env, `SELECT st.*, br.name AS branch_name
       FROM staff st
@@ -273,7 +273,17 @@ async function getPosData(request, env) {
       FROM time_entries te
       LEFT JOIN staff st ON st.id = te.staff_id
       WHERE te.branch_id = ? AND te.clock_out IS NULL
-      ORDER BY te.clock_in DESC`, [branchId])
+      ORDER BY te.clock_in DESC`, [branchId]),
+    all(env, `SELECT st.*, p.name AS product_name, p.sku
+      FROM inventory_stock st
+      LEFT JOIN products p ON p.id = st.product_id
+      WHERE st.branch_id = ?
+      ORDER BY p.name`, [branchId]),
+    all(env, `SELECT sm.*, p.name AS product_name
+      FROM stock_movements sm
+      LEFT JOIN products p ON p.id = sm.product_id
+      WHERE sm.branch_id = ? AND sm.movement_type = 'Receive'
+      ORDER BY sm.created_at DESC LIMIT 50`, [branchId])
   ]);
 
   return jsonResponse({
@@ -292,7 +302,9 @@ async function getPosData(request, env) {
     closedDates,
     dailyClosings,
     cashDrawerOpens,
-    timeEntries
+    timeEntries,
+    inventoryStock,
+    stockMovements
   });
 }
 
@@ -1029,15 +1041,33 @@ async function restoreBranch(request, env, branchId) {
 }
 
 async function createStockMovement(request, env) {
-  const body = await request.json();
+  const body = await request.clone().json();
   const branchId = clean(body.branchId);
   const productId = clean(body.productId);
   const quantity = Number(body.quantity || 0);
   const movementType = clean(body.movementType) || "Receive";
-  if (!branchId || !productId || !quantity) return jsonResponse({ error: "Branch, product, and quantity are required." }, 400);
+  const allowedTypes = ["Receive", "Adjustment in", "Adjustment out", "Transfer in", "Transfer out"];
+  if (!branchId || !productId || !Number.isSafeInteger(quantity) || quantity < 1) return jsonResponse({ error: "Branch, product, and a positive whole quantity are required." }, 400);
+  if (!allowedTypes.includes(movementType)) return jsonResponse({ error: "Choose a valid stock movement type." }, 400);
+  const [branch, product] = await Promise.all([
+    env.DB.prepare("SELECT id FROM branches WHERE id = ? AND status = 'Open'").bind(branchId).first(),
+    env.DB.prepare("SELECT id FROM products WHERE id = ? AND status = 'Active'").bind(productId).first()
+  ]);
+  if (!branch || !product) return jsonResponse({ error: "Choose an open branch and active product." }, 400);
+  let reason = clean(body.reason);
+  if (request.headers.get("x-pos-workspace") === "1") {
+    if (movementType !== "Receive") return jsonResponse({ error: "The POS can only receive product deliveries." }, 400);
+    const auth = await verifyActor(request, env, branchId);
+    if (auth.response) return auth.response;
+    const account = await env.DB.prepare("SELECT u.role, r.permissions FROM access_users u LEFT JOIN access_roles r ON r.role = u.role WHERE u.id = ?").bind(auth.actor.id).first();
+    let permissions = {};
+    try { permissions = JSON.parse(account?.permissions || "{}"); } catch { permissions = {}; }
+    if (account?.role !== "owner" && Number(permissions.inventory || 0) < 2) return jsonResponse({ error: "Your account does not have permission to receive inventory." }, 403);
+    reason = [reason, `Received by ${auth.actor.name}`].filter(Boolean).join(" · ");
+  }
   const delta = movementType === "Sale" || movementType === "Transfer out" || movementType === "Adjustment out" ? -Math.abs(quantity) : Math.abs(quantity);
-  await applyStockMovement(env, branchId, productId, delta, movementType, clean(body.reason), clean(body.reference));
-  return jsonResponse({ ok: true });
+  await applyStockMovement(env, branchId, productId, delta, movementType, reason, clean(body.reference));
+  return jsonResponse({ ok: true, quantityReceived:delta });
 }
 
 async function createDailyClosing(request, env) {
@@ -1501,6 +1531,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       <button ${(can(accessUser, "branches")) ? "" : "hidden"} class="nav" data-tab="branches">${appIcon("branches")}<span>Branches</span></button>
       <button ${(["owner", "admin"].includes(accessUser.role) && can(accessUser, "access", true)) ? "" : "hidden"} class="nav" data-tab="access">${appIcon("access")}<span>Access</span></button>` : `
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">${appIcon("pos")}<span>POS</span></button>
+      <button class="nav" data-tab="receive-products">${appIcon("inventory")}<span>Receive products</span></button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">${appIcon("bookings")}<span>Bookings</span></button>
       <button class="nav" data-tab="closing">${appIcon("closing")}<span>Daily Closing</span></button>
       <button class="nav" data-tab="recent-sales">${appIcon("sales")}<span>Recent Sales</span></button>
@@ -1612,6 +1643,25 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
         </form>
         <div class="panel cart-panel"><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total</span><strong id="cartTotal">$0.00</strong></div><div class="cart-payment-summary" id="cartPaymentSummary"></div></div>
       </div>
+      </div>
+    </section>
+
+    <section class="tab staff-only" id="receive-products">
+      <div class="receive-workspace hidden" id="receiveWorkspace">
+        <div class="section-heading page-heading"><div><p class="eyebrow">Branch inventory</p><h2>Receive products</h2><p class="hint">Record delivered stock against this branch. An individual staff PIN with inventory permission is required.</p></div></div>
+        <div class="split receive-products-layout">
+          <form class="panel" id="receiveProductsForm">
+            <input name="branchId" type="hidden">
+            <input name="movementType" type="hidden" value="Receive">
+            <label>Product<select name="productId" required></select></label>
+            <div class="grid"><label>Quantity received<input name="quantity" type="number" min="1" step="1" required></label><label>Invoice / delivery reference<input name="reference" maxlength="500" placeholder="Invoice or delivery number"></label></div>
+            <label>Delivery note<input name="reason" maxlength="500" placeholder="Supplier, damaged cartons, or other note"></label>
+            <button class="primary full" type="submit">Receive into products</button>
+            <p class="sale-message" id="receiveProductsMessage" role="status"></p>
+          </form>
+          <div class="panel"><div class="section-heading"><div><h2>Current product stock</h2><p class="hint">Stock on hand at this branch after sales and receipts.</p></div></div><div class="table-wrap"><table><thead><tr><th>Product</th><th>SKU</th><th>On hand</th></tr></thead><tbody id="receiveProductsStock"></tbody></table></div></div>
+        </div>
+        <div class="panel"><div class="section-heading"><div><h2>Recent deliveries</h2><p class="hint">The latest 50 product receipts for this branch.</p></div></div><div class="table-wrap"><table><thead><tr><th>Received</th><th>Product</th><th>Quantity</th><th>Reference</th><th>Details</th></tr></thead><tbody id="receiveProductsHistory"></tbody></table></div></div>
       </div>
     </section>
 
@@ -1788,6 +1838,8 @@ let selectedDashboardPeriod = "today";
 let selectedGlobalBranchId = window.currentUser.managerBranchId || "";
 let selectedRosterBranchId = "";
 let selectedProductBranchId = "";
+const expandedServiceCategories = new Set();
+const expandedServiceSubCategories = new Set();
 const appMode = window.appMode || "admin";
 const message = document.querySelector("#message");
 ${accessClientScript()}
@@ -1910,6 +1962,7 @@ document.querySelector("#serviceImportFile").addEventListener("change",importSer
 document.querySelector("#importProductsButton").addEventListener("click", () => document.querySelector("#productImportFile").click());
 document.querySelector("#productImportFile").addEventListener("change", importProductsWorkbook);
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
+document.querySelector("#receiveProductsForm").addEventListener("submit", submitReceivedProducts);
 document.querySelector("#closingForm").addEventListener("submit", submitCountedClosing);
 
 
@@ -1927,7 +1980,7 @@ async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (appMode === "staff") headers["x-pos-workspace"] = "1";
   else if (currentUser.managerBranchId) headers["x-branch-id"] = currentUser.managerBranchId;
-  if (selectedPosBranchId && (path.startsWith("/api/checkout-bookings") || path === "/api/pos-data" || path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
+  if (selectedPosBranchId && (path.startsWith("/api/checkout-bookings") || path === "/api/pos-data" || path === "/api/sales" || path === "/api/stock-movements" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
     headers["x-branch-id"] = selectedPosBranchId;
 
   }
@@ -2006,10 +2059,12 @@ async function openPos() {
   document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
+  document.querySelector('#receiveProductsForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
   renderClosingPreview();
   document.querySelector("#posLogin").classList.add("hidden");
   document.querySelector("#posWorkspace").classList.remove("hidden");
+  document.querySelector("#receiveWorkspace").classList.remove("hidden");
   document.querySelector("#staffWorkspace").classList.remove("hidden");
   document.body.classList.remove("pos-locked");
   } catch(error) { message.textContent = error.message; }
@@ -2032,6 +2087,7 @@ async function refreshPosData() {
     document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
     document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
     document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
+    document.querySelector('#receiveProductsForm input[name="branchId"]').value = selectedPosBranchId;
     document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
     renderClosingPreview();
     message.textContent = "Workspace opened for " + (state.branch?.name || state.branches[0]?.name || "selected branch") + ".";
@@ -2079,7 +2135,7 @@ function normalizeState(data = {}) {
   normalized.branches = normalized.branches.filter((b) => b.status !== "Archived");
   return normalized;
 }
-function renderAll() { fillSelects(); if (currentUser.managerBranchId) document.querySelector("#appTitle").textContent = (state.branches[0]?.name || "Branch") + " · Manager Dashboard"; renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); renderClockedInStaff(); applyAccessUi(); }
+function renderAll() { fillSelects(); if (currentUser.managerBranchId) document.querySelector("#appTitle").textContent = (state.branches[0]?.name || "Branch") + " · Manager Dashboard"; renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderReceivedProducts(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); renderClockedInStaff(); applyAccessUi(); }
 function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
   const staffSelectOptions = '<option value="">Unassigned</option>' + state.staff.map((s) => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join("");
@@ -2496,6 +2552,7 @@ function catalogueGroups(items, field, fallback) {
 function catalogueGroupHeading(name, count, columns, subGroup = false) {
   return '<tr class="catalogue-' + (subGroup ? 'subgroup' : 'group') + '"><th colspan="' + columns + '"><span>' + esc(name) + '</span><span class="catalogue-group-count">' + count + (count === 1 ? ' item' : ' items') + '</span></th></tr>';
 }
+function serviceSubCategoryKey(category, subCategory) { return JSON.stringify([category, subCategory]); }
 function populateServiceSelect(field, values, selected = "") {
   const select = document.querySelector("#serviceForm").elements[field];
   const label = field === "category" ? "category" : "sub-category";
@@ -2541,12 +2598,28 @@ function renderServices() {
   const filtered = Boolean(query || category || subCategory || status);
   const services = categoryServices.filter((service) => (!subCategory || (service.sub_category || "General") === subCategory) && (!status || (service.status || "Active") === status) && (!query || [service.name, service.category || "General", service.sub_category || "General", service.status || "Active"].some((value) => String(value).toLowerCase().includes(query))));
   if (document.querySelector("#serviceForm").classList.contains("hidden")) refreshServiceEditor();
-  document.querySelector("#serviceCount").textContent = services.length + " of " + state.services.length + " services · Grouped by category and sub-category";
+  document.querySelector("#serviceCount").textContent = services.length + " of " + state.services.length + " services · Select a category, then a sub-category, to open services";
   document.querySelector("#servicesTable").innerHTML = catalogueGroups(services, "category", "General").map(([category, categoryServices]) => {
-    return catalogueGroupHeading(category, categoryServices.length, 7) + catalogueGroups(categoryServices, "sub_category", "General").map(([subCategory, group]) => {
-      return catalogueGroupHeading(subCategory, group.length, 7, true) + group.map((service) => '<tr><td><strong>' + esc(service.name) + '</strong></td><td>' + esc(service.category || "General") + '</td><td>' + esc(service.sub_category || "General") + '</td><td>' + esc(service.duration_minutes) + ' min</td><td><strong>' + money(service.price_cents) + '</strong></td><td><span class="status-pill ' + (service.status === "Inactive" ? "inactive" : "") + '">' + esc(service.status || "Active") + '</span></td><td><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button></td></tr>').join("");
+    const categoryOpen = filtered || expandedServiceCategories.has(category);
+    const categoryRow = '<tr class="catalogue-group"><th colspan="7"><button class="catalogue-toggle" type="button" data-service-category="' + esc(category) + '" aria-expanded="' + categoryOpen + '"><span class="catalogue-chevron" aria-hidden="true">›</span><span>' + esc(category) + '</span><span class="catalogue-group-count">' + categoryServices.length + (categoryServices.length === 1 ? ' service' : ' services') + '</span></button></th></tr>';
+    return categoryRow + catalogueGroups(categoryServices, "sub_category", "General").map(([subCategory, group]) => {
+      const key = serviceSubCategoryKey(category, subCategory);
+      const subCategoryOpen = filtered || expandedServiceSubCategories.has(key);
+      const subCategoryRow = '<tr class="catalogue-subgroup"' + (categoryOpen ? '' : ' hidden') + '><th colspan="7"><button class="catalogue-toggle catalogue-subcategory-toggle" type="button" data-service-category="' + esc(category) + '" data-service-sub-category="' + esc(subCategory) + '" aria-expanded="' + subCategoryOpen + '"><span class="catalogue-chevron" aria-hidden="true">›</span><span>' + esc(subCategory) + '</span><span class="catalogue-group-count">' + group.length + (group.length === 1 ? ' service' : ' services') + '</span></button></th></tr>';
+      const serviceRows = group.map((service) => '<tr class="catalogue-service-row"' + (categoryOpen && subCategoryOpen ? '' : ' hidden') + '><td><strong>' + esc(service.name) + '</strong></td><td>' + esc(service.category || "General") + '</td><td>' + esc(service.sub_category || "General") + '</td><td>' + esc(service.duration_minutes) + ' min</td><td><strong>' + money(service.price_cents) + '</strong></td><td><span class="status-pill ' + (service.status === "Inactive" ? "inactive" : "") + '">' + esc(service.status || "Active") + '</span></td><td><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button></td></tr>').join("");
+      return subCategoryRow + serviceRows;
     }).join("");
   }).join("") || '<tr><td colspan="7" class="empty-cell">' + (filtered ? 'No services match these filters or search.' : 'No services yet. Click Add service to create one.') + '</td></tr>';
+  document.querySelectorAll("[data-service-category]:not([data-service-sub-category])").forEach((button) => button.addEventListener("click", () => {
+    const value = button.dataset.serviceCategory;
+    if (expandedServiceCategories.has(value)) expandedServiceCategories.delete(value); else expandedServiceCategories.add(value);
+    renderServices();
+  }));
+  document.querySelectorAll("[data-service-sub-category]").forEach((button) => button.addEventListener("click", () => {
+    const key = serviceSubCategoryKey(button.dataset.serviceCategory, button.dataset.serviceSubCategory);
+    if (expandedServiceSubCategories.has(key)) expandedServiceSubCategories.delete(key); else expandedServiceSubCategories.add(key);
+    renderServices();
+  }));
   document.querySelectorAll(".edit-service").forEach((button) => button.addEventListener("click", editService));
 }
 function openServiceForm() {
@@ -2740,7 +2813,7 @@ function showTab(tabId) {
   document.querySelector("#" + tabId)?.classList.add("active");
   if (tabId === 'recent-sales') loadRecentSales();
   document.querySelector(".branch-switcher")?.classList.toggle("hidden", tabId !== "overview");
-  const titles = { overview:"Dashboard", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Access", pos:"POS", "staff-clock":"Staff", bookings:"Bookings", closing:"Daily closing", "recent-sales":"Recent sales" };
+  const titles = { overview:"Dashboard", customers:"Customers", staff:"Staff", roster:"Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Access", pos:"POS", "receive-products":"Receive products", "staff-clock":"Staff", bookings:"Bookings", closing:"Daily closing", "recent-sales":"Recent sales" };
   if (document.querySelector("#appTitle")) document.querySelector("#appTitle").textContent = appMode === "staff" && selectedPosBranchId ? (state.branch?.name || state.branches[0]?.name || "Kunchas branch") : (currentUser.managerBranchId ? (state.branches[0]?.name || "Branch") + " · " : "") + (titles[tabId] || "Kunchas");
 }
 function canCheckoutBooking(booking) {
@@ -2916,6 +2989,39 @@ function renderInventory() {
   const matrix = inventoryMatrixMarkup();
   document.querySelector("#inventoryHead").innerHTML = matrix.head;
   document.querySelector("#inventoryTable").innerHTML = matrix.body;
+}
+function renderReceivedProducts() {
+  const stockBody = document.querySelector("#receiveProductsStock");
+  const historyBody = document.querySelector("#receiveProductsHistory");
+  if (!stockBody || !historyBody) return;
+  const branchId = selectedPosBranchId || state.branch?.id || "";
+  const stock = new Map((state.inventoryStock || []).filter((row) => !branchId || row.branch_id === branchId).map((row) => [row.product_id, Number(row.quantity || 0)]));
+  const products = (state.products || []).filter((product) => product.status !== "Inactive");
+  stockBody.innerHTML = products.length ? products.map((product) => '<tr><td><strong>' + esc(product.name) + '</strong></td><td>' + esc(product.sku || "—") + '</td><td><strong class="stock-quantity">' + (stock.get(product.id) || 0) + '</strong></td></tr>').join("") : '<tr><td colspan="3" class="empty-cell">No active products are available to receive.</td></tr>';
+  const receipts = (state.stockMovements || []).filter((movement) => movement.movement_type === "Receive" && (!branchId || movement.branch_id === branchId));
+  historyBody.innerHTML = receipts.length ? receipts.map((movement) => '<tr><td>' + esc(new Date(movement.created_at).toLocaleString("en-AU", { dateStyle:"medium", timeStyle:"short" })) + '</td><td><strong>' + esc(movement.product_name || "Product") + '</strong></td><td><strong>+' + Number(movement.quantity_delta || 0) + '</strong></td><td>' + esc(movement.reference || "—") + '</td><td>' + esc(movement.reason || "—") + '</td></tr>').join("") : '<tr><td colspan="5" class="empty-cell">No product deliveries have been recorded for this branch.</td></tr>';
+}
+async function submitReceivedProducts(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('[type="submit"]');
+  const status = document.querySelector("#receiveProductsMessage");
+  const values = Object.fromEntries(new FormData(form));
+  if (!values.productId || !Number.isSafeInteger(Number(values.quantity)) || Number(values.quantity) < 1) { status.textContent = "Choose a product and enter a positive whole quantity."; return; }
+  button.disabled = true;
+  status.textContent = "";
+  try {
+    const actor = await askActor(selectedPosBranchId, false, "Confirm product receipt with your PIN");
+    if (!actor) return;
+    const productName = state.products.find((product) => product.id === values.productId)?.name || "product";
+    await api("/api/stock-movements", { method:"POST", body:JSON.stringify({ ...values, ...actor, branchId:selectedPosBranchId, movementType:"Receive", quantity:Number(values.quantity) }) });
+    form.reset();
+    form.elements.branchId.value = selectedPosBranchId;
+    form.elements.movementType.value = "Receive";
+    await refreshPosData();
+    status.textContent = Number(values.quantity) + " × " + productName + " received into branch stock.";
+  } catch (error) { status.textContent = error.message; }
+  finally { button.disabled = false; }
 }
 function renderClosings() {
   document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '<div class="hint">Closed by '+esc(c.closed_by||'Not recorded')+'</div></td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + '</div></td><td>' + money(c.cash_taken_cents || 0) + '</td><td>' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '<div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
@@ -3711,6 +3817,12 @@ legend { grid-column:1/-1; }
 .product-table tbody tr:hover { background:#fdfafd; }
 .product-table .catalogue-group th { padding:15px 22px; text-align:left; background:var(--brand-soft); color:var(--brand); font-size:14px; text-transform:none; border-top:2px solid var(--line); }
 .product-table .catalogue-subgroup th { padding:10px 22px 10px 34px; text-align:left; background:#f7f8fa; color:var(--ink); font-size:12px; text-transform:none; }
+.catalogue-toggle { display:flex; width:100%; min-height:32px; align-items:center; gap:9px; padding:0; color:inherit; background:transparent; border:0; text-align:left; font:inherit; cursor:pointer; }
+.catalogue-toggle:focus-visible { outline:3px solid rgba(183,68,126,.3); outline-offset:3px; }
+.catalogue-chevron { display:inline-block; font-size:22px; line-height:1; transition:transform .16s ease; }
+.catalogue-toggle[aria-expanded="true"] .catalogue-chevron { transform:rotate(90deg); }
+.catalogue-subcategory-toggle { padding-left:14px; }
+.catalogue-service-row td:first-child { padding-left:54px; }
 .catalogue-group-count { display:inline-block; margin-left:12px; color:var(--muted); font-size:11px; font-weight:500; }
 #newServiceCategoryLabel.hidden,#newServiceSubCategoryLabel.hidden { display:none; }
 .table-subtext { display:block; max-width:230px; margin-top:3px; overflow:hidden; color:var(--muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
@@ -3718,6 +3830,8 @@ legend { grid-column:1/-1; }
 .status-pill::before { width:6px; height:6px; content:""; background:currentColor; border-radius:50%; }
 .status-pill.inactive { color:#8a5260; background:#f8eaee; }
 .stock-quantity { display:inline-flex; min-width:34px; min-height:30px; align-items:center; justify-content:center; color:var(--brand); background:var(--brand-soft); border-radius:8px; }
+.receive-products-layout { margin-bottom:20px; }
+#receiveProductsMessage { min-height:20px; margin-bottom:0; }
 .compact-button { min-height:34px; padding:0 12px; font-size:12px; }
 .time-clock-panel { display:grid; grid-template-columns:minmax(260px,1fr) minmax(220px,320px) auto; align-items:end; gap:18px; margin-bottom:20px; background:linear-gradient(135deg,#fff 30%,#faf3fc); }
 .time-clock-panel h2 { margin-bottom:2px; }

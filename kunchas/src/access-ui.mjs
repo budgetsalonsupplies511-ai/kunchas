@@ -5,7 +5,7 @@ export function staffLoginPanelHtml(){return `<div data-staff-login-fields hidde
 export function accessClientScript(){return `
 let accessSettingsData = null;
 const currentUser = window.currentUser;
-const tabPermissions = { overview:"dashboard",pos:"pos","staff-clock":"time_clock",bookings:"bookings",customers:"customers",services:"services",products:"products",inventory:"inventory",staff:"staff",roster:"roster",reports:"reports",closing:"closing",access:"access",branches:"branches","recent-sales":"pos" };
+const tabPermissions = { overview:"dashboard",pos:"pos","receive-products":"inventory","staff-clock":"time_clock",bookings:"bookings",customers:"customers",services:"services",products:"products",inventory:"inventory",staff:"staff",roster:"roster",reports:"reports",closing:"closing",access:"access",branches:"branches","recent-sales":"pos" };
 function userCan(section,write=false) { return currentUser?.role === "owner" || Number(currentUser?.permissions?.[section] || 0) >= (write ? 2 : 1); }
 function canManageAccess() { return ["owner","admin"].includes(currentUser?.role) && userCan("access",true); }
 function canViewTab(tab) { return tab === "access" ? canManageAccess() : tab === "reports" ? userCan("reports") || userCan("payroll") : userCan(tabPermissions[tab]); }
@@ -23,7 +23,7 @@ function applyAccessUi() {
   document.querySelectorAll('#staffForm [name^="xero"],#staffProfileForm [name^="xero"]').forEach((input) => { input.disabled = !userCan("payroll",true); input.closest("label").hidden = !userCan("payroll"); });
   document.querySelectorAll(".tab[id]").forEach((section) => {
     const permission = tabPermissions[section.id];
-    section.querySelectorAll('form button[type="submit"]').forEach((button) => { if (permission && section.id !== "access") button.disabled = !userCan(permission,true) || (["staff","services","products"].includes(permission) && !currentUser.allBranches); });
+    section.querySelectorAll('form button[type="submit"]').forEach((button) => { if (permission && !["access","receive-products"].includes(section.id)) button.disabled = !userCan(permission,true) || (["staff","services","products"].includes(permission) && !currentUser.allBranches); });
   });
   document.querySelectorAll('[data-staff-login-fields]').forEach(panel=>{panel.hidden=!canManageAccess();panel.querySelectorAll('input').forEach(input=>input.disabled=!canManageAccess());});
   document.querySelector("#timeClockStatus").closest(".time-clock-panel").hidden = !userCan("time_clock");

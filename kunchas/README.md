@@ -85,4 +85,6 @@ Services includes Export Excel and Import Excel. Export supplies Service ID, Nam
 
 Open /pos or use the POS link in Branches. The existing branch PIN opens a branch-scoped, eight-hour secure session. Dashboard access still requires individual sign-in. A staff account and PIN are required to complete a sale, count a closing, or use the time clock. Accounts must be enabled, active, and allowed at that branch. Branch edits require a Manager/Admin/Owner PIN; sale edits additionally require a reason and preserve before/after values with the editor and time. Editing existing sale item names/prices and cash/card payments retains item identities, stock quantities, and staff allocations.
 
+The POS Receive products section records supplier deliveries directly into the selected branch's product inventory and shows current stock plus the latest receipts. Each receipt requires an individual PIN whose role has Inventory manage permission; the stock movement records the receiver, reference, and delivery note.
+
 Daily closing stores counts for $100, $50, $20, $10, $5, $2, and $1, calculates counted cash and remaining cash after cash taken, and records the verified closer. The one-time additive migration is pos-accountability.sql; apply it before deploying this version. Older transactions display Not recorded when no original operator was recorded.

@@ -7,8 +7,22 @@ const source = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
 
 test('POS navigation keeps Staff last and manager access below Change branch', () => {
   const posNavigation = source.slice(source.indexOf('${isAdmin ? `'), source.indexOf('</nav>'));
+  assert.ok(posNavigation.indexOf('data-tab="pos"') < posNavigation.indexOf('data-tab="receive-products"'));
   assert.ok(posNavigation.indexOf('data-tab="recent-sales"') < posNavigation.indexOf('data-tab="staff-clock"'));
   assert.match(source, /class="sidebar-footer staff-only"[\s\S]*?id="switchBranch"[\s\S]*?id="managerDashboardButton"/);
+});
+
+test('POS includes a branch-scoped product receiving workflow', () => {
+  assert.match(source, /id="receive-products"[\s\S]*?id="receiveProductsForm"[\s\S]*?id="receiveProductsStock"[\s\S]*?id="receiveProductsHistory"/);
+  assert.match(source, /askActor\(selectedPosBranchId, false, "Confirm product receipt with your PIN"\)/);
+  assert.match(source, /movementType:"Receive"/);
+});
+
+test('dashboard services render as category and sub-category toggles', () => {
+  assert.match(source, /data-service-category/);
+  assert.match(source, /data-service-sub-category/);
+  assert.match(source, /expandedServiceCategories/);
+  assert.match(source, /expandedServiceSubCategories/);
 });
 
 test('checkout offers separate receipt and cash drawer actions', () => {

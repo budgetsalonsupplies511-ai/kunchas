@@ -7,7 +7,7 @@ const first=(env,sql,args=[])=>env.DB.prepare(sql).bind(...args).first();
 const rows=async(env,sql,args=[])=> (await env.DB.prepare(sql).bind(...args).all()).results||[];
 const parse=v=>{try{return JSON.parse(v||'[]');}catch{return [];}};
 const equal=(a,b)=>{let mismatch=a.length^b.length;for(let i=0;i<Math.max(a.length,b.length);i++)mismatch|=(a.charCodeAt(i)||0)^(b.charCodeAt(i)||0);return mismatch===0;};
-export const branchUser=(id='')=>({id:'branch:'+id,role:'branch',name:'Branch POS',staffId:null,permissions:{pos:2,bookings:2,closing:2,time_clock:2},allBranches:false,branchIds:id?[id]:[]});
+export const branchUser=(id='')=>({id:'branch:'+id,role:'branch',name:'Branch POS',staffId:null,permissions:{pos:2,bookings:2,closing:2,time_clock:2,inventory:1},allBranches:false,branchIds:id?[id]:[]});
 async function limit(env,key,max=8){const now=Math.floor(Date.now()/1000);const row=await first(env,`INSERT INTO access_login_limits(key,attempts,reset_at) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN reset_at<=? THEN 1 ELSE attempts+1 END, reset_at=CASE WHEN reset_at<=? THEN excluded.reset_at ELSE reset_at END RETURNING attempts`,[key,now+900,now,now]);return row.attempts<=max;}
 async function session(request,env){const token=(request.headers.get('cookie')||'').split(';').map(v=>v.trim()).find(v=>v.startsWith(COOKIE+'='))?.slice(COOKIE.length+1);if(!token)return null;const row=await first(env,"SELECT se.*,b.pin_code,b.status FROM branch_pos_sessions se JOIN branches b ON b.id=se.branch_id WHERE token_hash=? AND expires_at>?",[await digest(token),Math.floor(Date.now()/1000)]);return row&&row.status==='Open'&&row.pin_hash===await digest(row.pin_code)?branchUser(row.branch_id):null;}
 export async function branchGate(request,env,personal){
@@ -36,7 +36,7 @@ export async function branchGate(request,env,personal){
   const saleAuthorization=method==='POST'&&/^\/api\/sales\/[^/]+\/authorize$/.test(p);
   const special=p==='/api/pos-actors'||/^\/api\/sales\/[^/]+$/.test(p)||saleAuthorization;
   if(!shared&&!special)return null;
-  const allowed=(method==='GET'&&['/api/pos-data','/api/pos-actors','/api/checkout-bookings'].includes(p))||(method==='POST'&&['/api/sales','/api/daily-closing','/api/cash-drawer-open','/api/branch-bookings','/api/time-clock'].includes(p))||(['GET','PATCH'].includes(method)&&/^\/api\/sales\/[^/]+$/.test(p))||(method==='PATCH'&&/^\/api\/(bookings|daily-closing)\/[^/]+$/.test(p));
+  const allowed=(method==='GET'&&['/api/pos-data','/api/pos-actors','/api/checkout-bookings'].includes(p))||(method==='POST'&&['/api/sales','/api/daily-closing','/api/cash-drawer-open','/api/branch-bookings','/api/time-clock','/api/stock-movements'].includes(p))||(['GET','PATCH'].includes(method)&&/^\/api\/sales\/[^/]+$/.test(p))||(method==='PATCH'&&/^\/api\/(bookings|daily-closing)\/[^/]+$/.test(p));
   if(!allowed&&!saleAuthorization&&!(method==='GET'&&['/api/closing-sales','/api/recent-sales'].includes(p)))return personal?null:{response:json({error:'Use an individual login to access the dashboard.'},403)};
   if(!shared&&special&&personal&&!can(personal,'pos')&&!(p==='/api/pos-actors'&&(can(personal,'branches',true)||can(personal,'closing',true))))return {response:json({error:'Your account does not have POS access.'},403)};
   const user=(personal&&!request.headers.get("x-branch-id")&&special)?personal:(shared||personal);if(!user)return {response:json({error:'Open a branch with its PIN first.'},401)};
