@@ -53,16 +53,31 @@ CREATE TABLE IF NOT EXISTS services (
   status TEXT NOT NULL DEFAULT 'Active'
 );
 
+CREATE TABLE IF NOT EXISTS service_category_order (
+  category TEXT PRIMARY KEY,
+  sort_order INTEGER NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   brand TEXT,
   category TEXT NOT NULL,
+  sub_category TEXT NOT NULL DEFAULT 'General',
   sku TEXT,
   barcode TEXT,
   cost_cents INTEGER NOT NULL DEFAULT 0,
   price_cents INTEGER NOT NULL,
+  special_price_cents INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'Active'
+);
+
+CREATE TABLE IF NOT EXISTS product_category_order (
+  category TEXT PRIMARY KEY,
+  sort_order INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS inventory_stock (

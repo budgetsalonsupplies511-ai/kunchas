@@ -68,7 +68,10 @@ export async function publicBookingRoute(request,env) {
   try {
     if(page&&request.method==='GET')return new Response(publicBookingPage(),{headers:{...headers,'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self' https://kunchas.com.au https://www.kunchas.com.au http://localhost:* http://127.0.0.1:*"}});
     if(p.endsWith('/catalog')&&request.method==='GET') {
-      const [branches,services]=await Promise.all([rows(env,"SELECT id,name,address,phone FROM branches WHERE status='Open' ORDER BY name"),rows(env,"SELECT id,name,category,sub_category,duration_minutes,price_cents FROM services WHERE status='Active' AND duration_minutes>0 ORDER BY category,sub_category,name")]);
+      const [branches,services]=await Promise.all([rows(env,"SELECT id,name,address,phone FROM branches WHERE status='Open' ORDER BY name"),rows(env,`SELECT s.id,s.name,s.category,s.sub_category,s.duration_minutes,s.price_cents,COALESCE(o.pinned,CASE WHEN lower(trim(s.category)) LIKE '%special%' THEN 1 ELSE 0 END) AS category_pinned,COALESCE(o.sort_order,2147483647) AS category_sort_order
+        FROM services s LEFT JOIN service_category_order o ON o.category=s.category
+        WHERE s.status='Active' AND s.duration_minutes>0
+        ORDER BY category_pinned DESC,category_sort_order,s.category,s.sub_category,s.name`)]);
       return json({branches,services,rules:BOOKING_RULES,dateRange:dateRange()});
     }
     if(p.endsWith('/availability')&&request.method==='GET') {

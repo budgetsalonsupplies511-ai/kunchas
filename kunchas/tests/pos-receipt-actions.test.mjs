@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
+const schemaSource = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
 
 test('POS navigation keeps Staff last and manager access below Change branch', () => {
   const posNavigation = source.slice(source.indexOf('${isAdmin ? `'), source.indexOf('</nav>'));
@@ -21,8 +22,72 @@ test('POS includes a branch-scoped product receiving workflow', () => {
 test('dashboard services render as category and sub-category toggles', () => {
   assert.match(source, /data-service-category/);
   assert.match(source, /data-service-sub-category/);
+  assert.match(source, /class="service-category-menu"/);
+  assert.match(source, /class="service-subcategory-menu"/);
+  assert.match(source, /class="service-hierarchy-item"/);
+  assert.doesNotMatch(source, /id="servicesTable"/);
   assert.match(source, /expandedServiceCategories/);
   assert.match(source, /expandedServiceSubCategories/);
+});
+
+test('service categories keep Special categories above the alphabetical list', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function catalogueTextCompare('), source.indexOf('function refreshCatalogueFilter(')), context);
+  const categories = ['Hair', 'Special Offers', 'Beauty', 'special', 'Dashain Special', 'Colour'];
+  const sorted = categories.sort(context.serviceCategoryCompare);
+  assert.ok(sorted.slice(0, 3).every((category) => category.toLowerCase().includes('special')));
+  assert.deepEqual(sorted.slice(3), ['Beauty', 'Colour', 'Hair']);
+});
+
+test('service categories have persistent drag, keyboard reordering and a pin toggle', () => {
+  assert.match(source, /class="service-category-drag-handle"[^>]*draggable="true"/);
+  assert.match(source, /service-category-pin[\s\S]*?data-pin-category/);
+  assert.match(source, /aria-pressed/);
+  assert.match(source, /addEventListener\("dragstart"/);
+  assert.match(source, /addEventListener\("drop"/);
+  assert.match(source, /\["ArrowUp", "ArrowDown"\]/);
+  assert.match(source, /POST[^\n]*\/api\/services\/category-order|\/api\/services\/category-order[^\n]*POST/);
+  assert.match(source, /PATCH[^\n]*\/api\/services\/category-pin|\/api\/services\/category-pin[^\n]*PATCH/);
+  assert.match(source, /function toggleServiceCategoryPin/);
+  assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS service_category_order/);
+  assert.match(schemaSource, /pinned INTEGER NOT NULL DEFAULT 0/);
+});
+
+test('service category and sub-category names can be renamed from their hierarchy menus', () => {
+  assert.match(source, /class="catalogue-name-edit edit-service-category"/);
+  assert.match(source, /class="catalogue-name-edit edit-service-subcategory"/);
+  assert.match(source, /PATCH[^\n]*\/api\/services\/category-name|\/api\/services\/category-name[^\n]*PATCH/);
+  assert.match(source, /PATCH[^\n]*\/api\/services\/subcategory-name|\/api\/services\/subcategory-name[^\n]*PATCH/);
+  assert.match(source, /UPDATE services SET category = \? WHERE category = \?/);
+  assert.match(source, /UPDATE services SET sub_category = \? WHERE category = \? AND sub_category = \?/);
+  assert.match(source, /Merge these categories\?/);
+  assert.match(source, /Merge these sub-categories\?/);
+});
+
+test('products use an editable category and sub-category hierarchy with drag and drop moves', () => {
+  assert.match(source, /id="productsHierarchy"/);
+  assert.match(source, /class="product-category-menu"/);
+  assert.match(source, /class="product-subcategory-menu"/);
+  assert.match(source, /class="product-hierarchy-item"[^>]*draggable="true"/);
+  assert.match(source, /class="product-category-drag-handle"[^>]*draggable="true"/);
+  assert.match(source, /\/api\/products\/category-order/);
+  assert.match(source, /\/api\/products\/move/);
+  assert.match(source, /class="catalogue-name-edit edit-product-category"/);
+  assert.match(source, /class="catalogue-name-edit edit-product-subcategory"/);
+  assert.match(source, /UPDATE products SET category = \?, sub_category = \? WHERE id = \?/);
+  assert.match(schemaSource, /CREATE TABLE IF NOT EXISTS product_category_order/);
+  assert.match(schemaSource, /sub_category TEXT NOT NULL DEFAULT 'General'/);
+});
+
+test('products enforce numeric SKUs and support retail and optional special prices', () => {
+  assert.match(source, /name="sku" inputmode="numeric" pattern="\[0-9\]\*"/);
+  assert.match(source, /name="price"[^>]*required/);
+  assert.match(source, /name="specialPrice"/);
+  assert.match(source, /sku && !\/\^\\d\+\$\/\.test\(sku\)/);
+  assert.match(source, /specialPriceCents >= priceCents/);
+  assert.match(source, /product\.special_price_cents \|\| 0/);
+  assert.match(schemaSource, /special_price_cents INTEGER NOT NULL DEFAULT 0/);
 });
 
 test('checkout offers separate receipt and cash drawer actions', () => {

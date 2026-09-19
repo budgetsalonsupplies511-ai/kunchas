@@ -120,8 +120,16 @@ const application = {
       if (request.method === "PATCH" && url.pathname.startsWith("/api/customers/")) return updateCustomer(request, env, clean(url.pathname.replace("/api/customers/", "")));
       if (request.method === "POST" && url.pathname === "/api/bookings") return createBooking(request, env);
       if (request.method === "POST" && url.pathname === "/api/services") return createService(request, env);
+      if (request.method === "POST" && url.pathname === "/api/services/category-order") return saveServiceCategoryOrder(request, env);
+      if (request.method === "PATCH" && url.pathname === "/api/services/category-pin") return setServiceCategoryPin(request, env);
+      if (request.method === "PATCH" && url.pathname === "/api/services/category-name") return renameServiceCategory(request, env);
+      if (request.method === "PATCH" && url.pathname === "/api/services/subcategory-name") return renameServiceSubCategory(request, env);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/services/")) return updateService(request, env, clean(url.pathname.replace("/api/services/", "")));
       if (request.method === "POST" && url.pathname === "/api/products") return createProduct(request, env);
+      if (request.method === "POST" && url.pathname === "/api/products/category-order") return saveProductCategoryOrder(request, env);
+      if (request.method === "PATCH" && url.pathname === "/api/products/category-name") return renameProductCategory(request, env);
+      if (request.method === "PATCH" && url.pathname === "/api/products/subcategory-name") return renameProductSubCategory(request, env);
+      if (request.method === "PATCH" && url.pathname === "/api/products/move") return moveProductCategory(request, env);
       if (request.method === "GET" && url.pathname === "/api/services/export") return exportServices(env);
       if (request.method === "POST" && url.pathname === "/api/services/import") return importServices(request, env);
       if (request.method === "GET" && url.pathname === "/api/products/export") return exportProducts(env);
@@ -151,11 +159,13 @@ const application = {
 };
 
 async function getAppData(env) {
-  const [branches, staff, services, products, customers, bookings, sales, saleItems, branchHours, closedDates, discounts, inventoryStock, stockMovements, dailyClosings, staffRoster, staffRegularDaysOff, timeEntries] = await Promise.all([
+  const [branches, staff, services, serviceCategoryOrder, products, productCategoryOrder, customers, bookings, sales, saleItems, branchHours, closedDates, discounts, inventoryStock, stockMovements, dailyClosings, staffRoster, staffRegularDaysOff, timeEntries] = await Promise.all([
     all(env, "SELECT * FROM branches ORDER BY name"),
     all(env, "SELECT * FROM staff ORDER BY branch_id, name"),
     all(env, "SELECT * FROM services ORDER BY category, name"),
+    all(env, "SELECT category, sort_order, pinned FROM service_category_order ORDER BY pinned DESC, sort_order, category"),
     all(env, "SELECT * FROM products ORDER BY category, name"),
+    all(env, "SELECT category, sort_order FROM product_category_order ORDER BY sort_order, category"),
     all(env, "SELECT * FROM customers ORDER BY created_at DESC LIMIT 200"),
     all(env, `SELECT b.*, c.first_name, c.last_name, br.name AS branch_name, s.name AS staff_name
       FROM bookings b
@@ -210,7 +220,9 @@ async function getAppData(env) {
     branches,
     staff,
     services,
+    serviceCategoryOrder,
     products,
+    productCategoryOrder,
     customers,
     bookings: bookings.map((booking) => ({
       ...booking,
@@ -237,7 +249,7 @@ async function listPublicBranches(env) {
 
 async function getPosData(request, env) {
   const branchId = request.headers.get("x-branch-id");
-  const [branch, staff, services, products, customers, bookings, sales, branchHours, closedDates, dailyClosings, cashDrawerOpens, timeEntries, inventoryStock, stockMovements] = await Promise.all([
+  const [branch, staff, services, serviceCategoryOrder, products, productCategoryOrder, customers, bookings, sales, branchHours, closedDates, dailyClosings, cashDrawerOpens, timeEntries, inventoryStock, stockMovements] = await Promise.all([
     all(env, "SELECT id, name, address, phone, post_code FROM branches WHERE id = ?", [branchId]),
     all(env, `SELECT st.*, br.name AS branch_name
       FROM staff st
@@ -245,7 +257,9 @@ async function getPosData(request, env) {
       WHERE st.status = 'Active'
       ORDER BY br.name, st.name`),
     all(env, "SELECT * FROM services WHERE status = 'Active' ORDER BY category, name"),
+    all(env, "SELECT category, sort_order, pinned FROM service_category_order ORDER BY pinned DESC, sort_order, category"),
     all(env, "SELECT * FROM products WHERE status = 'Active' ORDER BY category, name"),
+    all(env, "SELECT category, sort_order FROM product_category_order ORDER BY sort_order, category"),
     all(env, "SELECT * FROM customers ORDER BY updated_at DESC LIMIT 500"),
     all(env, `SELECT b.*, c.first_name, c.last_name, br.name AS branch_name, s.name AS staff_name
       FROM bookings b
@@ -291,7 +305,9 @@ async function getPosData(request, env) {
     branches: branch,
     staff,
     services,
+    serviceCategoryOrder,
     products,
+    productCategoryOrder,
     customers,
     bookings: bookings.map((booking) => ({
       ...booking,
@@ -544,6 +560,73 @@ async function createService(request, env) {
   return jsonResponse({ ok: true });
 }
 
+async function saveServiceCategoryOrder(request, env) {
+  const body = await request.json();
+  const requested = Array.isArray(body.categories) ? body.categories.map(clean).filter(Boolean) : [];
+  if (!requested.length || new Set(requested).size !== requested.length) return jsonResponse({ error: "A unique category order is required." }, 400);
+  const existing = await all(env, "SELECT DISTINCT category FROM services");
+  const available = new Set(existing.map((row) => row.category || "General"));
+  if (requested.some((category) => !available.has(category))) return jsonResponse({ error: "The category list is out of date. Refresh and try again." }, 409);
+  const saved = await all(env, "SELECT category, pinned FROM service_category_order");
+  const savedPins = new Map(saved.map((row) => [row.category, Boolean(row.pinned)]));
+  const isPinned = (category) => savedPins.has(category) ? savedPins.get(category) : category.toLowerCase().includes("special");
+  const ordered = [...requested.filter(isPinned), ...requested.filter((category) => !isPinned(category))];
+  const updatedAt = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM service_category_order"),
+    ...ordered.map((category, index) => env.DB.prepare("INSERT INTO service_category_order (category, sort_order, pinned, updated_at) VALUES (?, ?, ?, ?)").bind(category, index, isPinned(category) ? 1 : 0, updatedAt))
+  ]);
+  return jsonResponse({ ok:true, categories:ordered.map((category, sort_order) => ({ category, sort_order, pinned:isPinned(category) ? 1 : 0 })) });
+}
+
+async function setServiceCategoryPin(request, env) {
+  const body = await request.json();
+  const category = clean(body.category);
+  const pinned = body.pinned ? 1 : 0;
+  if (!category) return jsonResponse({ error:"A service category is required." }, 400);
+  const existing = await env.DB.prepare("SELECT COUNT(*) AS count FROM services WHERE category = ?").bind(category).first();
+  if (!Number(existing?.count)) return jsonResponse({ error:"Service category not found." }, 404);
+  const current = await env.DB.prepare("SELECT sort_order FROM service_category_order WHERE category = ?").bind(category).first();
+  const last = current || await env.DB.prepare("SELECT COALESCE(MAX(sort_order), -1) AS sort_order FROM service_category_order").first();
+  await env.DB.prepare(`INSERT INTO service_category_order (category, sort_order, pinned, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(category) DO UPDATE SET pinned = excluded.pinned, updated_at = excluded.updated_at`)
+    .bind(category, Number(last?.sort_order ?? -1) + (current ? 0 : 1), pinned, new Date().toISOString()).run();
+  return jsonResponse({ ok:true, category, pinned });
+}
+
+async function renameServiceCategory(request, env) {
+  const body = await request.json();
+  const oldName = clean(body.oldName);
+  const newName = clean(body.newName);
+  if (!oldName || !newName) return jsonResponse({ error:"The current and new category names are required." }, 400);
+  if (oldName === newName) return jsonResponse({ ok:true, category:newName });
+  const existing = await env.DB.prepare("SELECT COUNT(*) AS count FROM services WHERE category = ?").bind(oldName).first();
+  if (!Number(existing?.count)) return jsonResponse({ error:"Service category not found." }, 404);
+  const orderRows = await all(env, "SELECT category, sort_order, pinned FROM service_category_order WHERE category IN (?, ?)", [oldName, newName]);
+  const preservedOrder = orderRows.length ? Math.min(...orderRows.map((row) => Number(row.sort_order))) : null;
+  const preservedPin = orderRows.some((row) => Boolean(row.pinned)) ? 1 : 0;
+  const statements = [
+    env.DB.prepare("UPDATE services SET category = ? WHERE category = ?").bind(newName, oldName),
+    env.DB.prepare("DELETE FROM service_category_order WHERE category IN (?, ?)").bind(oldName, newName)
+  ];
+  if (preservedOrder !== null) statements.push(env.DB.prepare("INSERT INTO service_category_order (category, sort_order, pinned, updated_at) VALUES (?, ?, ?, ?)").bind(newName, preservedOrder, preservedPin, new Date().toISOString()));
+  await env.DB.batch(statements);
+  return jsonResponse({ ok:true, category:newName });
+}
+
+async function renameServiceSubCategory(request, env) {
+  const body = await request.json();
+  const category = clean(body.category);
+  const oldName = clean(body.oldName);
+  const newName = clean(body.newName);
+  if (!category || !oldName || !newName) return jsonResponse({ error:"The category and sub-category names are required." }, 400);
+  if (oldName === newName) return jsonResponse({ ok:true, subCategory:newName });
+  const existing = await env.DB.prepare("SELECT COUNT(*) AS count FROM services WHERE category = ? AND sub_category = ?").bind(category, oldName).first();
+  if (!Number(existing?.count)) return jsonResponse({ error:"Service sub-category not found." }, 404);
+  await env.DB.prepare("UPDATE services SET sub_category = ? WHERE category = ? AND sub_category = ?").bind(newName, category, oldName).run();
+  return jsonResponse({ ok:true, subCategory:newName });
+}
+
 async function updateCustomer(request, env, customerId) {
   const body = await request.json();
   const firstName = clean(body.firstName);
@@ -585,12 +668,16 @@ async function createProduct(request, env) {
   const body = await request.json();
   const name = clean(body.name);
   const category = clean(body.category) || "Retail";
+  const subCategory = clean(body.subCategory) || "General";
+  const sku = clean(body.sku);
   const priceCents = Math.round(Number(body.price || 0) * 100);
+  const specialPriceCents = Math.round(Number(body.specialPrice || 0) * 100);
   const costCents = Math.round(Number(body.cost || 0) * 100);
-  if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0) return jsonResponse({ error: "Product name and a valid retail price are required." }, 400);
+  if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0 || !Number.isInteger(specialPriceCents) || specialPriceCents < 0 || specialPriceCents >= priceCents && specialPriceCents !== 0) return jsonResponse({ error: "Product name and valid cost, retail, and optional lower special prices are required." }, 400);
+  if (sku && !/^\d+$/.test(sku)) return jsonResponse({ error:"SKU must contain numbers only." }, 400);
   const id = `product-${crypto.randomUUID()}`;
-  await env.DB.prepare("INSERT INTO products (id, name, brand, category, sku, barcode, cost_cents, price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(id, name, clean(body.brand), category, clean(body.sku), clean(body.barcode), costCents, priceCents, clean(body.status) === "Inactive" ? "Inactive" : "Active")
+  await env.DB.prepare("INSERT INTO products (id, name, brand, category, sub_category, sku, barcode, cost_cents, price_cents, special_price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, name, clean(body.brand), category, subCategory, sku, clean(body.barcode), costCents, priceCents, specialPriceCents, clean(body.status) === "Inactive" ? "Inactive" : "Active")
     .run();
   return jsonResponse({ ok: true, id }, 201);
 }
@@ -600,35 +687,82 @@ async function updateProduct(request, env, productId) {
   const body = await request.json();
   const name = clean(body.name);
   const category = clean(body.category) || "Retail";
+  const subCategory = clean(body.subCategory) || "General";
+  const sku = clean(body.sku);
   const priceCents = Math.round(Number(body.price || 0) * 100);
+  const specialPriceCents = Math.round(Number(body.specialPrice || 0) * 100);
   const costCents = Math.round(Number(body.cost || 0) * 100);
-  if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0) return jsonResponse({ error: "Product name and a valid retail price are required." }, 400);
-  const result = await env.DB.prepare("UPDATE products SET name = ?, brand = ?, category = ?, sku = ?, barcode = ?, cost_cents = ?, price_cents = ?, status = ? WHERE id = ?")
-    .bind(name, clean(body.brand), category, clean(body.sku), clean(body.barcode), costCents, priceCents, clean(body.status) === "Inactive" ? "Inactive" : "Active", productId)
+  if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0 || !Number.isInteger(specialPriceCents) || specialPriceCents < 0 || specialPriceCents >= priceCents && specialPriceCents !== 0) return jsonResponse({ error: "Product name and valid cost, retail, and optional lower special prices are required." }, 400);
+  if (sku && !/^\d+$/.test(sku)) return jsonResponse({ error:"SKU must contain numbers only." }, 400);
+  const result = await env.DB.prepare("UPDATE products SET name = ?, brand = ?, category = ?, sub_category = ?, sku = ?, barcode = ?, cost_cents = ?, price_cents = ?, special_price_cents = ?, status = ? WHERE id = ?")
+    .bind(name, clean(body.brand), category, subCategory, sku, clean(body.barcode), costCents, priceCents, specialPriceCents, clean(body.status) === "Inactive" ? "Inactive" : "Active", productId)
     .run();
   if (!result.meta.changes) return jsonResponse({ error: "Product not found." }, 404);
   return jsonResponse({ ok: true });
 }
 
+async function saveProductCategoryOrder(request, env) {
+  const body = await request.json();
+  const categories = Array.isArray(body.categories) ? body.categories.map(clean).filter(Boolean) : [];
+  if (!categories.length || new Set(categories).size !== categories.length) return jsonResponse({ error:"A unique product category order is required." }, 400);
+  const available = new Set((await all(env, "SELECT DISTINCT category FROM products")).map((row) => row.category || "Retail"));
+  if (categories.some((category) => !available.has(category))) return jsonResponse({ error:"The product category list is out of date. Refresh and try again." }, 409);
+  const updatedAt = new Date().toISOString();
+  await env.DB.batch([env.DB.prepare("DELETE FROM product_category_order"), ...categories.map((category, sortOrder) => env.DB.prepare("INSERT INTO product_category_order (category, sort_order, updated_at) VALUES (?, ?, ?)").bind(category, sortOrder, updatedAt))]);
+  return jsonResponse({ ok:true, categories });
+}
+
+async function renameProductCategory(request, env) {
+  const body = await request.json(), oldName = clean(body.oldName), newName = clean(body.newName);
+  if (!oldName || !newName) return jsonResponse({ error:"The current and new category names are required." }, 400);
+  const existing = await env.DB.prepare("SELECT COUNT(*) AS count FROM products WHERE category = ?").bind(oldName).first();
+  if (!Number(existing?.count)) return jsonResponse({ error:"Product category not found." }, 404);
+  const rows = await all(env, "SELECT category, sort_order FROM product_category_order WHERE category IN (?, ?)", [oldName, newName]);
+  const sortOrder = rows.length ? Math.min(...rows.map((row) => Number(row.sort_order))) : null;
+  const statements = [env.DB.prepare("UPDATE products SET category = ? WHERE category = ?").bind(newName, oldName), env.DB.prepare("DELETE FROM product_category_order WHERE category IN (?, ?)").bind(oldName, newName)];
+  if (sortOrder !== null) statements.push(env.DB.prepare("INSERT INTO product_category_order (category, sort_order, updated_at) VALUES (?, ?, ?)").bind(newName, sortOrder, new Date().toISOString()));
+  await env.DB.batch(statements);
+  return jsonResponse({ ok:true, category:newName });
+}
+
+async function renameProductSubCategory(request, env) {
+  const body = await request.json(), category = clean(body.category), oldName = clean(body.oldName), newName = clean(body.newName);
+  if (!category || !oldName || !newName) return jsonResponse({ error:"The category and sub-category names are required." }, 400);
+  const result = await env.DB.prepare("UPDATE products SET sub_category = ? WHERE category = ? AND sub_category = ?").bind(newName, category, oldName).run();
+  if (!result.meta.changes) return jsonResponse({ error:"Product sub-category not found." }, 404);
+  return jsonResponse({ ok:true, subCategory:newName });
+}
+
+async function moveProductCategory(request, env) {
+  const body = await request.json(), productId = clean(body.productId), category = clean(body.category), subCategory = clean(body.subCategory) || "General";
+  if (!productId || !category) return jsonResponse({ error:"Product and destination category are required." }, 400);
+  const result = await env.DB.prepare("UPDATE products SET category = ?, sub_category = ? WHERE id = ?").bind(category, subCategory, productId).run();
+  if (!result.meta.changes) return jsonResponse({ error:"Product not found." }, 404);
+  return jsonResponse({ ok:true });
+}
+
 async function exportProducts(env) {
   const products = await all(env, "SELECT * FROM products ORDER BY category, name");
-  const rows = [["Product ID", "Name", "Brand", "Category", "SKU", "Barcode", "Cost", "Retail Price", "Status"], ...products.map((product) => [
+  const rows = [["Product ID", "Name", "Brand", "Category", "Sub-category", "SKU", "Barcode", "Cost", "Retail Price", "Special Price", "Status"], ...products.map((product) => [
     product.id,
     product.name,
     product.brand || "",
     product.category || "Retail",
+    product.sub_category || "General",
     product.sku || "",
     product.barcode || "",
     Number(product.cost_cents || 0) / 100,
     Number(product.price_cents || 0) / 100,
+    Number(product.special_price_cents || 0) / 100,
     product.status || "Active"
   ])];
   const sheet = XLSX.utils.aoa_to_sheet(rows);
-  sheet["!cols"] = [{ wch: 34 }, { wch: 28 }, { wch: 18 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 12 }];
-  sheet["!autofilter"] = { ref: `A1:I${Math.max(rows.length, 1)}` };
+  sheet["!cols"] = [{ wch: 34 }, { wch: 28 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 12 }];
+  sheet["!autofilter"] = { ref: `A1:K${Math.max(rows.length, 1)}` };
   for (let row = 2; row <= rows.length; row += 1) {
-    if (sheet[`G${row}`]) sheet[`G${row}`].z = '"$"#,##0.00';
     if (sheet[`H${row}`]) sheet[`H${row}`].z = '"$"#,##0.00';
+    if (sheet[`I${row}`]) sheet[`I${row}`].z = '"$"#,##0.00';
+    if (sheet[`J${row}`]) sheet[`J${row}`].z = '"$"#,##0.00';
   }
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, "Products");
@@ -667,26 +801,28 @@ async function importProducts(request, env) {
     const name = clean(spreadsheetValue(row, ["name", "product name"]));
     const brand = clean(spreadsheetValue(row, ["brand"]));
     const category = clean(spreadsheetValue(row, ["category"])) || "Retail";
+    const subCategory = clean(spreadsheetValue(row, ["sub-category", "subcategory", "type"])) || "General";
     const sku = clean(spreadsheetValue(row, ["sku"]));
     const barcode = clean(spreadsheetValue(row, ["barcode"]));
     const costCents = Math.round(Number(spreadsheetValue(row, ["cost", "cost price"]) || 0) * 100);
     const priceCents = Math.round(Number(spreadsheetValue(row, ["retail price", "price", "retail"]) || 0) * 100);
+    const specialPriceCents = Math.round(Number(spreadsheetValue(row, ["special price", "sale price", "discount price"]) || 0) * 100);
     const status = clean(spreadsheetValue(row, ["status"])).toLowerCase() === "inactive" ? "Inactive" : "Active";
-    if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0) {
+    if (!name || !Number.isInteger(priceCents) || priceCents < 1 || !Number.isInteger(costCents) || costCents < 0 || !Number.isInteger(specialPriceCents) || specialPriceCents < 0 || specialPriceCents >= priceCents && specialPriceCents !== 0 || sku && !/^\d+$/.test(sku)) {
       skipped += 1;
-      errors.push(`Row ${index + 2}: name and valid retail price are required.`);
+      errors.push(`Row ${index + 2}: use a product name, numeric SKU, valid retail price, and an optional lower special price.`);
       continue;
     }
     let existing = productId ? await env.DB.prepare("SELECT id FROM products WHERE id = ?").bind(productId).first() : null;
     if (!existing && sku) existing = await env.DB.prepare("SELECT id FROM products WHERE sku = ? LIMIT 1").bind(sku).first();
     if (!existing && barcode) existing = await env.DB.prepare("SELECT id FROM products WHERE barcode = ? LIMIT 1").bind(barcode).first();
     if (existing) {
-      await env.DB.prepare("UPDATE products SET name = ?, brand = ?, category = ?, sku = ?, barcode = ?, cost_cents = ?, price_cents = ?, status = ? WHERE id = ?")
-        .bind(name, brand, category, sku, barcode, costCents, priceCents, status, existing.id).run();
+      await env.DB.prepare("UPDATE products SET name = ?, brand = ?, category = ?, sub_category = ?, sku = ?, barcode = ?, cost_cents = ?, price_cents = ?, special_price_cents = ?, status = ? WHERE id = ?")
+        .bind(name, brand, category, subCategory, sku, barcode, costCents, priceCents, specialPriceCents, status, existing.id).run();
       updated += 1;
     } else {
-      await env.DB.prepare("INSERT INTO products (id, name, brand, category, sku, barcode, cost_cents, price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(`product-${crypto.randomUUID()}`, name, brand, category, sku, barcode, costCents, priceCents, status).run();
+      await env.DB.prepare("INSERT INTO products (id, name, brand, category, sub_category, sku, barcode, cost_cents, price_cents, special_price_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(`product-${crypto.randomUUID()}`, name, brand, category, subCategory, sku, barcode, costCents, priceCents, specialPriceCents, status).run();
       created += 1;
     }
   }
@@ -1256,7 +1392,7 @@ async function createSale(request, env) {
   }
 
   const serviceRows = serviceIds.length ? await all(env, `SELECT id, name, price_cents FROM services WHERE id IN (${serviceIds.map(() => "?").join(",")})`, serviceIds) : [];
-  const productRows = productIds.length ? await all(env, `SELECT id, name, price_cents FROM products WHERE id IN (${productIds.map(() => "?").join(",")})`, productIds) : [];
+  const productRows = productIds.length ? await all(env, `SELECT id, name, price_cents, special_price_cents FROM products WHERE id IN (${productIds.map(() => "?").join(",")})`, productIds) : [];
   const serviceMap = new Map(serviceRows.map((service) => [service.id, service]));
   const productMap = new Map(productRows.map((product) => [product.id, product]));
   const saleItems = items
@@ -1271,7 +1407,7 @@ async function createSale(request, env) {
         serviceId: isProduct ? null : record.id,
         productId: isProduct ? record.id : null,
         name: isProduct ? record.name : (clean(item.instanceName) || record.name),
-        priceCents: !isProduct && instancePriceCents > 0 ? instancePriceCents : Number(record.price_cents || 0),
+        priceCents: !isProduct && instancePriceCents > 0 ? instancePriceCents : isProduct && Number(record.special_price_cents || 0) > 0 ? Number(record.special_price_cents) : Number(record.price_cents || 0),
         staffIds: isProduct ? [] : (Array.isArray(item.staffIds) ? item.staffIds.map(clean).filter(Boolean) : []),
         staffAllocations: isProduct ? [] : normalizeStaffAllocations(item.staffAllocations)
       };
@@ -1728,14 +1864,14 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
     <section class="tab admin-only" id="services">
       <div class="section-heading page-heading"><h2>Services</h2><button class="primary" id="addServiceButton" type="button" aria-controls="serviceForm" aria-expanded="false">Add service</button></div>
       <div class="panel"><div class="section-heading"><div><h3>Excel import and export</h3><p class="hint">Export all services, edit in Excel, then import. Keep Service IDs to update existing services. Leave the ID blank for new services; matching name, category and sub-category will update an existing entry.</p></div><div class="excel-actions"><a class="secondary button-link" href="/api/services/export">Export Excel</a><button class="primary" id="importServicesButton" type="button">Import Excel</button><input class="hidden" id="serviceImportFile" type="file" accept=".xlsx,.xls"></div></div><p id="serviceImportResult" role="status"></p></div><form class="panel service-editor hidden" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<select name="category" id="serviceCategorySelect" required></select></label></div><label id="newServiceCategoryLabel" class="hidden">New category<input name="newCategory" placeholder="Enter a new category" disabled></label><div class="grid"><label>Sub-category<select name="subCategory" id="serviceSubCategorySelect" required></select></label><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label></div><div class="grid"><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><label id="newServiceSubCategoryLabel" class="hidden">New sub-category<input name="newSubCategory" placeholder="Enter a new sub-category" disabled></label><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary" id="cancelServiceEdit" type="button">Cancel</button></div></form>
-      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2>All services</h2><p class="hint" id="serviceCount" aria-live="polite"></p></div><div class="product-table-controls"><label class="product-search"><span>Search services</span><input id="serviceSearch" type="search" placeholder="Name, category, sub-category or status"></label><label><span>Category</span><select id="serviceCategoryFilter"><option value="">All categories</option></select></label><label><span>Sub-category</span><select id="serviceSubCategoryFilter"><option value="">All sub-categories</option></select></label><label><span>Status</span><select id="serviceStatusFilter"><option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select></label></div></div><div class="table-wrap"><table class="product-table"><thead><tr><th>Service</th><th>Category</th><th>Sub-category</th><th>Duration</th><th>Price</th><th>Status</th><th aria-label="Actions"></th></tr></thead><tbody id="servicesTable"></tbody></table></div></div>
+      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2>All services</h2><p class="hint" id="serviceCount" aria-live="polite"></p></div><div class="product-table-controls"><label class="product-search"><span>Search services</span><input id="serviceSearch" type="search" placeholder="Name, category, sub-category or status"></label><label><span>Category</span><select id="serviceCategoryFilter"><option value="">All categories</option></select></label><label><span>Sub-category</span><select id="serviceSubCategoryFilter"><option value="">All sub-categories</option></select></label><label><span>Status</span><select id="serviceStatusFilter"><option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select></label></div></div><div class="service-hierarchy" id="servicesHierarchy"></div></div>
     </section>
     <section class="tab admin-only" id="products">
       <div class="product-top-grid">
-        <form class="panel product-editor" id="productForm"><div class="section-heading"><div><p class="eyebrow">Product details</p><h2 id="productFormTitle">Add product</h2></div><button class="secondary hidden" id="cancelProductEdit" type="button">Cancel edit</button></div><input name="productId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Brand<input name="brand"></label></div><div class="grid"><label>Category<input name="category" placeholder="Haircare"></label><label>SKU<input name="sku"></label></div><div class="grid"><label>Barcode<input name="barcode"></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><div class="grid"><label>Cost $<input name="cost" type="number" min="0" step="0.01" value="0.00"></label><label>Retail $<input name="price" type="number" min="0.01" step="0.01" required></label></div><button class="primary full" id="productSaveButton" type="submit">Save product</button></form>
+        <form class="panel product-editor" id="productForm"><div class="section-heading"><div><p class="eyebrow">Product details</p><h2 id="productFormTitle">Add product</h2></div><button class="secondary hidden" id="cancelProductEdit" type="button">Cancel edit</button></div><input name="productId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Brand<input name="brand"></label></div><div class="grid"><label>Category<input name="category" placeholder="Haircare" required></label><label>Sub-category / type<input name="subCategory" placeholder="Shampoo" required></label></div><div class="grid"><label>SKU — numbers only<input name="sku" inputmode="numeric" pattern="[0-9]*"></label><label>Barcode<input name="barcode"></label></div><div class="grid"><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label><label>Cost $<input name="cost" type="number" min="0" step="0.01" value="0.00"></label></div><div class="grid"><label>Retail price $<input name="price" type="number" min="0.01" step="0.01" required></label><label>Special price $<input name="specialPrice" type="number" min="0" step="0.01" placeholder="Leave blank when not discounted"></label></div><button class="primary full" id="productSaveButton" type="submit">Save product</button></form>
         <div class="panel product-excel-panel"><div class="excel-icon">${appIcon("products")}</div><p class="eyebrow">Excel tools</p><h2>Import or export products</h2><p class="hint">Export the current catalogue, edit it in Excel, then import it back. Existing products are matched by Product ID, SKU, or barcode.</p><div class="excel-actions"><a class="secondary button-link" href="/api/products/export">Export Excel</a><button class="primary" id="importProductsButton" type="button">Import Excel</button><input class="hidden" id="productImportFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"></div><p class="import-result" id="productImportResult"></p></div>
       </div>
-      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2 id="productTableTitle">All products</h2><p class="hint" id="productCount" aria-live="polite"></p></div><div class="product-table-controls"><label><span>Branch</span><select id="productBranchFilter" aria-label="Filter product stock by branch"><option value="">All branches</option></select></label><label class="product-search"><span>Search</span><input id="productSearch" type="search" placeholder="Name, category, brand, SKU, barcode or status"></label><label><span>Category</span><select id="productCategoryFilter"><option value="">All categories</option></select></label><label><span>Brand</span><select id="productBrandFilter"><option value="">All brands</option></select></label><label><span>Status</span><select id="productStatusFilter"><option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select></label></div></div><div class="table-wrap"><table class="product-table"><thead><tr><th>Product</th><th>Brand</th><th>Category</th><th>SKU / barcode</th><th>Stock</th><th>Cost</th><th>Retail</th><th>Status</th><th></th></tr></thead><tbody id="productsTable"></tbody></table></div></div>
+      <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2 id="productTableTitle">All products</h2><p class="hint" id="productCount" aria-live="polite"></p></div><div class="product-table-controls"><label><span>Branch</span><select id="productBranchFilter" aria-label="Filter product stock by branch"><option value="">All branches</option></select></label><label class="product-search"><span>Search</span><input id="productSearch" type="search" placeholder="Name, category, type, brand, SKU or barcode"></label><label><span>Category</span><select id="productCategoryFilter"><option value="">All categories</option></select></label><label><span>Sub-category</span><select id="productSubCategoryFilter"><option value="">All sub-categories</option></select></label><label><span>Brand</span><select id="productBrandFilter"><option value="">All brands</option></select></label><label><span>Status</span><select id="productStatusFilter"><option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select></label></div></div><div class="product-hierarchy" id="productsHierarchy"></div></div>
     </section>
     <section class="tab admin-only" id="inventory">
       <div class="split">
@@ -1816,7 +1952,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 
 function clientScript() {
   return `
-let state = { branches: [], staff: [], services: [], products: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], cashDrawerOpens: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [] };
+let state = { branches: [], staff: [], services: [], serviceCategoryOrder: [], products: [], productCategoryOrder: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], cashDrawerOpens: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [] };
 let reportData = null;
 let reportRequestId = 0;
 let lastReceipt = null;
@@ -1838,8 +1974,13 @@ let selectedDashboardPeriod = "today";
 let selectedGlobalBranchId = window.currentUser.managerBranchId || "";
 let selectedRosterBranchId = "";
 let selectedProductBranchId = "";
+let draggedServiceCategory = "";
+let draggedProductCategory = "";
+let draggedProductId = "";
 const expandedServiceCategories = new Set();
 const expandedServiceSubCategories = new Set();
+const expandedProductCategories = new Set();
+const expandedProductSubCategories = new Set();
 const appMode = window.appMode || "admin";
 const message = document.querySelector("#message");
 ${accessClientScript()}
@@ -1955,7 +2096,7 @@ document.querySelector('#serviceForm [name="newCategory"]').addEventListener("ch
 document.querySelector("#productForm").addEventListener("submit", submitProductForm);
 document.querySelector("#cancelProductEdit").addEventListener("click", resetProductForm);
 document.querySelector("#productSearch").addEventListener("input", renderProducts);
-["#productCategoryFilter", "#productBrandFilter", "#productStatusFilter"].forEach((selector) => document.querySelector(selector).addEventListener("change", renderProducts));
+["#productCategoryFilter", "#productSubCategoryFilter", "#productBrandFilter", "#productStatusFilter"].forEach((selector) => document.querySelector(selector).addEventListener("change", renderProducts));
 document.querySelector("#productBranchFilter").addEventListener("change", (event) => { selectedProductBranchId = event.currentTarget.value; renderProducts(); });
 document.querySelector("#importServicesButton").addEventListener("click",()=>document.querySelector("#serviceImportFile").click());
 document.querySelector("#serviceImportFile").addEventListener("change",importServicesWorkbook);
@@ -2128,7 +2269,7 @@ async function submitTimeClock(action) {
   } catch (error) { message.textContent = error.message; }
 }
 function normalizeState(data = {}) {
-  const arrayKeys = ["branches","staff","services","products","customers","bookings","sales","saleItems","branchHours","closedDates","discounts","inventoryStock","stockMovements","dailyClosings","cashDrawerOpens","staffRoster","staffRegularDaysOff","timeEntries"];
+  const arrayKeys = ["branches","staff","services","serviceCategoryOrder","products","productCategoryOrder","customers","bookings","sales","saleItems","branchHours","closedDates","discounts","inventoryStock","stockMovements","dailyClosings","cashDrawerOpens","staffRoster","staffRegularDaysOff","timeEntries"];
   const normalized = { ...data };
   arrayKeys.forEach((key) => { if (!Array.isArray(normalized[key])) normalized[key] = []; });
   normalized.archivedBranches = normalized.branches.filter((b) => b.status === "Archived");
@@ -2140,7 +2281,7 @@ function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
   const staffSelectOptions = '<option value="">Unassigned</option>' + state.staff.map((s) => '<option value="' + s.id + '">' + esc(s.name) + '</option>').join("");
   const customerOptions = '<option value="">Walk-in</option>' + state.customers.map((c) => '<option value="' + c.id + '">' + esc(c.first_name + " " + c.last_name) + '</option>').join("");
-  const productOptions = '<option value="">Select product</option>' + (state.products || []).map((p) => '<option value="' + p.id + '">' + esc(p.name) + ' - ' + money(p.price_cents) + '</option>').join("");
+  const productOptions = '<option value="">Select product</option>' + (state.products || []).map((p) => '<option value="' + p.id + '">' + esc(p.name) + ' - ' + money(Number(p.special_price_cents || 0) > 0 ? p.special_price_cents : p.price_cents) + '</option>').join("");
   const globalBranch = document.querySelector("#globalBranchFilter");
   if (globalBranch) {
     globalBranch.innerHTML = (currentUser.managerBranchId ? '' : '<option value="">All branches</option>') + branchOptions;
@@ -2533,9 +2674,27 @@ async function removeRosterRow(event) {
 function catalogueTextCompare(left, right) {
   return String(left || "").localeCompare(String(right || ""), "en", { numeric:true, sensitivity:"base" });
 }
-function refreshCatalogueFilter(selector, values, allLabel) {
+function serviceCategoryCompare(left, right) {
+  const leftSpecial = String(left || "").trim().toLowerCase().includes("special");
+  const rightSpecial = String(right || "").trim().toLowerCase().includes("special");
+  if (leftSpecial !== rightSpecial) return leftSpecial ? -1 : 1;
+  return catalogueTextCompare(left, right);
+}
+function serviceCategoryPinned(category) {
+  const saved = state.serviceCategoryOrder.find((item) => item.category === category);
+  return saved ? Boolean(saved.pinned) : String(category || "").trim().toLowerCase().includes("special");
+}
+function serviceCategoryDisplayCompare(left, right) {
+  const leftPinned = serviceCategoryPinned(left), rightPinned = serviceCategoryPinned(right);
+  if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+  const saved = new Map(state.serviceCategoryOrder.map((item, index) => [item.category, Number.isFinite(Number(item.sort_order)) ? Number(item.sort_order) : index]));
+  const leftOrder = saved.has(left) ? saved.get(left) : Number.MAX_SAFE_INTEGER;
+  const rightOrder = saved.has(right) ? saved.get(right) : Number.MAX_SAFE_INTEGER;
+  return leftOrder - rightOrder || catalogueTextCompare(left, right);
+}
+function refreshCatalogueFilter(selector, values, allLabel, compare = catalogueTextCompare) {
   const select = document.querySelector(selector), current = select.value;
-  const options = [...new Set(values)].sort(catalogueTextCompare);
+  const options = [...new Set(values)].sort(compare);
   select.innerHTML = '<option value="">' + esc(allLabel) + '</option>' + options.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join("");
   select.value = options.includes(current) ? current : "";
   return select.value;
@@ -2556,7 +2715,7 @@ function serviceSubCategoryKey(category, subCategory) { return JSON.stringify([c
 function populateServiceSelect(field, values, selected = "") {
   const select = document.querySelector("#serviceForm").elements[field];
   const label = field === "category" ? "category" : "sub-category";
-  const options = [...new Set(values.filter(Boolean))].sort(catalogueTextCompare);
+  const options = [...new Set(values.filter(Boolean))].sort(field === "category" ? serviceCategoryDisplayCompare : catalogueTextCompare);
   select.innerHTML = '<option value="" disabled selected>Choose a ' + label + '</option>' + options.map((value) => '<option value="' + esc(value) + '">' + esc(value) + '</option>').join("") + '<option value="" data-new-value="true">+ Add new ' + label + '…</option>';
   if (selected && options.includes(selected)) select.value = selected;
   toggleNewServiceValue(field);
@@ -2591,36 +2750,168 @@ function refreshServiceEditor(category = "", subCategory = "") {
 }
 function renderServices() {
   const query = document.querySelector("#serviceSearch").value.trim().toLowerCase();
-  const category = refreshCatalogueFilter("#serviceCategoryFilter", state.services.map((service) => service.category || "General"), "All categories");
+  const category = refreshCatalogueFilter("#serviceCategoryFilter", state.services.map((service) => service.category || "General"), "All categories", serviceCategoryDisplayCompare);
   const categoryServices = state.services.filter((service) => !category || (service.category || "General") === category);
   const subCategory = refreshCatalogueFilter("#serviceSubCategoryFilter", categoryServices.map((service) => service.sub_category || "General"), "All sub-categories");
   const status = document.querySelector("#serviceStatusFilter").value;
   const filtered = Boolean(query || category || subCategory || status);
   const services = categoryServices.filter((service) => (!subCategory || (service.sub_category || "General") === subCategory) && (!status || (service.status || "Active") === status) && (!query || [service.name, service.category || "General", service.sub_category || "General", service.status || "Active"].some((value) => String(value).toLowerCase().includes(query))));
   if (document.querySelector("#serviceForm").classList.contains("hidden")) refreshServiceEditor();
-  document.querySelector("#serviceCount").textContent = services.length + " of " + state.services.length + " services · Select a category, then a sub-category, to open services";
-  document.querySelector("#servicesTable").innerHTML = catalogueGroups(services, "category", "General").map(([category, categoryServices]) => {
+  document.querySelector("#serviceCount").textContent = services.length + " of " + state.services.length + " services · Open a category, then a sub-category, to view services";
+  document.querySelector("#servicesHierarchy").innerHTML = catalogueGroups(services, "category", "General").sort(([left], [right]) => serviceCategoryDisplayCompare(left, right)).map(([category, categoryServices]) => {
     const categoryOpen = filtered || expandedServiceCategories.has(category);
-    const categoryRow = '<tr class="catalogue-group"><th colspan="7"><button class="catalogue-toggle" type="button" data-service-category="' + esc(category) + '" aria-expanded="' + categoryOpen + '"><span class="catalogue-chevron" aria-hidden="true">›</span><span>' + esc(category) + '</span><span class="catalogue-group-count">' + categoryServices.length + (categoryServices.length === 1 ? ' service' : ' services') + '</span></button></th></tr>';
-    return categoryRow + catalogueGroups(categoryServices, "sub_category", "General").map(([subCategory, group]) => {
+    const subCategories = catalogueGroups(categoryServices, "sub_category", "General").map(([subCategory, group]) => {
       const key = serviceSubCategoryKey(category, subCategory);
       const subCategoryOpen = filtered || expandedServiceSubCategories.has(key);
-      const subCategoryRow = '<tr class="catalogue-subgroup"' + (categoryOpen ? '' : ' hidden') + '><th colspan="7"><button class="catalogue-toggle catalogue-subcategory-toggle" type="button" data-service-category="' + esc(category) + '" data-service-sub-category="' + esc(subCategory) + '" aria-expanded="' + subCategoryOpen + '"><span class="catalogue-chevron" aria-hidden="true">›</span><span>' + esc(subCategory) + '</span><span class="catalogue-group-count">' + group.length + (group.length === 1 ? ' service' : ' services') + '</span></button></th></tr>';
-      const serviceRows = group.map((service) => '<tr class="catalogue-service-row"' + (categoryOpen && subCategoryOpen ? '' : ' hidden') + '><td><strong>' + esc(service.name) + '</strong></td><td>' + esc(service.category || "General") + '</td><td>' + esc(service.sub_category || "General") + '</td><td>' + esc(service.duration_minutes) + ' min</td><td><strong>' + money(service.price_cents) + '</strong></td><td><span class="status-pill ' + (service.status === "Inactive" ? "inactive" : "") + '">' + esc(service.status || "Active") + '</span></td><td><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button></td></tr>').join("");
-      return subCategoryRow + serviceRows;
+      const serviceItems = group.map((service) => '<article class="service-hierarchy-item"><div><strong>' + esc(service.name) + '</strong><span>' + esc(service.duration_minutes) + ' min</span></div><div class="service-hierarchy-item-meta"><strong>' + money(service.price_cents) + '</strong><span class="status-pill ' + (service.status === "Inactive" ? "inactive" : "") + '">' + esc(service.status || "Active") + '</span><button class="edit-service" data-service-id="' + esc(service.id) + '" type="button" title="Edit service" aria-label="Edit ' + esc(service.name) + '">✎</button></div></article>').join("");
+      return '<details class="service-subcategory-menu" data-service-category="' + esc(category) + '" data-service-sub-category="' + esc(subCategory) + '"' + (subCategoryOpen ? ' open' : '') + '><summary><span>' + esc(subCategory) + '</span><button class="catalogue-name-edit edit-service-subcategory" type="button" data-category="' + esc(category) + '" data-sub-category="' + esc(subCategory) + '" title="Rename sub-category" aria-label="Rename ' + esc(subCategory) + ' sub-category">✎</button><span class="catalogue-group-count">' + group.length + (group.length === 1 ? ' service' : ' services') + '</span></summary><div class="service-hierarchy-items">' + serviceItems + '</div></details>';
     }).join("");
-  }).join("") || '<tr><td colspan="7" class="empty-cell">' + (filtered ? 'No services match these filters or search.' : 'No services yet. Click Add service to create one.') + '</td></tr>';
-  document.querySelectorAll("[data-service-category]:not([data-service-sub-category])").forEach((button) => button.addEventListener("click", () => {
-    const value = button.dataset.serviceCategory;
-    if (expandedServiceCategories.has(value)) expandedServiceCategories.delete(value); else expandedServiceCategories.add(value);
-    renderServices();
+    const pinned = serviceCategoryPinned(category);
+    const categoryControl = '<button class="service-category-drag-handle" type="button" draggable="true" data-drag-category="' + esc(category) + '" title="Drag to reorder category" aria-label="Drag ' + esc(category) + ' to reorder. Use the up and down arrow keys for keyboard reordering.">⋮⋮</button><button class="service-category-pin' + (pinned ? ' pinned' : '') + '" type="button" data-pin-category="' + esc(category) + '" aria-pressed="' + String(pinned) + '" title="' + (pinned ? 'Unpin category' : 'Pin category to the top everywhere') + '" aria-label="' + (pinned ? 'Unpin ' : 'Pin ') + esc(category) + '">📌</button>';
+    return '<details class="service-category-menu" data-service-category-container="' + esc(category) + '"' + (categoryOpen ? ' open' : '') + '><summary>' + categoryControl + '<span>' + esc(category) + '</span><button class="catalogue-name-edit edit-service-category" type="button" data-category="' + esc(category) + '" title="Rename category" aria-label="Rename ' + esc(category) + ' category">✎</button><span class="catalogue-group-count">' + categoryServices.length + (categoryServices.length === 1 ? ' service' : ' services') + '</span></summary><div class="service-subcategory-list">' + subCategories + '</div></details>';
+  }).join("") || '<p class="empty-cell service-hierarchy-empty">' + (filtered ? 'No services match these filters or search.' : 'No services yet. Click Add service to create one.') + '</p>';
+  document.querySelectorAll("[data-service-category-container]").forEach((details) => details.addEventListener("toggle", () => {
+    const value = details.dataset.serviceCategoryContainer;
+    if (details.open) {
+      expandedServiceCategories.clear();
+      expandedServiceCategories.add(value);
+      document.querySelectorAll("[data-service-category-container]").forEach((other) => { if (other !== details) other.open = false; });
+    } else expandedServiceCategories.delete(value);
   }));
-  document.querySelectorAll("[data-service-sub-category]").forEach((button) => button.addEventListener("click", () => {
-    const key = serviceSubCategoryKey(button.dataset.serviceCategory, button.dataset.serviceSubCategory);
-    if (expandedServiceSubCategories.has(key)) expandedServiceSubCategories.delete(key); else expandedServiceSubCategories.add(key);
-    renderServices();
+  document.querySelectorAll("[data-service-sub-category]").forEach((details) => details.addEventListener("toggle", () => {
+    const key = serviceSubCategoryKey(details.dataset.serviceCategory, details.dataset.serviceSubCategory);
+    if (details.open) {
+      expandedServiceSubCategories.add(key);
+      details.parentElement.querySelectorAll("[data-service-sub-category]").forEach((other) => {
+        if (other !== details) {
+          expandedServiceSubCategories.delete(serviceSubCategoryKey(other.dataset.serviceCategory, other.dataset.serviceSubCategory));
+          other.open = false;
+        }
+      });
+    } else expandedServiceSubCategories.delete(key);
   }));
+  document.querySelectorAll(".service-category-drag-handle").forEach((handle) => {
+    handle.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); });
+    handle.addEventListener("dragstart", (event) => {
+      draggedServiceCategory = handle.dataset.dragCategory;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", draggedServiceCategory);
+      handle.closest(".service-category-menu").classList.add("dragging");
+    });
+    handle.addEventListener("dragend", () => {
+      draggedServiceCategory = "";
+      document.querySelectorAll(".service-category-menu").forEach((menu) => menu.classList.remove("dragging", "drag-over", "drag-after"));
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      moveServiceCategory(handle.dataset.dragCategory, event.key === "ArrowDown" ? 1 : -1);
+    });
+  });
+  document.querySelectorAll(".service-category-pin").forEach((button) => button.addEventListener("click", toggleServiceCategoryPin));
+  if (!filtered) document.querySelectorAll(".service-category-menu").forEach((menu) => {
+    menu.addEventListener("dragover", (event) => {
+      if (!draggedServiceCategory || draggedServiceCategory === menu.dataset.serviceCategoryContainer) return;
+      event.preventDefault();
+      const after = event.clientY > menu.getBoundingClientRect().top + menu.getBoundingClientRect().height / 2;
+      document.querySelectorAll(".service-category-menu").forEach((item) => item.classList.remove("drag-over", "drag-after"));
+      menu.classList.add("drag-over");
+      if (after) menu.classList.add("drag-after");
+    });
+    menu.addEventListener("dragleave", () => menu.classList.remove("drag-over", "drag-after"));
+    menu.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const after = menu.classList.contains("drag-after");
+      reorderServiceCategories(draggedServiceCategory || event.dataTransfer.getData("text/plain"), menu.dataset.serviceCategoryContainer, after);
+    });
+  });
+  document.querySelectorAll(".edit-service-category").forEach((button) => button.addEventListener("click", renameServiceCategoryFromMenu));
+  document.querySelectorAll(".edit-service-subcategory").forEach((button) => button.addEventListener("click", renameServiceSubCategoryFromMenu));
   document.querySelectorAll(".edit-service").forEach((button) => button.addEventListener("click", editService));
+}
+function currentServiceCategoryNames() {
+  return [...new Set(state.services.map((service) => service.category || "General"))].sort(serviceCategoryDisplayCompare);
+}
+async function persistServiceCategoryOrder(categories, focusCategory = "") {
+  const previous = state.serviceCategoryOrder;
+  const pins = new Map(previous.map((item) => [item.category, Number(item.pinned) ? 1 : 0]));
+  state.serviceCategoryOrder = categories.map((category, sort_order) => ({ category, sort_order, pinned:pins.has(category) ? pins.get(category) : (category.trim().toLowerCase().includes("special") ? 1 : 0) }));
+  renderServices();
+  try {
+    const result = await api("/api/services/category-order", { method:"POST", body:JSON.stringify({ categories }) });
+    state.serviceCategoryOrder = result.categories;
+    renderServices();
+    if (focusCategory) document.querySelector('[data-drag-category="' + CSS.escape(focusCategory) + '"]')?.focus();
+    message.textContent = "Service category order saved.";
+  } catch (error) {
+    state.serviceCategoryOrder = previous;
+    renderServices();
+    message.textContent = error.message;
+  }
+}
+function reorderServiceCategories(dragged, target, after = false) {
+  if (!dragged || dragged === target) return;
+  const categories = currentServiceCategoryNames();
+  const pinned = categories.filter(serviceCategoryPinned), regular = categories.filter((category) => !serviceCategoryPinned(category));
+  const group = serviceCategoryPinned(dragged) ? pinned : regular;
+  group.splice(group.indexOf(dragged), 1);
+  const targetInGroup = group.indexOf(target);
+  let index = targetInGroup >= 0 ? targetInGroup + (after ? 1 : 0) : serviceCategoryPinned(dragged) ? group.length : 0;
+  group.splice(index, 0, dragged);
+  persistServiceCategoryOrder([...pinned, ...regular], dragged);
+}
+function moveServiceCategory(category, direction) {
+  const categories = currentServiceCategoryNames();
+  const pinned = categories.filter(serviceCategoryPinned), regular = categories.filter((name) => !serviceCategoryPinned(name));
+  const group = serviceCategoryPinned(category) ? pinned : regular;
+  const index = group.indexOf(category), next = index + direction;
+  if (index < 0 || next < 0 || next >= group.length) return;
+  [group[index], group[next]] = [group[next], group[index]];
+  persistServiceCategoryOrder([...pinned, ...regular], category);
+}
+async function toggleServiceCategoryPin(event) {
+  event.preventDefault(); event.stopPropagation();
+  const category = event.currentTarget.dataset.pinCategory;
+  const pinned = !serviceCategoryPinned(category);
+  try {
+    await api("/api/services/category-pin", { method:"PATCH", body:JSON.stringify({ category, pinned }) });
+    const current = state.serviceCategoryOrder.find((item) => item.category === category);
+    if (current) current.pinned = pinned ? 1 : 0;
+    else state.serviceCategoryOrder.push({ category, sort_order:state.serviceCategoryOrder.length, pinned:pinned ? 1 : 0 });
+    renderServices();
+    message.textContent = 'Category "' + category + '" ' + (pinned ? 'pinned to the top everywhere.' : 'unpinned.');
+  } catch (error) { message.textContent = error.message; }
+}
+async function renameServiceCategoryFromMenu(event) {
+  event.preventDefault(); event.stopPropagation();
+  const oldName = event.currentTarget.dataset.category;
+  const newName = prompt("Rename service category", oldName)?.trim();
+  if (!newName || newName === oldName) return;
+  const merging = state.services.some((service) => (service.category || "General") === newName);
+  if (merging && !confirm('A category named "' + newName + '" already exists. Merge these categories?')) return;
+  try {
+    await api("/api/services/category-name", { method:"PATCH", body:JSON.stringify({ oldName, newName }) });
+    expandedServiceCategories.delete(oldName);
+    expandedServiceCategories.add(newName);
+    await loadData();
+    message.textContent = 'Category renamed to "' + newName + '".';
+  } catch (error) { message.textContent = error.message; }
+}
+async function renameServiceSubCategoryFromMenu(event) {
+  event.preventDefault(); event.stopPropagation();
+  const category = event.currentTarget.dataset.category;
+  const oldName = event.currentTarget.dataset.subCategory;
+  const newName = prompt("Rename service sub-category", oldName)?.trim();
+  if (!newName || newName === oldName) return;
+  const merging = state.services.some((service) => (service.category || "General") === category && (service.sub_category || "General") === newName);
+  if (merging && !confirm('A sub-category named "' + newName + '" already exists here. Merge these sub-categories?')) return;
+  try {
+    await api("/api/services/subcategory-name", { method:"PATCH", body:JSON.stringify({ category, oldName, newName }) });
+    expandedServiceSubCategories.delete(serviceSubCategoryKey(category, oldName));
+    expandedServiceSubCategories.add(serviceSubCategoryKey(category, newName));
+    await loadData();
+    message.textContent = 'Sub-category renamed to "' + newName + '".';
+  } catch (error) { message.textContent = error.message; }
 }
 function openServiceForm() {
   const form = document.querySelector("#serviceForm");
@@ -2674,29 +2965,211 @@ async function submitServiceForm(event) {
     message.textContent = serviceId ? "Service updated." : "Service added.";
   } catch (error) { message.textContent = error.message; }
 }
+function productCategoryDisplayCompare(left, right) {
+  const saved = new Map(state.productCategoryOrder.map((item, index) => [item.category, Number.isFinite(Number(item.sort_order)) ? Number(item.sort_order) : index]));
+  const leftOrder = saved.has(left) ? saved.get(left) : Number.MAX_SAFE_INTEGER;
+  const rightOrder = saved.has(right) ? saved.get(right) : Number.MAX_SAFE_INTEGER;
+  return leftOrder - rightOrder || catalogueTextCompare(left, right);
+}
+function productSubCategoryKey(category, subCategory) { return JSON.stringify([category, subCategory]); }
+function currentProductCategoryNames() {
+  return [...new Set(state.products.map((product) => product.category || "Retail"))].sort(productCategoryDisplayCompare);
+}
 function renderProducts() {
   const query = document.querySelector("#productSearch")?.value.trim().toLowerCase() || "";
-  const category = refreshCatalogueFilter("#productCategoryFilter", state.products.map((product) => product.category || "Retail"), "All categories");
+  const category = refreshCatalogueFilter("#productCategoryFilter", state.products.map((product) => product.category || "Retail"), "All categories", productCategoryDisplayCompare);
   const categoryProducts = state.products.filter((product) => !category || (product.category || "Retail") === category);
-  const brand = refreshCatalogueFilter("#productBrandFilter", categoryProducts.map((product) => product.brand || "Unbranded"), "All brands");
+  const subCategory = refreshCatalogueFilter("#productSubCategoryFilter", categoryProducts.map((product) => product.sub_category || "General"), "All sub-categories");
+  const subCategoryProducts = categoryProducts.filter((product) => !subCategory || (product.sub_category || "General") === subCategory);
+  const brand = refreshCatalogueFilter("#productBrandFilter", subCategoryProducts.map((product) => product.brand || "Unbranded"), "All brands");
   const status = document.querySelector("#productStatusFilter").value;
-  const filtered = Boolean(query || category || brand || status);
+  const filtered = Boolean(query || category || subCategory || brand || status);
   const stockByProduct = new Map();
   for (const item of state.inventoryStock || []) {
     if (!selectedProductBranchId || item.branch_id === selectedProductBranchId) stockByProduct.set(item.product_id, (stockByProduct.get(item.product_id) || 0) + Number(item.quantity || 0));
   }
-  const products = categoryProducts.filter((product) => (!brand || (product.brand || "Unbranded") === brand) && (!status || (product.status || "Active") === status) && (!query || [product.name, product.brand, product.category || "Retail", product.sku, product.barcode, product.status || "Active"].some((value) => String(value || "").toLowerCase().includes(query)))).map((product) => ({ ...product, stock:stockByProduct.get(product.id) || 0 }));
+  const products = subCategoryProducts.filter((product) => (!brand || (product.brand || "Unbranded") === brand) && (!status || (product.status || "Active") === status) && (!query || [product.name, product.brand, product.category || "Retail", product.sub_category || "General", product.sku, product.barcode, product.status || "Active"].some((value) => String(value || "").toLowerCase().includes(query)))).map((product) => ({ ...product, stock:stockByProduct.get(product.id) || 0 }));
   const branch = state.branches.find((item) => item.id === selectedProductBranchId);
   const stockLabel = branch ? branch.name : "All branches";
   document.querySelector("#productTableTitle").textContent = branch ? branch.name + " products" : "All products";
-  document.querySelector("#productCount").textContent = products.length + " of " + (state.products || []).length + " product" + ((state.products || []).length === 1 ? "" : "s") + " · Stock for " + stockLabel;
-  document.querySelector("#productsTable").innerHTML = products.length ? catalogueGroups(products, "category", "Retail").map(([category, group]) => catalogueGroupHeading(category, group.length, 9) + group.map((product) => {
-    const stock = product.stock;
-    return '<tr><td><strong>' + esc(product.name) + '</strong><span class="table-subtext">' + esc(product.id) + '</span></td><td>' + esc(product.brand || "—") + '</td><td>' + esc(product.category || "Retail") + '</td><td><strong>' + esc(product.sku || "—") + '</strong><span class="table-subtext">' + esc(product.barcode || "No barcode") + '</span></td><td><strong class="stock-quantity">' + stock + '</strong><span class="table-subtext">' + esc(branch ? branch.name : "combined") + '</span></td><td>' + money(product.cost_cents) + '</td><td><strong>' + money(product.price_cents) + '</strong></td><td><span class="status-pill ' + (product.status === "Inactive" ? "inactive" : "") + '">' + esc(product.status || "Active") + '</span></td><td><button class="secondary compact-button edit-product" type="button" data-product-id="' + esc(product.id) + '">Edit</button></td></tr>';
-  }).join("")).join("") : '<tr><td colspan="9" class="empty-cell">' + (filtered ? 'No products match these filters or search.' : 'No products yet. Add a product to get started.') + '</td></tr>';
+  document.querySelector("#productCount").textContent = products.length + " of " + state.products.length + " product" + (state.products.length === 1 ? "" : "s") + " · Stock for " + stockLabel + " · Drag a product onto another category or sub-category to move it";
+  document.querySelector("#productsHierarchy").innerHTML = catalogueGroups(products, "category", "Retail").sort(([left], [right]) => productCategoryDisplayCompare(left, right)).map(([categoryName, categoryGroup]) => {
+    const categoryOpen = filtered || expandedProductCategories.has(categoryName);
+    const subCategories = catalogueGroups(categoryGroup, "sub_category", "General").map(([subCategoryName, group]) => {
+      const key = productSubCategoryKey(categoryName, subCategoryName);
+      const subCategoryOpen = filtered || expandedProductSubCategories.has(key);
+      const productItems = group.map((product) => {
+        const special = Number(product.special_price_cents || 0);
+        const prices = special > 0 ? '<span class="product-price-retail discounted">' + money(product.price_cents) + '</span><strong class="product-price-special">' + money(special) + '</strong>' : '<strong>' + money(product.price_cents) + '</strong>';
+        return '<article class="product-hierarchy-item" draggable="true" data-product-id="' + esc(product.id) + '"><div class="product-item-main"><strong>' + esc(product.name) + '</strong><span>' + esc(product.brand || "Unbranded") + ' · SKU ' + esc(product.sku || "—") + (product.barcode ? ' · Barcode ' + esc(product.barcode) : '') + '</span></div><div class="product-hierarchy-item-meta"><span><strong class="stock-quantity">' + product.stock + '</strong> in stock</span><span>Cost ' + money(product.cost_cents) + '</span><span class="product-prices">' + prices + '</span><span class="status-pill ' + (product.status === "Inactive" ? "inactive" : "") + '">' + esc(product.status || "Active") + '</span><button class="secondary compact-button edit-product" type="button" data-product-id="' + esc(product.id) + '">Edit</button></div></article>';
+      }).join("");
+      return '<details class="product-subcategory-menu" data-product-category="' + esc(categoryName) + '" data-product-sub-category="' + esc(subCategoryName) + '"' + (subCategoryOpen ? ' open' : '') + '><summary><span>' + esc(subCategoryName) + '</span><button class="catalogue-name-edit edit-product-subcategory" type="button" data-category="' + esc(categoryName) + '" data-sub-category="' + esc(subCategoryName) + '" title="Rename sub-category" aria-label="Rename ' + esc(subCategoryName) + ' sub-category">✎</button><span class="catalogue-group-count">' + group.length + (group.length === 1 ? ' product' : ' products') + '</span></summary><div class="product-hierarchy-items">' + productItems + '</div></details>';
+    }).join("");
+    const categoryControl = '<button class="product-category-drag-handle" type="button" draggable="true" data-drag-category="' + esc(categoryName) + '" title="Drag to reorder category" aria-label="Drag ' + esc(categoryName) + ' to reorder. Use the up and down arrow keys for keyboard reordering.">⋮⋮</button>';
+    return '<details class="product-category-menu" data-product-category-container="' + esc(categoryName) + '"' + (categoryOpen ? ' open' : '') + '><summary>' + categoryControl + '<span>' + esc(categoryName) + '</span><button class="catalogue-name-edit edit-product-category" type="button" data-category="' + esc(categoryName) + '" title="Rename category" aria-label="Rename ' + esc(categoryName) + ' category">✎</button><span class="catalogue-group-count">' + categoryGroup.length + (categoryGroup.length === 1 ? ' product' : ' products') + '</span></summary><div class="product-subcategory-list">' + subCategories + '</div></details>';
+  }).join("") || '<p class="empty-cell product-hierarchy-empty">' + (filtered ? 'No products match these filters or search.' : 'No products yet. Add a product to get started.') + '</p>';
+  document.querySelectorAll("[data-product-category-container]").forEach((details) => details.addEventListener("toggle", () => {
+    const value = details.dataset.productCategoryContainer;
+    if (details.open) {
+      expandedProductCategories.clear();
+      expandedProductCategories.add(value);
+      document.querySelectorAll("[data-product-category-container]").forEach((other) => { if (other !== details) other.open = false; });
+    } else expandedProductCategories.delete(value);
+  }));
+  document.querySelectorAll("[data-product-sub-category]").forEach((details) => details.addEventListener("toggle", () => {
+    const key = productSubCategoryKey(details.dataset.productCategory, details.dataset.productSubCategory);
+    if (details.open) {
+      expandedProductSubCategories.add(key);
+      details.parentElement.querySelectorAll("[data-product-sub-category]").forEach((other) => {
+        if (other !== details) {
+          expandedProductSubCategories.delete(productSubCategoryKey(other.dataset.productCategory, other.dataset.productSubCategory));
+          other.open = false;
+        }
+      });
+    } else expandedProductSubCategories.delete(key);
+  }));
+  document.querySelectorAll(".product-category-drag-handle").forEach((handle) => {
+    handle.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); });
+    handle.addEventListener("dragstart", (event) => {
+      draggedProductCategory = handle.dataset.dragCategory;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", draggedProductCategory);
+      handle.closest(".product-category-menu").classList.add("dragging");
+    });
+    handle.addEventListener("dragend", clearProductDragStyles);
+    handle.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation();
+      moveProductCategoryByKeyboard(handle.dataset.dragCategory, event.key === "ArrowDown" ? 1 : -1);
+    });
+  });
+  document.querySelectorAll(".product-hierarchy-item").forEach((item) => {
+    item.addEventListener("dragstart", (event) => {
+      draggedProductId = item.dataset.productId;
+      draggedProductCategory = "";
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-kunchas-product", draggedProductId);
+      item.classList.add("dragging");
+    });
+    item.addEventListener("dragend", clearProductDragStyles);
+  });
+  document.querySelectorAll(".product-category-menu>summary").forEach((summary) => bindProductDropTarget(summary, () => ({ category:summary.parentElement.dataset.productCategoryContainer, subCategory:"General" })));
+  document.querySelectorAll(".product-subcategory-menu").forEach((menu) => bindProductDropTarget(menu, () => ({ category:menu.dataset.productCategory, subCategory:menu.dataset.productSubCategory })));
+  if (!filtered) document.querySelectorAll(".product-category-menu").forEach((menu) => {
+    menu.addEventListener("dragover", (event) => {
+      if (!draggedProductCategory || draggedProductCategory === menu.dataset.productCategoryContainer) return;
+      event.preventDefault();
+      const after = event.clientY > menu.getBoundingClientRect().top + menu.getBoundingClientRect().height / 2;
+      document.querySelectorAll(".product-category-menu").forEach((item) => item.classList.remove("drag-over", "drag-after"));
+      menu.classList.add("drag-over");
+      if (after) menu.classList.add("drag-after");
+    });
+    menu.addEventListener("dragleave", () => menu.classList.remove("drag-over", "drag-after"));
+    menu.addEventListener("drop", (event) => {
+      if (!draggedProductCategory) return;
+      event.preventDefault();
+      reorderProductCategories(draggedProductCategory, menu.dataset.productCategoryContainer, menu.classList.contains("drag-after"));
+    });
+  });
+  document.querySelectorAll(".edit-product-category").forEach((button) => button.addEventListener("click", renameProductCategoryFromMenu));
+  document.querySelectorAll(".edit-product-subcategory").forEach((button) => button.addEventListener("click", renameProductSubCategoryFromMenu));
   document.querySelectorAll(".edit-product").forEach((button) => button.addEventListener("click", editProduct));
 }
+function clearProductDragStyles() {
+  draggedProductCategory = "";
+  draggedProductId = "";
+  document.querySelectorAll(".product-category-menu,.product-subcategory-menu,.product-hierarchy-item").forEach((item) => item.classList.remove("dragging", "drag-over", "drag-after", "product-drop-target"));
+}
+function bindProductDropTarget(element, destination) {
+  element.addEventListener("dragover", (event) => {
+    if (!draggedProductId) return;
+    event.preventDefault(); event.stopPropagation();
+    element.classList.add("product-drop-target");
+  });
+  element.addEventListener("dragleave", () => element.classList.remove("product-drop-target"));
+  element.addEventListener("drop", (event) => {
+    if (!draggedProductId) return;
+    event.preventDefault(); event.stopPropagation();
+    const target = destination();
+    moveProductToGroup(draggedProductId, target.category, target.subCategory);
+  });
+}
+async function persistProductCategoryOrder(categories, focusCategory = "") {
+  const previous = state.productCategoryOrder;
+  state.productCategoryOrder = categories.map((category, sort_order) => ({ category, sort_order }));
+  renderProducts();
+  try {
+    const result = await api("/api/products/category-order", { method:"POST", body:JSON.stringify({ categories }) });
+    state.productCategoryOrder = result.categories.map((category, sort_order) => ({ category, sort_order }));
+    renderProducts();
+    if (focusCategory) document.querySelector('[data-drag-category="' + CSS.escape(focusCategory) + '"]')?.focus();
+    message.textContent = "Product category order saved.";
+  } catch (error) {
+    state.productCategoryOrder = previous;
+    renderProducts();
+    message.textContent = error.message;
+  }
+}
+function reorderProductCategories(dragged, target, after = false) {
+  if (!dragged || dragged === target) return;
+  const categories = currentProductCategoryNames();
+  categories.splice(categories.indexOf(dragged), 1);
+  const targetIndex = categories.indexOf(target);
+  categories.splice(targetIndex + (after ? 1 : 0), 0, dragged);
+  persistProductCategoryOrder(categories, dragged);
+}
+function moveProductCategoryByKeyboard(category, direction) {
+  const categories = currentProductCategoryNames();
+  const index = categories.indexOf(category), next = index + direction;
+  if (index < 0 || next < 0 || next >= categories.length) return;
+  [categories[index], categories[next]] = [categories[next], categories[index]];
+  persistProductCategoryOrder(categories, category);
+}
+async function moveProductToGroup(productId, category, subCategory) {
+  const product = state.products.find((item) => item.id === productId);
+  clearProductDragStyles();
+  if (!product || ((product.category || "Retail") === category && (product.sub_category || "General") === subCategory)) return;
+  try {
+    await api("/api/products/move", { method:"PATCH", body:JSON.stringify({ productId, category, subCategory }) });
+    product.category = category;
+    product.sub_category = subCategory;
+    await loadData();
+    message.textContent = 'Product moved to "' + category + ' / ' + subCategory + '".';
+  } catch (error) { message.textContent = error.message; }
+}
+async function renameProductCategoryFromMenu(event) {
+  event.preventDefault(); event.stopPropagation();
+  const oldName = event.currentTarget.dataset.category;
+  const newName = prompt("Rename product category", oldName)?.trim();
+  if (!newName || newName === oldName) return;
+  const merging = state.products.some((product) => (product.category || "Retail") === newName);
+  if (merging && !confirm('A category named "' + newName + '" already exists. Merge these categories?')) return;
+  try {
+    await api("/api/products/category-name", { method:"PATCH", body:JSON.stringify({ oldName, newName }) });
+    expandedProductCategories.delete(oldName);
+    expandedProductCategories.add(newName);
+    await loadData();
+    message.textContent = 'Product category renamed to "' + newName + '".';
+  } catch (error) { message.textContent = error.message; }
+}
+async function renameProductSubCategoryFromMenu(event) {
+  event.preventDefault(); event.stopPropagation();
+  const category = event.currentTarget.dataset.category;
+  const oldName = event.currentTarget.dataset.subCategory;
+  const newName = prompt("Rename product sub-category", oldName)?.trim();
+  if (!newName || newName === oldName) return;
+  const merging = state.products.some((product) => (product.category || "Retail") === category && (product.sub_category || "General") === newName);
+  if (merging && !confirm('A sub-category named "' + newName + '" already exists here. Merge these sub-categories?')) return;
+  try {
+    await api("/api/products/subcategory-name", { method:"PATCH", body:JSON.stringify({ category, oldName, newName }) });
+    expandedProductSubCategories.delete(productSubCategoryKey(category, oldName));
+    expandedProductSubCategories.add(productSubCategoryKey(category, newName));
+    await loadData();
+    message.textContent = 'Product sub-category renamed to "' + newName + '".';
+  } catch (error) { message.textContent = error.message; }
+}
 function editProduct(event) {
+  event.stopPropagation();
   const product = state.products.find((item) => item.id === event.currentTarget.dataset.productId);
   if (!product) return;
   const form = document.querySelector("#productForm");
@@ -2704,10 +3177,12 @@ function editProduct(event) {
   form.elements.name.value = product.name || "";
   form.elements.brand.value = product.brand || "";
   form.elements.category.value = product.category || "Retail";
+  form.elements.subCategory.value = product.sub_category || "General";
   form.elements.sku.value = product.sku || "";
   form.elements.barcode.value = product.barcode || "";
   form.elements.cost.value = dollars(product.cost_cents);
   form.elements.price.value = dollars(product.price_cents);
+  form.elements.specialPrice.value = Number(product.special_price_cents || 0) > 0 ? dollars(product.special_price_cents) : "";
   form.elements.status.value = product.status === "Inactive" ? "Inactive" : "Active";
   document.querySelector("#productFormTitle").textContent = "Edit product";
   document.querySelector("#productSaveButton").textContent = "Update product";
@@ -3086,7 +3561,7 @@ function addSaleItem(selectedItem = null, selectedStaffId = "") {
 function toggleBookingServiceMenu() { const menu = document.querySelector("#bookingServiceMenu"); const opening = menu.classList.contains("hidden"); menu.classList.toggle("hidden", !opening); document.querySelector("#bookingServiceSearch").setAttribute("aria-expanded", String(opening)); if (opening) renderBookingServiceCategories(); }
 function availableBookingServices() { return state.services.filter((service) => service.status !== "Inactive"); }
 function renderBookingServiceCategories() {
-  const categories = [...new Set(availableBookingServices().map((service) => service.category || "General"))].sort();
+  const categories = [...new Set(availableBookingServices().map((service) => service.category || "General"))].sort(serviceCategoryDisplayCompare);
   document.querySelector("#bookingServiceCategories").innerHTML = '<p class="booking-picker-title">Choose a category</p>' + categories.map((category) => '<button class="booking-category-option" type="button" data-category="' + esc(category) + '">' + esc(category) + '</button>').join("");
   document.querySelector("#bookingCategoryServices").classList.add("hidden");
   document.querySelectorAll(".booking-category-option").forEach((button) => button.addEventListener("click", () => renderBookingSubCategories(button.dataset.category)));
@@ -3554,7 +4029,7 @@ function customerLabel(c) { return (c.first_name + " " + c.last_name + " | " + c
 function saleCatalog() {
   return [
     ...state.services.map((s) => ({ type:"service", typeLabel:"Service", id:s.id, name:s.name, priceCents:Number(s.price_cents || 0), label:"Service | " + s.name + " | " + s.category + " | " + money(s.price_cents) })),
-    ...(state.products || []).map((p) => ({ type:"product", typeLabel:"Product", id:p.id, name:p.name, priceCents:Number(p.price_cents || 0), label:"Product | " + p.name + " | " + (p.brand || p.category) + " | " + money(p.price_cents) }))
+    ...(state.products || []).map((p) => { const priceCents = Number(p.special_price_cents || 0) > 0 ? Number(p.special_price_cents) : Number(p.price_cents || 0); return { type:"product", typeLabel:"Product", id:p.id, name:p.name, priceCents, label:"Product | " + p.name + " | " + (p.brand || p.category) + " | " + money(priceCents) }; })
   ];
 }
 function saleQuickFindScore(item, query) {
@@ -3817,12 +4292,66 @@ legend { grid-column:1/-1; }
 .product-table tbody tr:hover { background:#fdfafd; }
 .product-table .catalogue-group th { padding:15px 22px; text-align:left; background:var(--brand-soft); color:var(--brand); font-size:14px; text-transform:none; border-top:2px solid var(--line); }
 .product-table .catalogue-subgroup th { padding:10px 22px 10px 34px; text-align:left; background:#f7f8fa; color:var(--ink); font-size:12px; text-transform:none; }
-.catalogue-toggle { display:flex; width:100%; min-height:32px; align-items:center; gap:9px; padding:0; color:inherit; background:transparent; border:0; text-align:left; font:inherit; cursor:pointer; }
-.catalogue-toggle:focus-visible { outline:3px solid rgba(183,68,126,.3); outline-offset:3px; }
-.catalogue-chevron { display:inline-block; font-size:22px; line-height:1; transition:transform .16s ease; }
-.catalogue-toggle[aria-expanded="true"] .catalogue-chevron { transform:rotate(90deg); }
-.catalogue-subcategory-toggle { padding-left:14px; }
-.catalogue-service-row td:first-child { padding-left:54px; }
+.service-hierarchy { display:grid; gap:10px; padding:18px 22px 22px; background:#faf8fb; }
+.service-category-menu,.service-subcategory-menu { overflow:hidden; background:#fff; border:1px solid var(--line); border-radius:12px; }
+.service-category-menu>summary,.service-subcategory-menu>summary { display:flex; min-height:54px; align-items:center; gap:10px; padding:0 18px; color:var(--brand); font-weight:800; list-style:none; cursor:pointer; }
+.service-category-menu>summary::-webkit-details-marker,.service-subcategory-menu>summary::-webkit-details-marker { display:none; }
+.service-category-menu>summary::before,.service-subcategory-menu>summary::before { content:"›"; font-size:24px; line-height:1; transition:transform .16s ease; }
+.service-category-menu[open]>summary::before,.service-subcategory-menu[open]>summary::before { transform:rotate(90deg); }
+.service-category-menu>summary:focus-visible,.service-subcategory-menu>summary:focus-visible { outline:3px solid rgba(183,68,126,.3); outline-offset:-4px; }
+.service-category-menu[open]>summary { background:var(--brand-soft); border-bottom:1px solid var(--line); }
+.service-category-drag-handle { width:30px; min-height:34px; padding:0; margin-left:-7px; color:var(--muted); background:transparent; border:0; border-radius:7px; font-size:18px; line-height:1; letter-spacing:-3px; cursor:grab; touch-action:none; }
+.service-category-drag-handle:hover,.service-category-drag-handle:focus-visible { color:var(--brand); background:#fff; outline:2px solid rgba(183,68,126,.25); }
+.service-category-drag-handle:active { cursor:grabbing; }
+.service-category-pin { display:inline-flex; width:30px; min-height:34px; align-items:center; justify-content:center; padding:0; color:var(--muted); background:transparent; border:0; border-radius:7px; font-size:15px; filter:grayscale(1); opacity:.45; }
+.service-category-pin:hover,.service-category-pin:focus-visible { color:var(--brand); background:#fff; outline:2px solid rgba(183,68,126,.25); opacity:.8; }
+.service-category-pin.pinned { color:var(--brand); background:#fff; filter:none; opacity:1; }
+.catalogue-name-edit { width:30px; min-height:30px; padding:0; color:var(--muted); background:transparent; border:0; border-radius:7px; font-size:15px; }
+.catalogue-name-edit:hover,.catalogue-name-edit:focus-visible { color:var(--brand); background:#fff; outline:2px solid rgba(183,68,126,.25); }
+.service-category-menu>summary .catalogue-group-count,.service-subcategory-menu>summary .catalogue-group-count { margin-left:auto; }
+.service-category-menu.dragging { opacity:.48; }
+.service-category-menu.drag-over { border-top:3px solid var(--brand); }
+.service-category-menu.drag-over.drag-after { border-top:1px solid var(--line); border-bottom:3px solid var(--brand); }
+.service-subcategory-list { display:grid; gap:9px; padding:12px 14px 14px 32px; }
+.service-subcategory-menu>summary { min-height:46px; color:var(--ink); background:#f7f8fa; }
+.service-subcategory-menu[open]>summary { border-bottom:1px solid var(--line); }
+.service-hierarchy-items { display:grid; }
+.service-hierarchy-item { display:flex; min-height:58px; align-items:center; justify-content:space-between; gap:16px; padding:10px 16px 10px 42px; border-bottom:1px solid var(--line); }
+.service-hierarchy-item:last-child { border-bottom:0; }
+.service-hierarchy-item>div:first-child { display:grid; gap:4px; }
+.service-hierarchy-item>div:first-child span { color:var(--muted); font-size:12px; }
+.service-hierarchy-item-meta { display:flex; align-items:center; justify-content:flex-end; gap:12px; }
+.service-hierarchy-empty { margin:0; padding:24px; text-align:center; }
+.product-hierarchy { display:grid; gap:10px; padding:18px 22px 22px; background:#faf8fb; }
+.product-category-menu,.product-subcategory-menu { overflow:hidden; background:#fff; border:1px solid var(--line); border-radius:12px; }
+.product-category-menu>summary,.product-subcategory-menu>summary { display:flex; min-height:54px; align-items:center; gap:10px; padding:0 18px; color:var(--brand); font-weight:800; list-style:none; cursor:pointer; }
+.product-category-menu>summary::-webkit-details-marker,.product-subcategory-menu>summary::-webkit-details-marker { display:none; }
+.product-category-menu>summary::before,.product-subcategory-menu>summary::before { content:"›"; font-size:24px; line-height:1; transition:transform .16s ease; }
+.product-category-menu[open]>summary::before,.product-subcategory-menu[open]>summary::before { transform:rotate(90deg); }
+.product-category-menu>summary:focus-visible,.product-subcategory-menu>summary:focus-visible { outline:3px solid rgba(183,68,126,.3); outline-offset:-4px; }
+.product-category-menu[open]>summary { background:var(--brand-soft); border-bottom:1px solid var(--line); }
+.product-category-drag-handle { width:30px; min-height:34px; padding:0; margin-left:-7px; color:var(--muted); background:transparent; border:0; border-radius:7px; font-size:18px; line-height:1; letter-spacing:-3px; cursor:grab; touch-action:none; }
+.product-category-drag-handle:hover,.product-category-drag-handle:focus-visible { color:var(--brand); background:#fff; outline:2px solid rgba(183,68,126,.25); }
+.product-category-drag-handle:active { cursor:grabbing; }
+.product-category-menu>summary .catalogue-group-count,.product-subcategory-menu>summary .catalogue-group-count { margin-left:auto; }
+.product-category-menu.dragging,.product-hierarchy-item.dragging { opacity:.48; }
+.product-category-menu.drag-over { border-top:3px solid var(--brand); }
+.product-category-menu.drag-over.drag-after { border-top:1px solid var(--line); border-bottom:3px solid var(--brand); }
+.product-category-menu>summary.product-drop-target,.product-subcategory-menu.product-drop-target { background:#eadcf0; outline:2px dashed var(--brand); outline-offset:-4px; }
+.product-subcategory-list { display:grid; gap:9px; padding:12px 14px 14px 32px; }
+.product-subcategory-menu>summary { min-height:46px; color:var(--ink); background:#f7f8fa; }
+.product-subcategory-menu[open]>summary { border-bottom:1px solid var(--line); }
+.product-hierarchy-items { display:grid; }
+.product-hierarchy-item { display:flex; min-height:70px; align-items:center; justify-content:space-between; gap:16px; padding:11px 16px 11px 42px; border-bottom:1px solid var(--line); cursor:grab; }
+.product-hierarchy-item:last-child { border-bottom:0; }
+.product-hierarchy-item:active { cursor:grabbing; }
+.product-item-main { display:grid; gap:4px; min-width:180px; }
+.product-item-main span,.product-hierarchy-item-meta>span { color:var(--muted); font-size:12px; }
+.product-hierarchy-item-meta { display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap; }
+.product-prices { display:inline-flex; align-items:center; gap:7px; }
+.product-price-retail.discounted { color:var(--muted); text-decoration:line-through; }
+.product-price-special { color:#a12961; }
+.product-hierarchy-empty { margin:0; padding:24px; text-align:center; }
 .catalogue-group-count { display:inline-block; margin-left:12px; color:var(--muted); font-size:11px; font-weight:500; }
 #newServiceCategoryLabel.hidden,#newServiceSubCategoryLabel.hidden { display:none; }
 .table-subtext { display:block; max-width:230px; margin-top:3px; overflow:hidden; color:var(--muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
@@ -4084,6 +4613,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.payment-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search,.payment-heading label{width:100%}.time-clock-panel,.report-filters,.payment-methods,.payment-balance{grid-template-columns:1fr}.payment-methods button:last-child{grid-column:auto}.payment-allocation{grid-template-columns:minmax(0,1fr) auto}.payment-allocation button{grid-column:1/-1}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
+@media (max-width:700px){.service-hierarchy,.product-hierarchy{padding:14px}.service-subcategory-list,.product-subcategory-list{padding:10px}.service-hierarchy-item,.product-hierarchy-item{align-items:flex-start;flex-direction:column;padding:12px 16px}.service-hierarchy-item-meta,.product-hierarchy-item-meta{width:100%;justify-content:flex-start;flex-wrap:wrap}}
 
 /* Branch management */
 .branch-hours-table { min-width:480px; width:100%; table-layout:fixed; }.branch-hours-table th:last-child { width:68px; }.branch-hours-table td,.branch-hours-table th { padding:10px 8px; }.branch-hours-table input { width:100%; }
