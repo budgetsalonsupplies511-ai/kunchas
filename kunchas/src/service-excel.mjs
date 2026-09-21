@@ -10,7 +10,19 @@ export async function exportServices(env){
   sheet['!cols']=[{wch:44},{wch:30},{wch:24},{wch:24},{wch:20},{wch:14},{wch:14}];
   sheet['!autofilter']={ref:'A1:G'+rows.length};
   for(let i=2;i<=rows.length;i++)sheet['F'+i].z='"$"#,##0.00';
-  const workbook=XLSX.utils.book_new();XLSX.utils.book_append_sheet(workbook,sheet,'Services');
+  const instructions=XLSX.utils.aoa_to_sheet([
+    ['Kunchas service catalogue import'],
+    ['Use the Services sheet to add or update the salon catalogue.'],
+    ['Required columns','Name, Category, Sub-category, Duration minutes, Price, Status'],
+    ['Category','Main group shown in the catalogue, for example Hair or Beauty.'],
+    ['Sub-category','Group within the category, for example Cuts or Facials.'],
+    ['Service ID','Keep this value when updating an exported service. Leave it blank for a new service.'],
+    ['Status','Use Active or Inactive.'],
+    ['Limits','Up to 1,000 service rows and a 5 MB workbook.']
+  ]);
+  instructions['!cols']=[{wch:24},{wch:92}];
+  const workbook=XLSX.utils.book_new();XLSX.utils.book_append_sheet(workbook,sheet,'Services');XLSX.utils.book_append_sheet(workbook,instructions,'Instructions');
+  workbook.Props={Title:'Kunchas services',Subject:'Service catalogue import template',Company:'Kunchas'};
   return new Response(XLSX.write(workbook,{type:'array',bookType:'xlsx',compression:true}),{headers:{'content-type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','content-disposition':'attachment; filename="kunchas-services-'+new Date().toISOString().slice(0,10)+'.xlsx"','cache-control':'no-store','x-content-type-options':'nosniff'}});
 }
 export async function importServices(request,env){

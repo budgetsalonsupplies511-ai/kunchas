@@ -124,6 +124,7 @@ const application = {
       if (request.method === "PATCH" && url.pathname === "/api/services/category-pin") return setServiceCategoryPin(request, env);
       if (request.method === "PATCH" && url.pathname === "/api/services/category-name") return renameServiceCategory(request, env);
       if (request.method === "PATCH" && url.pathname === "/api/services/subcategory-name") return renameServiceSubCategory(request, env);
+      if (request.method === "DELETE" && url.pathname.startsWith("/api/services/")) return deleteService(env, clean(url.pathname.replace("/api/services/", "")));
       if (request.method === "PATCH" && url.pathname.startsWith("/api/services/")) return updateService(request, env, clean(url.pathname.replace("/api/services/", "")));
       if (request.method === "POST" && url.pathname === "/api/products") return createProduct(request, env);
       if (request.method === "POST" && url.pathname === "/api/products/category-order") return saveProductCategoryOrder(request, env);
@@ -662,6 +663,17 @@ async function updateService(request, env, serviceId) {
     .bind(name, category, subCategory, duration, priceCents, status, serviceId)
     .run();
   return jsonResponse({ ok: true });
+}
+
+async function deleteService(env, serviceId) {
+  if (!serviceId) return jsonResponse({ error:"Service is required." }, 400);
+  const service = await env.DB.prepare("SELECT id, category FROM services WHERE id = ?").bind(serviceId).first();
+  if (!service) return jsonResponse({ error:"Service not found." }, 404);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM services WHERE id = ?").bind(serviceId),
+    env.DB.prepare("DELETE FROM service_category_order WHERE category = ? AND NOT EXISTS (SELECT 1 FROM services WHERE category = ? AND id != ?)").bind(service.category, service.category, serviceId)
+  ]);
+  return jsonResponse({ ok:true });
 }
 
 async function createProduct(request, env) {
@@ -1863,7 +1875,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
     </section>
     <section class="tab admin-only" id="services">
       <div class="section-heading page-heading"><h2>Services</h2><button class="primary" id="addServiceButton" type="button" aria-controls="serviceForm" aria-expanded="false">Add service</button></div>
-      <div class="panel"><div class="section-heading"><div><h3>Excel import and export</h3><p class="hint">Export all services, edit in Excel, then import. Keep Service IDs to update existing services. Leave the ID blank for new services; matching name, category and sub-category will update an existing entry.</p></div><div class="excel-actions"><a class="secondary button-link" href="/api/services/export">Export Excel</a><button class="primary" id="importServicesButton" type="button">Import Excel</button><input class="hidden" id="serviceImportFile" type="file" accept=".xlsx,.xls"></div></div><p id="serviceImportResult" role="status"></p></div><form class="panel service-editor hidden" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<select name="category" id="serviceCategorySelect" required></select></label></div><label id="newServiceCategoryLabel" class="hidden">New category<input name="newCategory" placeholder="Enter a new category" disabled></label><div class="grid"><label>Sub-category<select name="subCategory" id="serviceSubCategorySelect" required></select></label><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label></div><div class="grid"><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><label id="newServiceSubCategoryLabel" class="hidden">New sub-category<input name="newSubCategory" placeholder="Enter a new sub-category" disabled></label><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary" id="cancelServiceEdit" type="button">Cancel</button></div></form>
+      <div class="panel service-excel-panel"><div class="section-heading"><div><p class="eyebrow">Primary catalogue tool</p><h3>Update services with Excel</h3><p class="hint">Download the workbook, complete one row per service, and import it here. Category and Sub-category are required so services stay organised throughout Admin, Bookings, and POS.</p></div><div class="excel-actions"><a class="secondary button-link" href="/api/services/export">Download Excel template</a><button class="primary" id="importServicesButton" type="button">Import services</button><input class="hidden" id="serviceImportFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"></div></div><p class="hint">Columns: Service ID, Name, Category, Sub-category, Duration minutes, Price, Status. Keep an existing Service ID to update that row; leave it blank to add a service.</p><p id="serviceImportResult" role="status"></p></div><form class="panel service-editor hidden" id="serviceForm"><h2 id="serviceFormTitle">Add service</h2><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<select name="category" id="serviceCategorySelect" required></select></label></div><label id="newServiceCategoryLabel" class="hidden">New category<input name="newCategory" placeholder="Enter a new category" disabled></label><div class="grid"><label>Sub-category<select name="subCategory" id="serviceSubCategorySelect" required></select></label><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label></div><div class="grid"><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><label id="newServiceSubCategoryLabel" class="hidden">New sub-category<input name="newSubCategory" placeholder="Enter a new sub-category" disabled></label><div class="form-actions"><button class="primary" id="serviceSaveButton" type="submit">Save service</button><button class="secondary" id="cancelServiceEdit" type="button">Cancel</button><button class="danger hidden" id="deleteServiceButton" type="button">Delete service</button></div></form>
       <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2>All services</h2><p class="hint" id="serviceCount" aria-live="polite"></p></div><div class="product-table-controls"><label class="product-search"><span>Search services</span><input id="serviceSearch" type="search" placeholder="Name, category, sub-category or status"></label><label><span>Category</span><select id="serviceCategoryFilter"><option value="">All categories</option></select></label><label><span>Sub-category</span><select id="serviceSubCategoryFilter"><option value="">All sub-categories</option></select></label><label><span>Status</span><select id="serviceStatusFilter"><option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select></label></div></div><div class="service-hierarchy" id="servicesHierarchy"></div></div>
     </section>
     <section class="tab admin-only" id="products">
@@ -2085,6 +2097,7 @@ document.querySelector("#addBranchClosedDate").addEventListener("click", () => a
 document.querySelector("#serviceForm").addEventListener("submit", submitServiceForm);
 document.querySelector("#addServiceButton").addEventListener("click", () => { resetServiceForm(); openServiceForm(); });
 document.querySelector("#cancelServiceEdit").addEventListener("click", resetServiceForm);
+document.querySelector("#deleteServiceButton").addEventListener("click", deleteServiceFromEditor);
 document.querySelector("#serviceSearch").addEventListener("input", renderServices);
 ["#serviceCategoryFilter", "#serviceSubCategoryFilter", "#serviceStatusFilter"].forEach((selector) => document.querySelector(selector).addEventListener("change", renderServices));
 document.querySelector("#serviceCategorySelect").addEventListener("change", () => {
@@ -2934,6 +2947,7 @@ function editService(event) {
   form.elements.status.value = service.status || "Active";
   document.querySelector("#serviceFormTitle").textContent = "Edit service";
   document.querySelector("#serviceSaveButton").textContent = "Update service";
+  document.querySelector("#deleteServiceButton").classList.remove("hidden");
   openServiceForm();
 }
 function resetServiceForm() {
@@ -2943,9 +2957,27 @@ function resetServiceForm() {
   refreshServiceEditor();
   document.querySelector("#serviceFormTitle").textContent = "Add service";
   document.querySelector("#serviceSaveButton").textContent = "Save service";
+  document.querySelector("#deleteServiceButton").classList.add("hidden");
   form.classList.add("hidden");
   document.querySelector("#addServiceButton").setAttribute("aria-expanded", "false");
   document.querySelector("#addServiceButton").focus({ preventScroll:true });
+}
+async function deleteServiceFromEditor() {
+  const form = document.querySelector("#serviceForm");
+  const serviceId = form.elements.serviceId.value;
+  const serviceName = form.elements.name.value.trim();
+  if (!serviceId) return;
+  if (!confirm('Delete "' + serviceName + '"? Existing sales and booking history will keep their recorded service names.')) return;
+  const button = document.querySelector("#deleteServiceButton");
+  button.disabled = true;
+  try {
+    message.textContent = "Deleting service...";
+    await api("/api/services/" + encodeURIComponent(serviceId), { method:"DELETE" });
+    resetServiceForm();
+    await loadData();
+    message.textContent = "Service deleted.";
+  } catch (error) { message.textContent = error.message; }
+  finally { button.disabled = false; }
 }
 async function submitServiceForm(event) {
   event.preventDefault();
