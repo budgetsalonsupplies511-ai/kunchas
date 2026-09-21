@@ -30,13 +30,13 @@ test('service Excel import creates categorised services', async () => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
     ['Service ID','Name','Category','Sub-category','Duration minutes','Price','Status'],
-    ['', 'Deluxe facial', 'Beauty', 'Facials', 60, 99, 'Active']
+    ['service-deluxe-facial', 'Deluxe facial', 'Beauty', 'Facials', 60, 99, 'Active']
   ]), 'Services');
   const body = XLSX.write(workbook, { type:'array', bookType:'xlsx' });
   const result = await importServices(new Request('https://test.local/api/services/import', { method:'POST', body }), env);
   assert.equal(result.status, 200);
   assert.deepEqual(await result.json(), { ok:true, created:1, updated:0, skipped:0, errors:[] });
-  assert.deepEqual({ ...db.prepare('SELECT name,category,sub_category,price_cents FROM services').get() }, { name:'Deluxe facial', category:'Beauty', sub_category:'Facials', price_cents:9900 });
+  assert.deepEqual({ ...db.prepare('SELECT id,name,category,sub_category,price_cents FROM services').get() }, { id:'service-deluxe-facial', name:'Deluxe facial', category:'Beauty', sub_category:'Facials', price_cents:9900 });
 });
 
 test('service editor exposes delete only while editing', () => {

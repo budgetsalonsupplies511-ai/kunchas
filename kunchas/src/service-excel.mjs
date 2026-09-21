@@ -47,10 +47,10 @@ export async function importServices(request,env){
     const s={name:text(get(row,'name','service name')),category:text(get(row,'category')),sub_category:text(get(row,'sub category','subcategory')),duration_minutes:Number(get(row,'duration minutes','duration')),price_cents:Math.round(Number(get(row,'price','price $','retail price'))*100),status:text(get(row,'status'))||'Active'};
     s.status=s.status.toLowerCase()==='active'?'Active':s.status.toLowerCase()==='inactive'?'Inactive':s.status;
     if(!s.name||!s.category||!s.sub_category||!Number.isSafeInteger(s.duration_minutes)||s.duration_minutes<1||!Number.isSafeInteger(s.price_cents)||s.price_cents<1||!['Active','Inactive'].includes(s.status)){fail('Enter name, category, sub-category, positive whole duration, positive price, and Active or Inactive status.');continue;}
+    if(id&&!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(id)){fail('Service ID contains unsupported characters. Leave it blank to create a new ID.');continue;}
     let existing=id?services.get(id):null;
-    if(id&&!existing){fail('Service ID was not found. Leave it blank to add a new service.');continue;}
     if(!id){const matches=[...services.values()].filter(item=>key(item)===key(s));if(matches.length>1){fail('Multiple services match. Include the Service ID from an export.');continue;}existing=matches[0];}
-    const target=existing?.id||'service-'+crypto.randomUUID();
+    const target=existing?.id||id||'service-'+crypto.randomUUID();
     if(seen.has(target)){fail('This service appears more than once in the workbook.');continue;}
     seen.add(target);
     if(existing){await env.DB.prepare('UPDATE services SET name=?, category=?, sub_category=?, duration_minutes=?, price_cents=?, status=? WHERE id=?').bind(s.name,s.category,s.sub_category,s.duration_minutes,s.price_cents,s.status,target).run();updated++;}
