@@ -36144,6 +36144,12 @@ function applyAccessUi() {
   document.querySelector(".staff-hours-section").hidden=!userCan("payroll");
   if (!userCan("payroll",true) && currentUser.staffId) { const select=document.querySelector("#timeClockStaff"); select.innerHTML=state.staff.filter((person)=>person.id===currentUser.staffId).map((person)=>'<option value="'+esc(person.id)+'">'+esc(person.name)+'</option>').join(""); }
   document.querySelectorAll("#reports .report-section").forEach((panel) => { panel.hidden = panel.classList.contains("payroll-report") ? !userCan("payroll") : !userCan("reports"); });
+  const reportPicker = document.querySelector("#mobileReportType");
+  reportPicker.querySelectorAll('option:not([value="payroll"])').forEach((option) => { option.hidden = option.disabled = !userCan("reports"); });
+  const payrollOption = reportPicker.querySelector('option[value="payroll"]');
+  payrollOption.hidden = payrollOption.disabled = !userCan("payroll");
+  if (reportPicker.selectedOptions[0]?.disabled) reportPicker.value = userCan("reports") ? "overview" : "payroll";
+  applyMobileReportView();
   const allowed = [...document.querySelectorAll(".nav[data-tab]")].filter((button) => !button.hidden);
   const active = document.querySelector(".nav.active");
   if ((!active || active.hidden) && allowed.length) showTab(allowed[0].dataset.tab);
@@ -38239,7 +38245,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       </div>
     </section>
     <section class="tab admin-only" id="reports">
-      <div class="panel report-filter-panel"><div><p class="eyebrow">Performance centre</p><h2>Business reports</h2><p class="hint">Filter once, then export any section.</p></div><div class="report-filters"><label>From<input id="reportFrom" type="date"></label><label>To<input id="reportTo" type="date"></label><label>Branch<select id="reportBranch"><option value="">All branches</option></select></label><button class="primary" id="applyReportFilters" type="button">Apply</button></div></div>
+      <div class="panel report-filter-panel"><div><p class="eyebrow">Performance centre</p><h2>Business reports</h2><p class="hint">Filter once, then export any section.</p></div><div class="report-filters"><label>From<input id="reportFrom" type="date"></label><label>To<input id="reportTo" type="date"></label><label class="mobile-report-picker">Report by<select id="mobileReportType"><option value="overview">Overview</option><option value="staff">Staff</option><option value="branch">Branch</option><option value="manager">Manager</option><option value="services">Services</option><option value="products">Products</option><option value="bookings">Bookings</option><option value="payroll">Payroll</option><option value="closing">Closing review</option><option value="all">All reports</option></select></label><label>Branch<select id="reportBranch"><option value="">All branches</option></select></label><button class="primary" id="applyReportFilters" type="button">Get report</button></div></div>
       <div class="metrics report-summary" id="reportMetrics"></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Staff sales by date</h2><p class="hint">Daily credited sales for each staff member at each branch. Shared services use the recorded staff allocation.</p></div><a class="secondary button-link report-export" data-report-type="staff-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Role</th><th>Branch</th><th>Credited sales</th><th>Services credited</th><th>Transactions</th></tr></thead><tbody id="reportStaffDailyTable"></tbody></table></div></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Manager sales by date</h2><p class="hint">Daily branch sales for each manager rostered there. If managers share a branch on the same day, each receives that branch total.</p></div><a class="secondary button-link report-export" data-report-type="manager-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Manager</th><th>Branch</th><th>Managed store sales</th><th>Transactions</th></tr></thead><tbody id="reportManagerDailyTable"></tbody></table></div></div>
@@ -38680,6 +38686,9 @@ document.querySelector("#closingForm").addEventListener("submit", submitCountedC
 
 document.querySelector("#applyReportFilters").addEventListener("click", loadReports);
 document.querySelector("#reportBranch").addEventListener("change", loadReports);
+document.querySelector("#mobileReportType").addEventListener("change", applyMobileReportView);
+window.matchMedia("(max-width:700px)").addEventListener("change", applyMobileReportView);
+applyMobileReportView();
 updateCheckoutMode();
 updateCustomerMode();
 setReceiveProductsDate();
@@ -40441,6 +40450,19 @@ function renderClosings() {
 function reportQuery() {
   return new URLSearchParams({ from:document.querySelector("#reportFrom").value, to:document.querySelector("#reportTo").value, branchId:document.querySelector("#reportBranch").value }).toString();
 }
+function applyMobileReportView() {
+  const select = document.querySelector("#mobileReportType");
+  if (!select) return;
+  const groups = { overview:[], staff:["staff-daily", "staff"], branch:["branch-daily", "branch"], manager:["manager-daily"], services:["services"], products:["products"], bookings:["bookings"], payroll:["payroll"], closing:[] };
+  const mobile = window.matchMedia("(max-width:700px)").matches;
+  const type = select.value;
+  document.querySelector("#reportMetrics").classList.toggle("mobile-report-hidden", mobile && type !== "overview" && type !== "all");
+  document.querySelectorAll("#reports .report-section").forEach((panel) => {
+    const reportType = panel.querySelector(".report-export")?.dataset.reportType;
+    panel.classList.toggle("mobile-report-hidden", mobile && type !== "all" && !(groups[type] || []).includes(reportType));
+  });
+  document.querySelector("#adminClosingTable").closest(".panel").classList.toggle("mobile-report-hidden", mobile && type !== "closing" && type !== "all");
+}
 async function loadReports() {
   if (appMode !== "admin" || (!userCan("reports") && !userCan("payroll"))) return;
   const requestId = ++reportRequestId;
@@ -40470,6 +40492,7 @@ function renderReports() {
   document.querySelector("#reportBookingsTable").innerHTML = reportData.bookingRows.length ? reportData.bookingRows.map((row) => '<tr><td><strong>' + esc(row.branch) + '</strong></td><td><span class="source-pill">' + esc(row.source) + '</span></td><td>' + row.count + '</td><td>' + money(row.valueCents) + '</td><td>' + row.completed + '</td></tr>').join("") : reportEmpty(5);
   document.querySelector("#reportPayrollTable").innerHTML = reportData.payrollRows.length ? reportData.payrollRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong><span class="table-subtext">' + esc(row.role) + '</span></td><td>' + esc(row.branch) + '</td><td>' + esc(reportTime(row.clockIn)) + '</td><td>' + Number(row.breakMinutes || 0) + ' min</td><td>' + esc(reportTime(row.clockOut)) + '</td><td><strong>' + Number(row.hours || 0).toFixed(2) + '</strong></td><td>' + '<span class="status-pill ' + (row.status === "Complete" ? "" : "inactive") + '">' + esc(row.status) + '</span></td></tr>').join("") : reportEmpty(8, "No clock-in records for this period.");
   document.querySelectorAll("#reports .report-section table").forEach(labelResponsiveTable);
+  applyMobileReportView();
   const exportQuery = new URLSearchParams(reportData.range).toString();
   document.querySelectorAll(".report-export").forEach((link) => { link.href = "/api/reports/export?type=" + encodeURIComponent(link.dataset.reportType) + "&" + exportQuery; });
 }
@@ -41832,6 +41855,7 @@ legend { grid-column:1/-1; }
 .report-filter-panel { display:flex; align-items:end; justify-content:space-between; gap:24px; background:linear-gradient(135deg,#fff 40%,#f7edf9); }
 .report-filter-panel h2 { margin-bottom:2px; }
 .report-filters { display:grid; grid-template-columns:145px 145px minmax(180px,240px) auto; align-items:end; gap:10px; }
+.mobile-report-picker { display:none; }
 .report-filters label { color:var(--muted); font-size:11px; text-transform:uppercase; }
 .report-filters input,.report-filters select { min-height:40px; margin:4px 0 0; color:var(--ink); text-transform:none; }
 .report-summary { grid-template-columns:repeat(7,minmax(130px,1fr)); margin:18px 0; overflow-x:auto; }
@@ -42251,6 +42275,8 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 }
 @media(min-width:701px) and (max-width:1200px){.split,.pos-workspace>.split{display:grid;grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){
+  .mobile-report-picker{display:block}
+  .mobile-report-hidden{display:none!important}
   body,body.sidebar-collapsed{grid-template-columns:minmax(0,1fr)}
   body.mobile-nav-open{overflow:hidden}
   .sidebar,.sidebar-collapsed .sidebar{position:fixed;z-index:101;inset:0 auto 0 0;display:flex;flex-direction:column;align-items:stretch;width:min(82vw,304px);height:100dvh;min-height:0;padding:18px 14px max(16px,env(safe-area-inset-bottom));overflow-y:auto;transform:translateX(-105%);transition:transform .22s ease;box-shadow:none}
