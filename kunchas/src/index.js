@@ -1661,6 +1661,9 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${isAdmin ? dashboardTitle : "Branch POS"} · Kuncha’s</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>${styles()}</style>
 </head>
 <body class="${isAdmin ? "admin-mode" : "staff-mode pos-locked"}">
@@ -1755,7 +1758,8 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <p class="hint booking-checkout-hint">Choose an unpaid booking to preload its customer, services, and assigned staff.</p>
           <label>Customer type<select name="customerMode"><option value="walkin">Walking customer</option><option value="existing">Existing customer</option><option value="new">Add new customer</option></select></label>
           <div class="customer-existing hidden">
-            <label>Customer search<input name="customerSearch" list="customerList" placeholder="Type name, phone, or email"></label>
+            <label for="saleCustomerSearch">Find customer</label>
+            <div class="pos-search-picker" id="customerPicker"><input id="saleCustomerSearch" name="customerSearch" type="search" autocomplete="off" placeholder="Search name, phone or email" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="customerResults"><button class="picker-toggle" type="button" aria-label="Show customers" aria-controls="customerResults" aria-expanded="false">⌄</button><div class="picker-results hidden" id="customerResults" role="listbox"></div></div>
           </div>
           <div class="booking-customer-card hidden" id="bookingCustomerCard" aria-live="polite"></div>
           <div class="customer-new hidden">
@@ -1764,8 +1768,6 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
             <div class="grid"><label>Phone<input name="newPhone"></label><label>Email<input name="newEmail" type="email"></label></div>
           </div>
           <input name="customerId" type="hidden">
-          <datalist id="customerList"></datalist>
-          <datalist id="itemList"></datalist>
           <datalist id="staffList"></datalist>
           <div id="saleItems"></div>
           <button class="secondary" id="addSaleItem" type="button">Add item</button>
@@ -1826,8 +1828,11 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 
     <section class="tab staff-only ${initialTab === "bookings" ? "active" : ""}" id="bookings">
       <div class="split">
-        <form class="panel" id="bookingForm">
-          <h2>New booking</h2>
+        <div class="panel diary-panel"><div class="booking-date-heading"><div><h2>Booking diary</h2></div><div class="booking-header-actions"><button class="primary" id="newBookingButton" type="button">+ New booking</button><div class="diary-date-controls"><button class="secondary" id="bookingToday" type="button">Today</button><button class="secondary" id="bookingPreviousDay" type="button" aria-label="Previous day">Previous</button><button class="secondary" id="bookingNextDay" type="button" aria-label="Next day">Next</button><label>Date<input id="bookingDisplayDate" type="date"></label></div></div></div><div class="booking-legend"><span><i class="online"></i>Online</span><span><i class="manual"></i>Manual</span></div><div class="booking-diary" id="bookingsTable"></div><div class="booking-detail hidden" id="bookingDetail"></div></div>
+      </div>
+      <dialog class="booking-dialog" id="bookingDialog" aria-labelledby="bookingDialogTitle">
+        <form class="booking-dialog-form" id="bookingForm">
+          <div class="booking-dialog-heading"><h2 id="bookingDialogTitle">New booking</h2><button class="booking-dialog-close" id="closeBookingButton" type="button" aria-label="Close new booking">×</button></div>
           <input name="branchId" type="hidden">
           <div class="grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label></div>
           <div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div>
@@ -1837,8 +1842,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <label>Notes<textarea name="notes" rows="3"></textarea></label>
           <button class="primary full" type="submit">Save booking</button>
         </form>
-        <div class="panel diary-panel"><div class="booking-date-heading"><div><h2>Booking diary</h2><p class="hint">Four booking columns · maximum four concurrent bookings per branch · 15-minute intervals · 10:00 am–7:00 pm.</p></div><div class="diary-date-controls"><button class="secondary" id="bookingToday" type="button">Today</button><button class="secondary" id="bookingPreviousDay" type="button" aria-label="Previous day">Previous</button><button class="secondary" id="bookingNextDay" type="button" aria-label="Next day">Next</button><label>Date<input id="bookingDisplayDate" type="date"></label></div></div><div class="booking-legend"><span><i class="online"></i>Online</span><span><i class="manual"></i>Manual</span></div><div class="booking-diary" id="bookingsTable"></div><div class="booking-detail hidden" id="bookingDetail"></div></div>
-      </div>
+      </dialog>
     </section>
 
     <section class="tab admin-only" id="customers">
@@ -2029,6 +2033,9 @@ document.querySelector("#customerForm").addEventListener("submit", submitCustome
 document.querySelector("#customerProfileForm").addEventListener("submit", submitCustomerProfile);
 document.querySelector("#closeCustomerProfile").addEventListener("click", closeCustomerProfile);
 document.querySelector("#bookingForm").addEventListener("submit", submitBooking);
+document.querySelector("#newBookingButton").addEventListener("click", () => { const dialog = document.querySelector("#bookingDialog"); dialog.showModal(); dialog.querySelector('input[name="firstName"]').focus(); });
+document.querySelector("#closeBookingButton").addEventListener("click", () => document.querySelector("#bookingDialog").close());
+document.querySelector("#bookingDialog").addEventListener("click", (event) => { if (event.target.id === "bookingDialog") event.target.close(); });
 document.querySelector("#bookingServiceSearch").addEventListener("click", toggleBookingServiceMenu);
 document.querySelector("#bookingDisplayDate").addEventListener("change", renderBookings);
 document.querySelector("#bookingToday").addEventListener("click", () => moveBookingDiaryTo(new Date()));
@@ -2036,6 +2043,12 @@ document.querySelector("#bookingPreviousDay").addEventListener("click", () => mo
 document.querySelector("#bookingNextDay").addEventListener("click", () => moveBookingDiaryBy(1));
 document.querySelector("#saleForm").addEventListener("submit", submitSale);
 document.querySelector('select[name="customerMode"]').addEventListener("change", updateCustomerMode);
+document.querySelector('#customerPicker input[name="customerSearch"]').addEventListener("input", () => renderCustomerPicker(true));
+document.querySelector('#customerPicker input[name="customerSearch"]').addEventListener("focus", () => renderCustomerPicker(true));
+document.querySelector('#customerPicker .picker-toggle').addEventListener("click", () => document.querySelector("#customerResults").classList.contains("hidden") ? renderCustomerPicker(true) : closeCustomerPicker());
+wirePickerKeyboard(document.querySelector("#customerPicker"), () => renderCustomerPicker(true), closeCustomerPicker);
+document.addEventListener("pointerdown", (event) => { if (!event.target.closest(".sale-picker")) document.querySelectorAll(".sale-item").forEach(closeSalePicker); if (!event.target.closest("#customerPicker")) closeCustomerPicker(); });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") { document.querySelectorAll(".sale-item").forEach(closeSalePicker); closeCustomerPicker(); } });
 document.querySelector('#closingForm input[name="closingDate"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="openingFloat"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCash"]').addEventListener("input", renderClosingPreview);
@@ -2330,8 +2343,7 @@ function fillSelects() {
   document.querySelectorAll('select[name="staffId"]').forEach((select) => select.innerHTML = staffSelectOptions);
   document.querySelectorAll('select[name="customerId"]').forEach((select) => select.innerHTML = customerOptions);
   document.querySelectorAll('select[name="productId"]').forEach((select) => select.innerHTML = productOptions);
-  document.querySelector("#customerList").innerHTML = state.customers.map((c) => '<option value="' + esc(customerLabel(c)) + '"></option>').join("");
-  document.querySelector("#itemList").innerHTML = "";
+  renderCustomerPicker();
   document.querySelector("#staffList").innerHTML = state.staff.map((s) => '<option value="' + esc(staffLabel(s)) + '"></option>').join("");
   renderBookingCheckoutOptions();
   document.querySelectorAll(".staff-checks").forEach((box) => box.innerHTML = staffCheckboxes());
@@ -3572,12 +3584,17 @@ function renderReports() {
 function addSaleItem(selectedItem = null, selectedStaffId = "") {
   const row = document.createElement("div");
   row.className = "sale-item";
-  row.innerHTML = '<label>Quick find service / product<input name="saleItemSearch" list="itemList" autocomplete="off" required placeholder="Type at least 2 letters"></label><p class="hint quick-find-hint">Suggestions appear after 2 letters, ranked by closest match.</p><div class="line-meta"></div><div class="instance-edit hidden"><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div><p class="hint">Only this sale and receipt change. The master service stays the same.</p></div><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
+  row.innerHTML = '<div class="sale-picker"><label>Service or product</label><div class="pos-search-picker"><input name="saleItemSearch" type="search" autocomplete="off" required placeholder="Search or choose an item" role="combobox" aria-autocomplete="list" aria-expanded="false"><button class="picker-toggle" type="button" aria-label="Browse services and products" aria-expanded="false">⌄</button><div class="picker-results sale-picker-results hidden"><div class="sale-picker-filters"><div class="sale-type-options" role="group" aria-label="Item type"><button type="button" data-sale-type="service">Services</button><button type="button" data-sale-type="product">Products</button></div><select class="sale-category-filter" aria-label="Category"></select></div><div class="sale-picker-options" role="listbox"></div></div></div></div><div class="line-meta"></div><details class="instance-edit hidden"><summary>Edit name or price</summary><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div></details><div class="staff-area"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
   document.querySelector("#saleItems").append(row);
   row.querySelector(".add-staff").addEventListener("click", () => addStaffToSaleItem(row));
   const quickFind = row.querySelector('input[name="saleItemSearch"]');
-  quickFind.addEventListener("input", () => { updateSaleQuickFind(quickFind.value); updateSaleItemRow(row); });
-  quickFind.addEventListener("focus", () => updateSaleQuickFind(quickFind.value));
+  quickFind.addEventListener("input", () => { updateSaleItemRow(row); renderSalePicker(row, true); });
+  quickFind.addEventListener("focus", () => renderSalePicker(row, true));
+  quickFind.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSalePicker(row); });
+  row.querySelector(".picker-toggle").addEventListener("click", () => row.querySelector(".sale-picker-results").classList.contains("hidden") ? renderSalePicker(row, true) : closeSalePicker(row));
+  row.querySelectorAll("[data-sale-type]").forEach((button) => button.addEventListener("click", () => { row.dataset.saleType = button.dataset.saleType; row.dataset.saleTypeLocked = "true"; row.querySelector(".sale-category-filter").value = ""; renderSalePicker(row, true); }));
+  row.querySelector(".sale-category-filter").addEventListener("change", () => renderSalePicker(row, true));
+  wirePickerKeyboard(row.querySelector(".pos-search-picker"), () => renderSalePicker(row, true), () => closeSalePicker(row));
   row.querySelector('input[name="instanceName"]').addEventListener("input", renderCartSummary);
   row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { rebalanceStaffAllocations(row, null, "preserve"); renderCartSummary(); });
   if (selectedItem) row.querySelector('input[name="saleItemSearch"]').value = selectedItem.label;
@@ -3748,7 +3765,7 @@ async function submitJson(path, payload, form) {
     }
     form.reset();
     if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckout").value = ""; document.querySelector("#bookingCustomerCard").classList.add("hidden"); document.querySelector("#bookingCustomerCard").innerHTML = ""; addSaleItem(); updateCustomerMode(); resetPaymentUi(); setSaleMessage(result.receipt?.changeCents ? "Purchase complete. Return " + money(result.receipt.changeCents) + " change." : "Purchase completed successfully."); if (result.receipt) showCheckoutReceiptPrompt(result.receipt); }
-    if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); }
+    if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); document.querySelector("#bookingDialog").close(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
   } catch (error) { message.textContent = error.message; if (form.id === "saleForm") setSaleMessage(error.message, true); }
@@ -3757,6 +3774,40 @@ function updateCustomerMode() {
   const mode = document.querySelector('select[name="customerMode"]').value;
   document.querySelector(".customer-existing").classList.toggle("hidden", mode !== "existing");
   document.querySelector(".customer-new").classList.toggle("hidden", mode !== "new");
+  if (mode !== "existing") closeCustomerPicker();
+}
+function closeCustomerPicker() {
+  const picker = document.querySelector("#customerPicker");
+  picker.querySelector(".picker-results").classList.add("hidden");
+  picker.querySelector("input").setAttribute("aria-expanded", "false");
+  picker.querySelector("button").setAttribute("aria-expanded", "false");
+}
+function wirePickerKeyboard(picker, open, close) {
+  picker.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { close(); picker.querySelector("input").focus(); return; }
+    if (event.key === "Enter" && event.target.matches("input") && !picker.querySelector(".picker-results").classList.contains("hidden")) { const first = picker.querySelector(".picker-option"); if (first) { event.preventDefault(); first.click(); } return; }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (!event.target.matches("input, .picker-option")) return;
+    const options = [...picker.querySelectorAll(".picker-results:not(.hidden) .picker-option")];
+    if (!options.length) { open(); event.preventDefault(); picker.querySelector(".picker-option")?.focus(); return; }
+    const current = options.indexOf(document.activeElement);
+    if (current < 0 && event.key === "ArrowUp") return;
+    event.preventDefault();
+    options[(current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length].focus();
+  });
+}
+function renderCustomerPicker(open = false) {
+  const picker = document.querySelector("#customerPicker");
+  const input = picker.querySelector("input");
+  const menu = picker.querySelector(".picker-results");
+  if (!open) { closeCustomerPicker(); return; }
+  const query = input.value.trim().toLowerCase();
+  const customers = state.customers.filter((customer) => !query || customerLabel(customer).toLowerCase().includes(query)).slice(0, 12);
+  menu.innerHTML = customers.length ? customers.map((customer) => '<button class="picker-option" type="button" role="option" data-customer-id="' + esc(customer.id) + '"><strong>' + esc(customer.first_name + " " + customer.last_name) + '</strong><small>' + esc([customer.phone, customer.email].filter(Boolean).join(" · ")) + '</small></button>').join("") : '<p class="picker-empty">No matching customers</p>';
+  menu.querySelectorAll("[data-customer-id]").forEach((button) => button.addEventListener("click", () => { const customer = state.customers.find((item) => item.id === button.dataset.customerId); input.value = customerLabel(customer); closeCustomerPicker(); }));
+  menu.classList.remove("hidden");
+  input.setAttribute("aria-expanded", "true");
+  picker.querySelector(".picker-toggle").setAttribute("aria-expanded", "true");
 }
 async function saveBookingRow(event) {
   const row = event.target.closest("tr");
@@ -3953,7 +4004,7 @@ function updateSaleItemRow(row) {
   row.querySelector(".instance-edit").classList.toggle("hidden", selectedItem?.type !== "service");
   row.querySelector('input[name="instanceName"]').required = selectedItem?.type === "service";
   row.querySelector('input[name="instancePrice"]').required = selectedItem?.type === "service";
-  row.querySelector(".staff-area").classList.toggle("hidden", selectedItem?.type === "product");
+  row.querySelector(".staff-area").classList.toggle("hidden", selectedItem?.type !== "service");
   if (selectedItem?.type === "product") row.querySelector(".selected-staff").innerHTML = "";
   updateAllocationSummary(row);
   renderCartSummary();
@@ -4060,8 +4111,8 @@ function findStaff(value) { return state.staff.find((s) => staffLabel(s) === val
 function customerLabel(c) { return (c.first_name + " " + c.last_name + " | " + c.phone + " | " + c.email).trim(); }
 function saleCatalog() {
   return [
-    ...state.services.map((s) => ({ type:"service", typeLabel:"Service", id:s.id, name:s.name, priceCents:Number(s.price_cents || 0), label:"Service | " + s.name + " | " + s.category + " | " + money(s.price_cents) })),
-    ...(state.products || []).map((p) => { const priceCents = Number(p.special_price_cents || 0) > 0 ? Number(p.special_price_cents) : Number(p.price_cents || 0); return { type:"product", typeLabel:"Product", id:p.id, name:p.name, priceCents, label:"Product | " + p.name + " | " + (p.brand || p.category) + " | " + money(priceCents) }; })
+    ...state.services.map((s) => ({ type:"service", typeLabel:"Service", id:s.id, name:s.name, category:s.category || "General", subCategory:s.sub_category || "", priceCents:Number(s.price_cents || 0), label:"Service | " + s.name + " | " + s.category + " | " + money(s.price_cents) })),
+    ...(state.products || []).map((p) => { const priceCents = Number(p.special_price_cents || 0) > 0 ? Number(p.special_price_cents) : Number(p.price_cents || 0); return { type:"product", typeLabel:"Product", id:p.id, name:p.name, category:p.category || "General", subCategory:p.sub_category || "", priceCents, label:"Product | " + p.name + " | " + (p.brand || p.category) + " | " + money(priceCents) }; })
   ];
 }
 function saleQuickFindScore(item, query) {
@@ -4074,16 +4125,43 @@ function saleQuickFindScore(item, query) {
   if (label.includes(query)) return 4;
   return Number.POSITIVE_INFINITY;
 }
-function updateSaleQuickFind(value) {
-  const list = document.querySelector("#itemList");
-  const query = String(value || "").trim().toLowerCase();
-  if (query.length < 2) { list.innerHTML = ""; return; }
-  const matches = saleCatalog()
-    .map((item) => ({ item, score:saleQuickFindScore(item, query) }))
-    .filter((match) => Number.isFinite(match.score))
-    .sort((a, b) => a.score - b.score || a.item.name.localeCompare(b.item.name))
-    .slice(0, 6);
-  list.innerHTML = matches.map(({ item }) => '<option value="' + esc(item.label) + '"></option>').join("");
+function closeSalePicker(row) {
+  row.querySelector(".sale-picker-results")?.classList.add("hidden");
+  row.querySelector('input[name="saleItemSearch"]')?.setAttribute("aria-expanded", "false");
+  row.querySelector(".picker-toggle")?.setAttribute("aria-expanded", "false");
+}
+function renderSalePicker(row, open = false) {
+  const menu = row.querySelector(".sale-picker-results");
+  if (!open) { closeSalePicker(row); return; }
+  document.querySelectorAll(".sale-item").forEach((other) => { if (other !== row) closeSalePicker(other); });
+  const input = row.querySelector('input[name="saleItemSearch"]');
+  const query = input.value.trim().toLowerCase();
+  const catalog = saleCatalog();
+  const typedType = /^(product|products)(\\s|$)/i.test(query) ? "product" : /^(service|services)(\\s|$)/i.test(query) ? "service" : "";
+  let type = typedType || row.dataset.saleType || (findSaleItem(input.value)?.type || "service");
+  if (query && !typedType && row.dataset.saleTypeLocked !== "true" && !findSaleItem(input.value)) {
+    const best = (kind) => catalog.reduce((score, item) => item.type === kind ? Math.min(score, saleQuickFindScore(item, query)) : score, Number.POSITIVE_INFINITY);
+    const serviceScore = best("service"), productScore = best("product");
+    if (productScore < serviceScore) type = "product";
+    else if (serviceScore < productScore) type = "service";
+  }
+  row.dataset.saleType = type;
+  row.querySelectorAll("[data-sale-type]").forEach((button) => { const active = button.dataset.saleType === type; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); });
+  const categorySelect = row.querySelector(".sale-category-filter");
+  const oldCategory = categorySelect.value;
+  const categories = [...new Set(catalog.filter((item) => item.type === type).map((item) => item.category))].sort((a, b) => a.localeCompare(b));
+  categorySelect.innerHTML = '<option value="">All categories</option>' + categories.map((category) => '<option value="' + esc(category) + '">' + esc(category) + '</option>').join("");
+  categorySelect.value = categories.includes(oldCategory) ? oldCategory : "";
+  const matches = catalog.filter((item) => item.type === type && (!categorySelect.value || item.category === categorySelect.value))
+    .map((item) => ({ item, score:query ? saleQuickFindScore(item, query) : 0 }))
+    .filter((entry) => Number.isFinite(entry.score))
+    .sort((a, b) => a.score - b.score || a.item.name.localeCompare(b.item.name)).slice(0, 30);
+  const options = row.querySelector(".sale-picker-options");
+  options.innerHTML = matches.length ? matches.map(({ item }) => '<button class="picker-option sale-picker-option" type="button" role="option" data-item-key="' + esc(item.type + ":" + item.id) + '"><span><strong>' + esc(item.name) + '</strong><small>' + esc([item.category, item.subCategory].filter(Boolean).join(" · ")) + '</small></span><b>' + money(item.priceCents) + '</b></button>').join("") : '<p class="picker-empty">No matching items</p>';
+  options.querySelectorAll("[data-item-key]").forEach((button) => button.addEventListener("click", () => { const item = catalog.find((entry) => entry.type + ":" + entry.id === button.dataset.itemKey); input.value = item.label; updateSaleItemRow(row); closeSalePicker(row); }));
+  menu.classList.remove("hidden");
+  input.setAttribute("aria-expanded", "true");
+  row.querySelector(".picker-toggle").setAttribute("aria-expanded", "true");
 }
 function staffLabel(s) { return s.name + " | " + (s.phone || "No phone") + " | " + (s.email || "No email") + " | " + (s.branch_name || branchName(s.branch_id)); }
 function cssEsc(value) { return String(value).replace(/"/g, '\\"'); }
@@ -4170,7 +4248,7 @@ function styles() {
   return `
 :root { --ink:#1c1724; --muted:#716b79; --line:#e7e1ea; --soft:#f8f6f9; --brand:#5b1b6f; --brand-dark:#3b1048; --brand-soft:#f3eaf6; --gold:#d59b48; --surface:#fff; --success:#087f5b; }
 * { box-sizing:border-box; }
-body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; }
+body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Poppins,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; }
 .sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; overflow-y:auto; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
 .sidebar-footer { display:grid; gap:8px; margin-top:auto; padding-top:24px; }
 .sidebar-footer .nav { width:100%; border-top:1px solid #ffffff30; border-radius:0; }
@@ -4518,8 +4596,33 @@ legend { grid-column:1/-1; }
 .closure-list { display:flex; flex-wrap:wrap; gap:8px; }
 .closure-chip,.pin-code { display:inline-flex; padding:7px 10px; color:var(--brand); background:var(--brand-soft); border:1px solid #e3d3e8; border-radius:8px; font-weight:800; }
 .page-heading { margin-bottom:14px; }
-.sale-item { padding:14px; margin-bottom:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
+.sale-item { padding:14px; margin-bottom:12px; background:#fbfafc; border:1px solid var(--line); border-radius:10px; }
+.sale-picker { margin-bottom:8px; }
+.pos-search-picker { position:relative; min-width:0; }
+.pos-search-picker>input { margin:6px 0 0; padding-right:44px; }
+.picker-toggle { position:absolute; top:6px; right:0; width:42px; min-height:44px; padding:0; border:0; border-left:1px solid var(--line); border-radius:0 8px 8px 0; color:var(--brand); background:transparent; font-size:22px; line-height:1; }
+.picker-results { position:absolute; top:calc(100% + 5px); left:0; right:0; z-index:30; min-width:0; max-height:330px; overflow-y:auto; padding:6px; background:#fff; border:1px solid #d9d0df; border-radius:10px; box-shadow:0 18px 38px #2413282b; }
+.picker-option { display:flex; width:100%; min-height:48px; align-items:center; gap:10px; padding:8px 10px; border:0; border-radius:7px; color:var(--ink); background:#fff; text-align:left; font-weight:500; }
+.picker-option:hover,.picker-option:focus-visible { background:var(--brand-soft); outline:0; }
+.picker-option strong,.picker-option small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.picker-option small { color:var(--muted); font-size:11px; font-weight:400; }
+.picker-empty { margin:0; padding:14px 10px; color:var(--muted); font-size:13px; }
+.sale-picker-filters { display:grid; grid-template-columns:minmax(0,1fr) minmax(130px,.8fr); gap:8px; align-items:center; padding:4px 4px 8px; border-bottom:1px solid var(--line); }
+.sale-type-options { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:3px; background:#f4eff6; border-radius:8px; }
+.sale-type-options button { min-height:34px; padding:0 7px; color:var(--muted); background:transparent; border-radius:6px; font-size:12px; font-weight:600; }
+.sale-type-options button.active { color:var(--brand); background:#fff; box-shadow:0 1px 5px #2413281c; }
+.sale-category-filter { min-height:40px; margin:0; padding:0 8px; font-size:12px; }
+.sale-picker-options { padding-top:3px; }
+.sale-picker-option { justify-content:space-between; }
+.sale-picker-option span { min-width:0; }
+.sale-picker-option b { flex:0 0 auto; color:var(--brand); font-size:12px; }
+.instance-edit { margin:0 0 12px; }
+.instance-edit summary { width:max-content; color:var(--brand); cursor:pointer; font-size:12px; font-weight:600; }
+.instance-edit .grid { margin-top:10px; }
+.customer-existing { margin-bottom:12px; }
+.customer-existing>label { display:block; }
 .line-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:34px; margin:-4px 0 10px; }
+.line-meta:empty { display:none; }
 .line-meta strong { font-size:18px; }
 .cart-panel { position:sticky; top:20px; }
 .cart-summary { display:grid; gap:10px; min-height:120px; }
@@ -4606,10 +4709,18 @@ th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left;
 th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
-.booking-date-heading { display:flex; align-items:end; justify-content:space-between; gap:18px; }
+.booking-date-heading { display:flex; align-items:start; justify-content:space-between; gap:18px; }
 .diary-panel { min-width:0; grid-column:1/-1; order:-1; }
 #bookings .split { grid-template-columns:1fr; }
-#bookingForm { max-width:760px; }
+.booking-header-actions { display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+.booking-header-actions>#newBookingButton { white-space:nowrap; }
+.booking-dialog { width:min(680px,calc(100vw - 24px)); max-height:min(92dvh,900px); padding:0; overflow-y:auto; border:1px solid var(--line); border-radius:16px; color:var(--ink); background:#fff; box-shadow:0 24px 70px #28152d40; }
+.booking-dialog::backdrop { background:#1f1228a8; backdrop-filter:blur(2px); }
+.booking-dialog-form { padding:20px 24px 24px; }
+.booking-dialog-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
+.booking-dialog-heading h2 { margin:0; }
+.booking-dialog-close { width:36px; min-height:36px; padding:0; color:var(--muted); background:#f6f2f7; font-size:23px; font-weight:400; }
+.booking-dialog input,.booking-dialog select { margin-bottom:10px; }
 .diary-date-controls { display:flex; align-items:end; gap:8px; }
 .diary-date-controls button { min-height:44px; padding:0 12px; margin-bottom:14px; }
 .booking-legend { display:flex; justify-content:flex-end; gap:16px; margin-top:12px; color:var(--muted); font-size:12px; font-weight:800; }
@@ -4646,6 +4757,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 @media (max-width:1000px){ body{grid-template-columns:1fr}.sidebar{position:static;height:auto}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.payment-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search,.payment-heading label{width:100%}.time-clock-panel,.report-filters,.payment-methods,.payment-balance{grid-template-columns:1fr}.payment-methods button:last-child{grid-column:auto}.payment-allocation{grid-template-columns:minmax(0,1fr) auto}.payment-allocation button{grid-column:1/-1}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
 @media (max-width:700px){.service-hierarchy,.product-hierarchy{padding:14px}.service-subcategory-list,.product-subcategory-list{padding:10px}.service-hierarchy-item,.product-hierarchy-item{align-items:flex-start;flex-direction:column;padding:12px 16px}.service-hierarchy-item-meta,.product-hierarchy-item-meta{width:100%;justify-content:flex-start;flex-wrap:wrap}}
+@media (max-width:700px){.booking-date-heading{align-items:stretch;flex-direction:column}.booking-header-actions{justify-content:space-between}.diary-date-controls{width:100%;flex-wrap:wrap}.diary-date-controls label{flex:1 1 150px}.booking-dialog-form{padding:18px}.sale-picker-filters{grid-template-columns:1fr}.picker-results{max-height:50dvh}}
 
 /* Branch management */
 .branch-hours-table { min-width:480px; width:100%; table-layout:fixed; }.branch-hours-table th:last-child { width:68px; }.branch-hours-table td,.branch-hours-table th { padding:10px 8px; }.branch-hours-table input { width:100%; }
