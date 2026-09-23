@@ -41569,7 +41569,7 @@ function styles() {
 :root { --ink:#1c1724; --muted:#716b79; --line:#e7e1ea; --soft:#f8f6f9; --brand:#5b1b6f; --brand-dark:#3b1048; --brand-soft:#f3eaf6; --gold:#d59b48; --surface:#fff; --success:#087f5b; }
 * { box-sizing:border-box; }
 body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Poppins,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; transition:grid-template-columns .2s ease; }
-.sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; overflow-y:auto; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
+.sidebar { position:sticky; top:0; align-self:start; height:100vh; height:100dvh; min-height:0; display:flex; flex-direction:column; overflow-y:auto; overscroll-behavior:contain; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
 .sidebar-toggle { position:absolute; z-index:2; top:8px; right:8px; display:grid; place-items:center; width:30px; min-height:30px; padding:0; border:1px solid #ffffff66; border-radius:50%; color:#fff; background:#542064; box-shadow:0 3px 10px #230b2c55; font-size:24px; line-height:1; }
 .mobile-menu-button,.mobile-menu-close,.mobile-nav-backdrop{display:none}
 .sidebar-toggle span { display:block; transform:translateY(-1px); transition:transform .2s ease; }
@@ -42317,7 +42317,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 }
 @media(min-width:701px) and (max-width:1500px){
   body,body.sidebar-collapsed{grid-template-columns:224px minmax(0,1fr)}
-  .sidebar,.sidebar-collapsed .sidebar{position:static;display:flex;flex-direction:column;width:224px;height:auto;min-height:100dvh;min-width:0;padding:20px 12px;overflow:visible}
+  .sidebar,.sidebar-collapsed .sidebar{position:sticky;top:0;align-self:start;display:flex;flex-direction:column;width:224px;height:100vh;height:100dvh;min-height:0;min-width:0;padding:20px 12px;overflow-y:auto;overscroll-behavior:contain}
   .sidebar-toggle{display:none}
   .sidebar .brand,.sidebar-collapsed .brand{width:auto;margin:0 0 18px;padding:8px}
   .sidebar .brand img{max-width:190px}
