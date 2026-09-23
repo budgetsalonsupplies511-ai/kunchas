@@ -1,0 +1,1 @@
+ALTER TABLE sale_items ADD COLUMN service_note TEXT NOT NULL DEFAULT '';

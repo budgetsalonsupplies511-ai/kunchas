@@ -404,7 +404,7 @@ var equal2 = /* @__PURE__ */ __name((a, b) => {
   for (let i = 0; i < Math.max(a.length, b.length); i++) mismatch |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
   return mismatch === 0;
 }, "equal");
-var branchUser = /* @__PURE__ */ __name((id = "") => ({ id: "branch:" + id, role: "branch", name: "Branch POS", staffId: null, permissions: { pos: 2, bookings: 2, closing: 2, time_clock: 2, inventory: 1 }, allBranches: false, branchIds: id ? [id] : [] }), "branchUser");
+var branchUser = /* @__PURE__ */ __name((id = "") => ({ id: "branch:" + id, role: "branch", name: "Branch POS", staffId: null, permissions: { pos: 2, bookings: 2, customers: 2, closing: 2, time_clock: 2, inventory: 1 }, allBranches: false, branchIds: id ? [id] : [] }), "branchUser");
 async function limit(env, key2, max = 8) {
   const now = Math.floor(Date.now() / 1e3);
   const row = await first2(env, `INSERT INTO access_login_limits(key,attempts,reset_at) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN reset_at<=? THEN 1 ELSE attempts+1 END, reset_at=CASE WHEN reset_at<=? THEN excluded.reset_at ELSE reset_at END RETURNING attempts`, [key2, now + 900, now, now]);
@@ -442,18 +442,19 @@ async function branchGate(request, env, personal) {
   const saleAuthorization = method === "POST" && /^\/api\/sales\/[^/]+\/authorize$/.test(p);
   const special = p === "/api/pos-actors" || /^\/api\/sales\/[^/]+$/.test(p) || saleAuthorization;
   if (!shared && !special) return null;
-  const allowed = method === "GET" && ["/api/pos-data", "/api/pos-actors", "/api/checkout-bookings", "/api/pos-customers"].includes(p) || method === "POST" && ["/api/sales", "/api/daily-closing", "/api/cash-drawer-open", "/api/branch-bookings", "/api/time-clock", "/api/stock-movements"].includes(p) || ["GET", "PATCH"].includes(method) && /^\/api\/sales\/[^/]+$/.test(p) || method === "PATCH" && /^\/api\/(bookings|daily-closing)\/[^/]+$/.test(p);
+  const allowed = method === "GET" && ["/api/pos-data", "/api/pos-actors", "/api/checkout-bookings", "/api/pos-customers"].includes(p) || method === "GET" && /^\/api\/pos-customers\/[^/]+\/history$/.test(p) || method === "POST" && ["/api/sales", "/api/daily-closing", "/api/cash-drawer-open", "/api/branch-bookings", "/api/time-clock", "/api/stock-movements", "/api/pos-customers"].includes(p) || ["GET", "PATCH"].includes(method) && /^\/api\/sales\/[^/]+$/.test(p) || method === "PATCH" && /^\/api\/(bookings|daily-closing|pos-customers)\/[^/]+$/.test(p);
   if (!allowed && !saleAuthorization && !(method === "GET" && ["/api/closing-sales", "/api/recent-sales"].includes(p))) return personal ? null : { response: json({ error: "Use an individual login to access the dashboard." }, 403) };
   if (!shared && special && personal && !can(personal, "pos") && !(p === "/api/pos-actors" && (can(personal, "branches", true) || can(personal, "closing", true)))) return { response: json({ error: "Your account does not have POS access." }, 403) };
   const user = personal && !request.headers.get("x-branch-id") && special ? personal : shared || personal;
   if (!user) return { response: json({ error: "Open a branch with its PIN first." }, 401) };
   let branchId = text2(request.headers.get("x-branch-id") || url.searchParams.get("branchId"));
   const body = method === "GET" ? {} : await request.clone().json();
+  if (["POST", "PATCH"].includes(method) && (p === "/api/pos-customers" || /^\/api\/pos-customers\/[^/]+$/.test(p)) && !text2(body.phone)) return { response: json({ error: "Customer phone number is required in POS." }, 400) };
   if (branchId && body.branchId && branchId !== body.branchId) return { response: json({ error: "Branch mismatch." }, 403) };
   branchId = branchId || text2(body.branchId);
-  const resource = p.match(/^\/api\/(sales|bookings|daily-closing)\/([^/]+)(?:\/authorize)?$/);
+  const resource = p.match(/^\/api\/(sales|bookings|daily-closing|pos-customers)\/([^/]+)(?:\/authorize|\/history)?$/);
   if (resource) {
-    const table = resource[1] === "daily-closing" ? "daily_closings" : resource[1];
+    const table = resource[1] === "daily-closing" ? "daily_closings" : resource[1] === "pos-customers" ? "customers" : resource[1];
     const record = await first2(env, "SELECT branch_id FROM " + table + " WHERE id=?", [decodeURIComponent(resource[2])]);
     if (!record) return { response: json({ error: "Record not found." }, 404) };
     if (branchId && branchId !== record.branch_id) return { response: json({ error: "Branch mismatch." }, 403) };
@@ -613,7 +614,7 @@ async function openSaleEditor(id){
     await api('/api/sales/'+encodeURIComponent(id)+'/authorize',{method:'POST',body:JSON.stringify(approval)});
     editingSale=await api('/api/sales/'+encodeURIComponent(id));const form=document.querySelector('#saleEditForm'),sale=editingSale.sale;
     saleEditActor=approval;
-    document.querySelector('#saleEditItems').innerHTML=editingSale.items.map(item=>'<div class="grid" data-edit-item="'+esc(item.id)+'"><label>Item (quantity '+esc(item.quantity)+')<input name="itemName" value="'+esc(item.item_name)+'" required></label><label>Unit price $<input name="itemPrice" type="number" min="0.01" step="0.01" value="'+dollars(item.price_cents)+'" required></label></div>').join('');
+    document.querySelector('#saleEditItems').innerHTML=editingSale.items.map(item=>'<div class="grid" data-edit-item="'+esc(item.id)+'"><label>Item (quantity '+esc(item.quantity)+')<input name="itemName" value="'+esc(item.item_name)+'" required>'+(item.service_note?'<small class="customer-service-note">Service note: '+esc(item.service_note)+'</small>':'')+'</label><label>Unit price $<input name="itemPrice" type="number" min="0.01" step="0.01" value="'+dollars(item.price_cents)+'" required></label></div>').join('');
     const method=sale.payment_method||'',cash=method.match(/cash \\$([0-9.]+)/i),card=method.match(/card \\$([0-9.]+)/i);
     form.elements.cashAmount.value=dollars(sale.cash_cents??(cash?Math.round(Number(cash[1])*100):/cash/i.test(method)?sale.total_cents:0));
     form.elements.cardAmount.value=dollars(sale.card_cents??(card?Math.round(Number(card[1])*100):/card/i.test(method)?sale.total_cents:0));
@@ -36113,6 +36114,8 @@ function canManageAccess() { return ["owner","admin"].includes(currentUser?.role
 function canViewTab(tab) { return tab === "access" ? canManageAccess() : tab === "reports" ? userCan("reports") || userCan("payroll") : userCan(tabPermissions[tab]); }
 function roleName(role) { return ({owner:"SuperAdmin (Owner)",admin:"Admin",manager:"Manager",staff:"Staff",none:"No access"})[role] || "No access"; }
 function applyAccessUi() {
+  document.querySelectorAll('#customerForm [name="phone"],#customerProfileForm [name="phone"]').forEach((input) => { input.required = appMode === "staff"; });
+  document.querySelectorAll("#customerForm p.hint,#customerProfileForm p.hint").forEach((hint) => { if (appMode === "staff") hint.textContent = "Phone number is required in POS."; });
   document.querySelector("#addStaffButton").hidden=!userCan("staff",true)||!currentUser.allBranches;
   document.querySelector("#deleteStaffButton").hidden=!userCan("staff",true)||!currentUser.allBranches;
   document.querySelector("#addCustomerButton").hidden=!userCan("customers",true);
@@ -36317,6 +36320,9 @@ var application = {
       if (request.method === "GET" && url.pathname === "/api/reports/export") return exportReport(url, env, ctx.identity);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/daily-closing/")) return updateDailyClosing(request, env, clean(url.pathname.replace("/api/daily-closing/", "")));
       if (request.method === "GET" && ["/api/customers/search", "/api/pos-customers"].includes(url.pathname)) return searchCustomers(url, env, ctx.identity);
+      if (request.method === "GET" && /^\/api\/pos-customers\/[^/]+\/history$/.test(url.pathname)) return posCustomerHistory(env, decodeURIComponent(url.pathname.split("/")[3]), clean(request.headers.get("x-branch-id")) || ctx.identity.branchIds?.[0]);
+      if (request.method === "POST" && url.pathname === "/api/pos-customers") return createCustomer(request, env);
+      if (request.method === "PATCH" && /^\/api\/pos-customers\/[^/]+$/.test(url.pathname)) return updateCustomer(request, env, decodeURIComponent(url.pathname.split("/")[3]));
       if (request.method === "POST" && url.pathname === "/api/customers") return createCustomer(request, env);
       if (request.method === "GET" && url.pathname === "/api/customers/export") return exportCustomers(url, env);
       if (request.method === "POST" && url.pathname === "/api/customers/import") return importCustomers(request, env);
@@ -36476,6 +36482,17 @@ async function searchCustomers(url, env, identity2) {
   return jsonResponse({ customers: rows4.slice(0, 50), hasMore: rows4.length > 50 });
 }
 __name(searchCustomers, "searchCustomers");
+async function posCustomerHistory(env, customerId, branchId) {
+  const customer = await env.DB.prepare("SELECT id FROM customers WHERE id=? AND branch_id=?").bind(customerId, branchId).first();
+  if (!customer) return jsonResponse({ error: "Customer not found for this branch." }, 404);
+  const sales = await all(env, "SELECT id,created_at,branch_id,customer_id,total_cents,payment_method,status FROM sales WHERE customer_id=? AND branch_id=? ORDER BY created_at DESC LIMIT 100", [customerId, branchId]);
+  if (!sales.length) return jsonResponse({ sales: [], items: [] });
+  const items = await all(env, `SELECT si.sale_id,si.item_name,si.price_cents,si.staff_ids,si.service_note,b.name AS branch_name
+    FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN branches b ON b.id=s.branch_id
+    WHERE s.customer_id=? AND s.branch_id=? ORDER BY s.created_at DESC LIMIT 200`, [customerId, branchId]);
+  return jsonResponse({ sales, items });
+}
+__name(posCustomerHistory, "posCustomerHistory");
 async function listPublicBranches(env) {
   const branches = await all(env, "SELECT id, name, address FROM branches WHERE status = 'Open' ORDER BY name");
   return jsonResponse({ branches });
@@ -37634,6 +37651,7 @@ async function createSale(request, env) {
       serviceId: isProduct ? null : record.id,
       productId: isProduct ? record.id : null,
       name: isProduct ? record.name : clean(item.instanceName) || record.name,
+      serviceNote: isProduct ? "" : clean(item.serviceNote).slice(0, 1e3),
       priceCents: !isProduct && instancePriceCents > 0 ? instancePriceCents : isProduct && Number(record.special_price_cents || 0) > 0 ? Number(record.special_price_cents) : Number(record.price_cents || 0),
       staffIds: isProduct ? [] : Array.isArray(item.staffIds) ? item.staffIds.map(clean).filter(Boolean) : [],
       staffAllocations: isProduct ? [] : normalizeStaffAllocations(item.staffAllocations)
@@ -37700,8 +37718,8 @@ async function createSale(request, env) {
     ),
     ...saleItems.map(
       (item) => env.DB.prepare(
-        "INSERT INTO sale_items (id, sale_id, item_name, quantity, price_cents, service_id, staff_ids, staff_allocations) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-      ).bind(crypto.randomUUID(), id, item.name, 1, item.priceCents, item.serviceId, JSON.stringify(item.staffIds), JSON.stringify(item.staffAllocations))
+        "INSERT INTO sale_items (id, sale_id, item_name, quantity, price_cents, service_id, staff_ids, staff_allocations, service_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).bind(crypto.randomUUID(), id, item.name, 1, item.priceCents, item.serviceId, JSON.stringify(item.staffIds), JSON.stringify(item.staffAllocations), item.serviceNote)
     )
   ];
   if (booking) {
@@ -37912,6 +37930,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       <button ${can(accessUser, "branches") ? "" : "hidden"} class="nav" data-tab="branches">${appIcon("branches")}<span>Branches</span></button>
       ` : `
       <button class="nav ${initialTab === "pos" ? "active" : ""}" data-tab="pos">${appIcon("pos")}<span>POS</span></button>
+      <button class="nav" data-tab="customers">${appIcon("customers")}<span>Customers</span></button>
       <button class="nav ${initialTab === "bookings" ? "active" : ""}" data-tab="bookings">${appIcon("bookings")}<span>Bookings</span></button>
       <button class="nav" data-tab="recent-sales">${appIcon("sales")}<span>Recent Sales</span></button>
       <button class="nav" data-tab="receive-products">${appIcon("inventory")}<span>Receive products</span></button>
@@ -38082,7 +38101,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       <dialog class="booking-dialog booking-success-dialog" id="bookingSuccessDialog" aria-labelledby="bookingSuccessTitle"><div class="booking-success-body"><div class="booking-success-mark" aria-hidden="true">✓</div><h2 id="bookingSuccessTitle">Booking complete</h2><div id="bookingSuccessSummary" class="booking-success-summary"></div><div class="booking-success-actions"><button class="secondary" id="bookingSuccessClose" type="button">Close</button><button class="primary" id="bookingSuccessEdit" type="button">Edit booking</button></div></div></dialog>
     </section>
 
-    <section class="tab admin-only" id="customers">
+    <section class="tab" id="customers">
       <div class="section-heading page-heading"><div><p class="eyebrow">Customer records</p><h2>Customers</h2><p class="hint">Find a customer or add a new record.</p></div><div class="excel-actions"><button class="primary" id="addCustomerButton" type="button">+ Add customer</button>${accessUser.role === "owner" ? `<button class="secondary" id="exportCustomersButton" type="button">Export customers</button><button class="secondary" id="importCustomersButton" type="button">Import customers</button><input class="hidden" id="customerImportFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">` : ""}</div></div>
       ${accessUser.role === "owner" ? `<p class="hint">Import files must be named for their branch, for example <strong>ashfield.XLS</strong>. Existing rows are updated by branch and customer number.</p><p id="customerImportResult" role="status"></p>` : ""}
       <div class="panel customer-directory"><h2>Find a customer</h2><p class="hint">The customer list stays closed. Search by name, email, phone number, or customer number.</p><label class="customer-directory-search"><span>Search customers</span><input id="customerDirectorySearch" type="search" placeholder="Name, email, phone or customer number" autocomplete="off"></label><p class="hint" id="customerSearchStatus" role="status">Enter at least 2 characters to search.</p><div class="table-wrap hidden" id="customerSearchResults"><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Customer no.</th><th>Branch</th></tr></thead><tbody id="customersTable"></tbody></table></div></div>
@@ -38616,7 +38635,7 @@ async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (appMode === "staff") headers["x-pos-workspace"] = "1";
   else if (currentUser.managerBranchId) headers["x-branch-id"] = currentUser.managerBranchId;
-  if (selectedPosBranchId && (path.startsWith("/api/checkout-bookings") || path === "/api/pos-data" || path === "/api/sales" || path === "/api/stock-movements" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
+  if (selectedPosBranchId && (path.startsWith("/api/checkout-bookings") || path.startsWith("/api/pos-customers") || path === "/api/pos-data" || path === "/api/sales" || path === "/api/stock-movements" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
     headers["x-branch-id"] = selectedPosBranchId;
 
   }
@@ -39982,9 +40001,10 @@ async function searchCustomersDirectory() {
   if (query.length < 2) return;
   const requestId = ++customerSearchRequest;
   const params = new URLSearchParams({ q:query });
-  if (selectedGlobalBranchId) params.set("branchId", selectedGlobalBranchId);
+  if (appMode === "staff") params.set("branchId", selectedPosBranchId);
+  else if (selectedGlobalBranchId) params.set("branchId", selectedGlobalBranchId);
   try {
-    const result = await api("/api/customers/search?" + params);
+    const result = await api((appMode === "staff" ? "/api/pos-customers?" : "/api/customers/search?") + params);
     if (requestId !== customerSearchRequest) return;
     customerSearchResults = result.customers || [];
     for (const customer of customerSearchResults) {
@@ -39994,7 +40014,14 @@ async function searchCustomersDirectory() {
     renderCustomers();
     document.querySelector("#customerSearchStatus").textContent = result.hasMore ? "Showing the first 50 matches. Add more detail to narrow the search." : customerSearchResults.length === 1 ? "1 customer found." : customerSearchResults.length + " customers found.";
   } catch (error) {
-    if (requestId === customerSearchRequest) document.querySelector("#customerSearchStatus").textContent = error.message;
+    if (requestId === customerSearchRequest) {
+      if (appMode === "staff" && offlineNetworkError(error)) {
+        const q = query.toLowerCase();
+        customerSearchResults = state.customers.filter(customer => [customer.first_name + " " + customer.last_name, customer.email, customer.phone, customer.external_ref].some(value => String(value || "").toLowerCase().includes(q))).slice(0, 50);
+        renderCustomers();
+        document.querySelector("#customerSearchStatus").textContent = "Showing customers saved on this device.";
+      } else document.querySelector("#customerSearchStatus").textContent = error.message;
+    }
   }
 }
 function renderCustomers() {
@@ -40033,17 +40060,23 @@ function openCustomerProfile(customerId) {
   form.elements.tags.value = customer.tags || "";
   form.elements.notes.value = customer.notes || "";
   const sales = state.sales.filter((sale) => sale.customer_id === customer.id);
-  const spent = sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
   document.querySelector("#customerProfileTitle").textContent = customer.first_name + " " + customer.last_name;
-  document.querySelector("#customerProfileSummary").textContent = sales.length + " sale" + (sales.length === 1 ? "" : "s") + " \xB7 " + money(spent) + " total spent";
-  const saleById = Object.fromEntries(sales.map((sale) => [sale.id, sale]));
-  const history = (state.saleItems || []).filter((item) => saleById[item.sale_id]);
-  document.querySelector("#customerHistoryTable").innerHTML = history.length ? history.map((item) => {
-    const sale = saleById[item.sale_id];
-    return '<tr><td>' + esc(formatCustomerDate(sale.created_at)) + '</td><td><strong>' + esc(item.branch_name || sale.branch_name || "") + '</strong></td><td>' + esc(item.item_name) + '</td><td>' + esc(customerSaleStaff(item)) + '</td><td>' + money(item.price_cents) + '</td><td>' + esc(sale.payment_method || "") + '</td></tr>';
-  }).join("") : '<tr><td colspan="6" class="empty-cell">No sales recorded for this customer yet.</td></tr>';
+  renderCustomerProfileHistory(sales, (state.saleItems || []).filter((item) => sales.some((sale) => sale.id === item.sale_id)));
   const dialog = document.querySelector("#customerProfile");
   if (!dialog.open) dialog.showModal();
+  if (appMode === "staff" && navigator.onLine) api("/api/pos-customers/" + encodeURIComponent(customerId) + "/history").then((result) => {
+    if (form.elements.customerId.value === customerId) renderCustomerProfileHistory(result.sales || [], result.items || []);
+  }).catch(() => {});
+}
+function renderCustomerProfileHistory(sales, history) {
+  const spent = sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
+  document.querySelector("#customerProfileSummary").textContent = sales.length + " sale" + (sales.length === 1 ? "" : "s") + " · " + money(spent) + " total spent";
+  const saleById = Object.fromEntries(sales.map((sale) => [sale.id, sale]));
+  document.querySelector("#customerHistoryTable").innerHTML = history.length ? history.map((item) => {
+    const sale = saleById[item.sale_id];
+    if (!sale) return "";
+    return '<tr><td>' + esc(formatCustomerDate(sale.created_at)) + '</td><td><strong>' + esc(item.branch_name || sale.branch_name || "") + '</strong></td><td>' + esc(item.item_name) + (item.service_note ? '<small class="customer-service-note">' + esc(item.service_note) + '</small>' : '') + '</td><td>' + esc(customerSaleStaff(item)) + '</td><td>' + money(item.price_cents) + '</td><td>' + esc(sale.payment_method || "") + '</td></tr>';
+  }).join("") : '<tr><td colspan="6" class="empty-cell">No sales recorded for this customer yet.</td></tr>';
 }
 function customerSaleStaff(item) {
   let ids = [];
@@ -40350,10 +40383,13 @@ function addSaleItem(selectedItem = null, selectedStaffId = "", requestedType = 
   const row = document.createElement("div");
   row.className = "sale-item";
   row.dataset.itemType = selectedItem?.type || requestedType;
-  row.innerHTML = '<div class="sale-item-heading"><span class="field-label">Service or product</span><span class="sale-item-kind hidden"></span><button class="sale-item-remove" type="button" aria-label="Remove item" title="Remove">×</button></div><div class="sale-item-picker"><div class="pos-search-picker"><input name="saleItemSearch" type="search" autocomplete="off" required placeholder="Search or choose an item" role="combobox" aria-label="Search services and products" aria-autocomplete="list" aria-expanded="false"><button class="sale-picker-toggle" type="button" aria-label="Browse services and products" aria-expanded="false">⌄</button><div class="sale-picker-menu hidden"><div class="sale-picker-types" role="group" aria-label="Item type"><button type="button" data-sale-type="service">Services</button><button type="button" data-sale-type="product">Products</button></div><div class="sale-picker-filters"><select name="saleItemCategory" aria-label="Category"></select><select name="saleItemSubCategory" aria-label="Sub-category"></select></div><div class="sale-picker-options" role="listbox"></div></div></div></div><div class="line-meta"></div><details class="instance-edit hidden"><summary>Edit name or price</summary><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div></details><div class="staff-area hidden"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Type staff name, phone, or email"><button class="secondary add-staff" type="button">Add</button></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
+  row.innerHTML = '<div class="sale-item-heading"><span class="field-label">Service or product</span><span class="sale-item-kind hidden"></span><button class="sale-item-remove" type="button" aria-label="Remove item" title="Remove">×</button></div><div class="sale-item-picker"><div class="pos-search-picker"><input name="saleItemSearch" type="search" autocomplete="off" required placeholder="Search or choose an item" role="combobox" aria-label="Search services and products" aria-autocomplete="list" aria-expanded="false"><button class="sale-picker-toggle" type="button" aria-label="Browse services and products" aria-expanded="false">⌄</button><div class="sale-picker-menu hidden"><div class="sale-picker-types" role="group" aria-label="Item type"><button type="button" data-sale-type="service">Services</button><button type="button" data-sale-type="product">Products</button></div><div class="sale-picker-filters"><select name="saleItemCategory" aria-label="Category"></select><select name="saleItemSubCategory" aria-label="Sub-category"></select></div><div class="sale-picker-options" role="listbox"></div></div></div></div><div class="line-meta"></div><details class="instance-edit hidden"><summary>Edit name or price</summary><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div></details><div class="staff-area hidden"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Select staff by name, phone, or email" aria-label="Select staff for this service"></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div><label class="service-note hidden">Service note<textarea name="serviceNote" rows="2" maxlength="1000" placeholder="Optional note about this service"></textarea></label>';
   document.querySelector("#saleItems").append(row);
   row.querySelector(".sale-item-remove").addEventListener("click", () => { row.remove(); renderCartSummary(); });
-  row.querySelector(".add-staff").addEventListener("click", () => addStaffToSaleItem(row));
+  const staffInput = row.querySelector('input[name="saleStaffSearch"]');
+  staffInput.addEventListener("input", () => { if (findStaff(staffInput.value)) addStaffToSaleItem(row); });
+  staffInput.addEventListener("change", () => { if (findStaff(staffInput.value)) addStaffToSaleItem(row); });
+  staffInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && findStaff(staffInput.value)) { event.preventDefault(); addStaffToSaleItem(row); } });
   const input = row.querySelector('input[name="saleItemSearch"]');
   input.addEventListener("input", () => { updateSaleItemRow(row); renderSaleItemPicker(row); });
   input.addEventListener("focus", () => renderSaleItemPicker(row, Boolean(findSaleItem(input.value))));
@@ -40373,6 +40409,7 @@ function addSaleItem(selectedItem = null, selectedStaffId = "", requestedType = 
   });
   row.querySelector('input[name="instanceName"]').addEventListener("input", renderCartSummary);
   row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { rebalanceStaffAllocations(row, null, "preserve"); renderCartSummary(); });
+  row.querySelector('textarea[name="serviceNote"]').addEventListener("input", renderCartSummary);
   if (selectedItem) input.value = selectedItem.label;
   updateSaleItemRow(row);
   if (selectedStaffId && selectedItem?.type === "service") {
@@ -40486,8 +40523,10 @@ async function submitCustomer(event) {
   button.disabled = true;
   try {
     message.textContent = "Saving customer...";
-    await api("/api/customers", { method:"POST", body:JSON.stringify(Object.fromEntries(new FormData(form))) });
-    form.reset(); closeCustomerEditor(); await loadData();
+    await api(appMode === "staff" ? "/api/pos-customers" : "/api/customers", { method:"POST", body:JSON.stringify(Object.fromEntries(new FormData(form))) });
+    form.reset(); closeCustomerEditor();
+    if (appMode === "staff") { await refreshPosData(); if (document.querySelector("#customerDirectorySearch").value.trim().length >= 2) await searchCustomersDirectory(); }
+    else await loadData();
     message.textContent = "Customer saved.";
   } catch (error) { message.textContent = error.message; }
   finally { button.disabled = false; }
@@ -40499,7 +40538,7 @@ async function submitCustomerProfile(event) {
   const customerId = data.customerId;
   try {
     message.textContent = "Saving customer details...";
-    await api("/api/customers/" + encodeURIComponent(customerId), { method:"PATCH", body:JSON.stringify(data) });
+    await api((appMode === "staff" ? "/api/pos-customers/" : "/api/customers/") + encodeURIComponent(customerId), { method:"PATCH", body:JSON.stringify(data) });
     const customer = state.customers.find((item) => item.id === customerId);
     if (customer) Object.assign(customer, { first_name:data.firstName, last_name:data.lastName, email:data.email, phone:data.phone, branch_id:data.branchId, tags:data.tags, notes:data.notes, branch_name:branchName(data.branchId) });
     const resultIndex = customerSearchResults.findIndex((item) => item.id === customerId);
@@ -40605,6 +40644,7 @@ async function submitSale(event) {
       itemId: selectedItem.id,
       instanceName: selectedItem.type === "service" ? row.querySelector('input[name="instanceName"]').value : "",
       instancePrice: selectedItem.type === "service" ? row.querySelector('input[name="instancePrice"]').value : "",
+      serviceNote: selectedItem.type === "service" ? row.querySelector('textarea[name="serviceNote"]').value : "",
       staffIds: selectedItem.type === "service" ? [...row.querySelectorAll('input[name="saleStaffIds"]:checked')].map((input) => input.value) : [],
       staffAllocations: selectedItem.type === "service" ? [...row.querySelectorAll(".staff-chip")].map((chip) => ({
         staffId: chip.querySelector('input[name="saleStaffIds"]').value,
@@ -40921,9 +40961,9 @@ function renderCartSummary() {
     const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]')?.value);
     if (!item) return null;
     const staffNames = item.type === "service" ? [...row.querySelectorAll('input[name="saleStaffIds"]:checked')].map((input) => state.staff.find((staff) => staff.id === input.value)?.name).filter(Boolean) : [];
-    return { ...item, staffNames, name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
+    return { ...item, staffNames, serviceNote:item.type === "service" ? row.querySelector('textarea[name="serviceNote"]').value.trim() : "", name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
   }).filter(Boolean);
-  document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + '</em>' + (item.staffNames.length ? '<small class="cart-staff">Staff: ' + esc(item.staffNames.join(", ")) + '</small>' : '') + '</span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
+  document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + '</em>' + (item.staffNames.length ? '<small class="cart-staff">Staff: ' + esc(item.staffNames.join(", ")) + '</small>' : '') + (item.serviceNote ? '<small class="cart-service-note">Note: ' + esc(item.serviceNote) + '</small>' : '') + '</span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
   const total = selectedItems.reduce((sum, item) => sum + item.priceCents, 0);
   document.querySelector("#cartTotal").textContent = money(total);
   document.querySelector("#checkoutTotal").textContent = money(total);
@@ -41013,6 +41053,7 @@ function updateSaleItemRow(row) {
     row.dataset.itemType = selectedItem.type;
     row.querySelector('input[name="instanceName"]').value = selectedItem.name;
     row.querySelector('input[name="instancePrice"]').value = (selectedItem.priceCents / 100).toFixed(2);
+    row.querySelector('textarea[name="serviceNote"]').value = "";
   }
   row.dataset.itemKey = itemKey;
   row.querySelector(".sale-item-kind").textContent = selectedItem?.typeLabel || "";
@@ -41022,6 +41063,7 @@ function updateSaleItemRow(row) {
   row.querySelector('input[name="instanceName"]').required = selectedItem?.type === "service";
   row.querySelector('input[name="instancePrice"]').required = selectedItem?.type === "service";
   row.querySelector(".staff-area").classList.toggle("hidden", selectedItem?.type !== "service");
+  row.querySelector(".service-note").classList.toggle("hidden", selectedItem?.type !== "service");
   if (selectedItem?.type === "product") row.querySelector(".selected-staff").innerHTML = "";
   updateAllocationSummary(row);
   renderCartSummary();
@@ -41745,8 +41787,11 @@ legend { grid-column:1/-1; }
 .staff-checks { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .mini-check { display:flex; align-items:center; gap:8px; min-height:44px; padding:10px; margin:0; background:#fff; border:1px solid var(--line); border-radius:8px; font-weight:700; }
 .mini-check input { width:auto; min-height:auto; margin:0; }
-.staff-add-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:start; }
+.staff-add-row { display:block; min-width:0; }
 .staff-add-row input { margin-top:0; }
+.service-note { margin-top:12px; }
+.service-note textarea { display:block; margin:6px 0 0; min-height:76px; line-height:1.5; }
+.cart-service-note,.customer-service-note { display:block; margin-top:4px; color:var(--muted); font-size:12px; font-weight:500; white-space:pre-wrap; overflow-wrap:anywhere; }
 .booking-service-picker { margin-bottom:14px; }
 .booking-service-picker>.field-label { margin-bottom:6px; }
 .booking-service-picker .sale-picker-menu { max-height:280px; }
@@ -41903,6 +41948,42 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .branch-action-dialog { width:min(520px,calc(100vw - 32px)); }.branch-action-warning { padding:16px; border:1px solid #eed7b4; background:#fff8eb; color:#715321; border-radius:10px; font-size:14px; line-height:1.6; margin-bottom:20px; }
 .branch-dialog [hidden] { display:none!important; }
 @media(max-width:700px){.branch-dialog-header,.branch-dialog-body{padding:18px}.branch-dialog-footer{padding:14px 18px}.branch-form-section{padding:14px}.branch-form-section .section-heading{flex-wrap:wrap;gap:12px}.branch-closure-row{grid-template-columns:1fr}.branch-closure-row button{justify-self:start}.branch-dialog .grid{gap:0}}
+@media(max-width:1200px){
+  body,body.sidebar-collapsed{grid-template-columns:minmax(0,1fr)}
+  .sidebar,.sidebar-collapsed .sidebar{position:relative;top:auto;display:grid;grid-template-columns:130px minmax(0,1fr);align-items:center;gap:8px 14px;width:100%;height:auto;min-width:0;padding:8px 16px;overflow:visible}
+  .sidebar-toggle{display:none}
+  .sidebar .brand,.sidebar-collapsed .brand{width:130px;margin:0;padding:4px}
+  .sidebar .brand img{max-width:120px}
+  .sidebar nav,.sidebar-collapsed nav{display:flex;align-items:center;gap:5px;min-width:0;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin}
+  .sidebar .nav,.sidebar-collapsed .nav{flex:0 0 auto;justify-content:center;gap:7px;min-height:44px;padding:8px 11px;white-space:nowrap;font-size:13px}
+  .sidebar-collapsed .nav span{display:inline}
+  .sidebar .sidebar-footer,.sidebar-collapsed .sidebar-footer{grid-column:1/-1;display:flex;align-items:center;gap:5px;width:100%;min-width:0;margin:0;padding:0;overflow-x:auto;border-top:1px solid #ffffff30}
+  .sidebar .sidebar-footer .nav,.sidebar-collapsed .sidebar-footer .nav{width:auto;border-top:0}
+  .sidebar .sidebar-user,.sidebar-collapsed .sidebar-user{padding:6px 0;border-top:0}
+  .sidebar-collapsed .sidebar-user>span:last-child{display:block}
+  .app{min-width:0;padding:16px 20px 36px}
+  .topbar{display:flex;align-items:center;gap:12px;min-width:0;margin:-16px -20px 16px;padding:14px 20px}
+  .topbar>*{min-width:0}
+  .topbar h1{font-size:clamp(21px,3vw,28px);overflow-wrap:anywhere}
+  .account-tools{padding:8px 20px}
+  .split{grid-template-columns:minmax(0,1fr)}
+  .split>*,.pos-flow-panel,.sale-item,.panel{min-width:0}
+  .cart-panel{position:static;top:auto}
+  input,select,textarea{font-size:16px}
+  .table-wrap{max-width:100%;overflow-x:auto}
+}
+@media(max-width:700px){
+  .sidebar,.sidebar-collapsed .sidebar{grid-template-columns:100px minmax(0,1fr);gap:4px 8px;padding:7px 10px}
+  .sidebar .brand,.sidebar-collapsed .brand{width:100px}
+  .sidebar .brand img{max-width:94px}
+  .sidebar .nav,.sidebar-collapsed .nav{padding:7px 9px;font-size:12px}
+  .sidebar .nav .ui-icon{width:17px;height:17px}
+  .app{padding:12px 12px 28px}
+  .topbar{margin:-12px -12px 14px;padding:12px}
+  .account-tools{padding:8px 12px}
+  .panel{padding:16px}
+  .cart-summary{min-height:0}
+}
 `;
 }
 __name(styles, "styles");

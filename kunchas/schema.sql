@@ -162,7 +162,8 @@ CREATE TABLE IF NOT EXISTS sale_items (
   price_cents INTEGER NOT NULL,
   service_id TEXT,
   staff_ids TEXT DEFAULT '[]',
-  staff_allocations TEXT DEFAULT '[]'
+  staff_allocations TEXT DEFAULT '[]',
+  service_note TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS branch_hours (
