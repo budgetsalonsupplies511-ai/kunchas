@@ -38025,9 +38025,9 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
         <div class="bookings-chart" id="bookingsChart"></div>
       </div>
       <div class="dashboard-lower-grid">
-        <div class="panel dashboard-list-panel"><div class="section-heading"><h2>Coming up next</h2><span class="text-link">View all</span></div><div class="dashboard-upcoming" id="dashboardUpcoming"></div></div>
-        <div class="panel dashboard-list-panel"><div class="section-heading"><div><h2>Staff on shift</h2><p class="hint" id="dashboardRosterDate"></p></div><span class="text-link">View all</span></div><div class="dashboard-roster" id="dashboardRoster"></div></div>
-        <div class="panel dashboard-list-panel"><div class="section-heading"><h2>Activity feed</h2><span class="text-link">View all</span></div><div class="dashboard-activity" id="dashboardActivity"></div></div>
+        <div class="panel dashboard-list-panel"><div class="section-heading"><h2>Coming up next</h2></div><div class="dashboard-upcoming" id="dashboardUpcoming"></div></div>
+        <div class="panel dashboard-list-panel"><div class="section-heading"><div><h2>Staff on shift</h2><p class="hint" id="dashboardRosterDate"></p></div></div><div class="dashboard-roster" id="dashboardRoster"></div></div>
+        <div class="panel dashboard-list-panel"><div class="section-heading"><h2>Activity feed</h2></div><div class="dashboard-activity" id="dashboardActivity"></div></div>
       </div>
     </section>
 
@@ -38179,7 +38179,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
     </section>
     <section class="tab admin-only" id="services">
       <div class="section-heading page-heading"><div><h2>Services</h2><p class="hint">Click a service in the list to edit its name, price, timing, category, or status.</p></div><button class="primary" id="addServiceButton" type="button" aria-controls="serviceEditorDialog" aria-expanded="false">Add service</button></div>
-      <div class="panel service-excel-panel"><div class="section-heading"><div><p class="eyebrow">Primary catalogue tool</p><h3>Update services with Excel</h3><p class="hint">Download the workbook, complete one row per service, and import it here. Category and Sub-category are required so services stay organised throughout Admin, Bookings, and POS.</p></div><div class="excel-actions"><a class="secondary button-link" href="/api/services/export">Download Excel template</a><button class="primary" id="importServicesButton" type="button">Import services</button><input class="hidden" id="serviceImportFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"></div></div><p class="hint">Columns: Service ID, Name, Category, Sub-category, Duration minutes, Price, Status. Keep an existing Service ID to update that row; leave it blank to add a service.</p><p id="serviceImportResult" role="status"></p></div><dialog class="branch-dialog catalogue-editor-dialog" id="serviceEditorDialog"><form id="serviceForm"><div class="branch-dialog-header"><div><p class="eyebrow">Service details</p><h2 id="serviceFormTitle">Add service</h2></div><button class="secondary branch-icon-button" id="closeServiceEditor" type="button" aria-label="Close service details">\u2715</button></div><div class="branch-dialog-body"><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<select name="category" id="serviceCategorySelect" required></select></label></div><label id="newServiceCategoryLabel" class="hidden">New category<input name="newCategory" placeholder="Enter a new category" disabled></label><div class="grid"><label>Sub-category<select name="subCategory" id="serviceSubCategorySelect" required></select></label><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label></div><div class="grid"><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><label id="newServiceSubCategoryLabel" class="hidden">New sub-category<input name="newSubCategory" placeholder="Enter a new sub-category" disabled></label></div><div class="branch-dialog-footer"><button class="secondary" id="cancelServiceEdit" type="button">Cancel</button><button class="danger hidden" id="deleteServiceButton" type="button">Delete service</button><button class="primary" id="serviceSaveButton" type="submit">Save service</button></div></form></dialog>
+      <div class="panel service-excel-panel"><div class="section-heading"><div><p class="eyebrow">Excel tools</p><h3>Update services with Excel</h3><p class="hint">Download the template, edit your services, then import it.</p></div><div class="excel-actions"><a class="secondary button-link" href="/api/services/export">Download template</a><button class="primary" id="importServicesButton" type="button">Import Excel</button><input class="hidden" id="serviceImportFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"></div></div><details class="service-template-help"><summary>Template columns</summary><p class="hint">Name, Category, Sub-category, Duration, Price and Status. Keep a Service ID to update a service; leave it blank to add one.</p></details><p id="serviceImportResult" role="status"></p></div><dialog class="branch-dialog catalogue-editor-dialog" id="serviceEditorDialog"><form id="serviceForm"><div class="branch-dialog-header"><div><p class="eyebrow">Service details</p><h2 id="serviceFormTitle">Add service</h2></div><button class="secondary branch-icon-button" id="closeServiceEditor" type="button" aria-label="Close service details">\u2715</button></div><div class="branch-dialog-body"><input name="serviceId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Category<select name="category" id="serviceCategorySelect" required></select></label></div><label id="newServiceCategoryLabel" class="hidden">New category<input name="newCategory" placeholder="Enter a new category" disabled></label><div class="grid"><label>Sub-category<select name="subCategory" id="serviceSubCategorySelect" required></select></label><label>Duration minutes<input name="durationMinutes" type="number" min="1" step="1" required></label></div><div class="grid"><label>Price $<input name="price" type="number" min="0.01" step="0.01" required></label><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><label id="newServiceSubCategoryLabel" class="hidden">New sub-category<input name="newSubCategory" placeholder="Enter a new sub-category" disabled></label></div><div class="branch-dialog-footer"><button class="secondary" id="cancelServiceEdit" type="button">Cancel</button><button class="danger hidden" id="deleteServiceButton" type="button">Delete service</button><button class="primary" id="serviceSaveButton" type="submit">Save service</button></div></form></dialog>
       <div class="panel product-table-panel"><div class="section-heading product-table-heading"><div><p class="eyebrow">Catalogue</p><h2>All services</h2><p class="hint" id="serviceCount" aria-live="polite"></p></div><div class="product-table-controls"><label class="product-search"><span>Search services</span><input id="serviceSearch" type="search" placeholder="Name, category, sub-category or status"></label><label><span>Category</span><select id="serviceCategoryFilter"><option value="">All categories</option></select></label><label><span>Sub-category</span><select id="serviceSubCategoryFilter"><option value="">All sub-categories</option></select></label><label><span>Status</span><select id="serviceStatusFilter"><option value="">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select></label></div></div><div class="service-hierarchy" id="servicesHierarchy"></div></div>
     </section>
     <section class="tab admin-only" id="products">
@@ -41687,16 +41687,16 @@ button:disabled { cursor:wait; opacity:.65; }
 .chart-bar-wrap i { display:block; width:10px; min-height:5px; background:linear-gradient(180deg,#7b3294,var(--brand)); border-radius:6px 6px 2px 2px; box-shadow:0 0 0 4px rgba(91,27,111,.08); }
 .chart-value { position:absolute; top:4px; color:var(--brand); font-weight:800; }
 .chart-hour>span { padding:8px 0; }
-.dashboard-lower-grid { display:grid; grid-template-columns:1fr 1.05fr 1.1fr; gap:14px; }
+.dashboard-lower-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.05fr) minmax(0,1.1fr); gap:14px; }
 .dashboard-list-panel { min-width:0; }
 .dashboard-list-panel h2 { font-size:20px; }
 .text-link { color:var(--brand); font-size:12px; font-weight:800; }
-.dashboard-roster,.dashboard-upcoming,.dashboard-activity { display:grid; margin-top:12px; }
-.dashboard-roster article,.dashboard-upcoming article,.dashboard-activity article { display:flex; align-items:center; gap:11px; min-height:58px; padding:9px 0; border-bottom:1px solid var(--line); }
+.dashboard-roster,.dashboard-upcoming,.dashboard-activity { display:grid; grid-template-columns:minmax(0,1fr); min-width:0; margin-top:12px; }
+.dashboard-roster article,.dashboard-upcoming article,.dashboard-activity article { display:flex; align-items:center; gap:11px; min-width:0; max-width:100%; min-height:58px; padding:9px 0; border-bottom:1px solid var(--line); }
 .dashboard-roster article:last-child,.dashboard-upcoming article:last-child,.dashboard-activity article:last-child { border-bottom:0; }
 .dashboard-roster strong,.dashboard-roster span { display:block; }
 .dashboard-roster span { color:var(--muted); font-size:12px; }
-.dashboard-upcoming time { padding:5px 9px; color:var(--brand); background:var(--brand-soft); border-radius:7px; font-weight:800; }
+.dashboard-upcoming time { flex:0 0 auto; padding:5px 9px; color:var(--brand); background:var(--brand-soft); border-radius:7px; font-weight:800; }
 .dashboard-upcoming div,.dashboard-activity div:nth-child(2) { min-width:0; flex:1; }
 .dashboard-upcoming strong,.dashboard-upcoming span,.dashboard-activity strong,.dashboard-activity span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dashboard-upcoming span,.dashboard-activity span { color:var(--muted); font-size:11px; }
@@ -41742,6 +41742,11 @@ legend { grid-column:1/-1; }
 .product-excel-panel::after { position:absolute; right:-58px; bottom:-70px; width:170px; height:170px; content:""; background:rgba(91,27,111,.07); border-radius:50%; }
 .excel-icon { position:relative; z-index:1; display:grid; place-items:center; width:48px; height:48px; margin-bottom:18px; color:#fff; background:var(--brand); border-radius:13px; }
 .excel-actions { position:relative; z-index:1; display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }
+.service-excel-panel>.section-heading>div:first-child{min-width:0;flex:1}
+.service-excel-panel .excel-actions{flex:0 0 auto;margin-top:0}
+.service-template-help{margin-top:12px;color:var(--muted);font-size:12px}
+.service-template-help summary{width:max-content;max-width:100%;cursor:pointer;color:var(--brand);font-weight:800}
+.service-template-help p{margin:8px 0 0}
 .button-link { display:inline-flex; align-items:center; justify-content:center; text-decoration:none; }
 .import-result { position:relative; z-index:1; margin:14px 0 0; color:var(--brand); font-size:12px; font-weight:800; }
 .product-table-panel { margin-top:20px; padding:0; overflow:hidden; }
@@ -42245,6 +42250,11 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .branch-action-dialog { width:min(520px,calc(100vw - 32px)); }.branch-action-warning { padding:16px; border:1px solid #eed7b4; background:#fff8eb; color:#715321; border-radius:10px; font-size:14px; line-height:1.6; margin-bottom:20px; }
 .branch-dialog [hidden] { display:none!important; }
 @media(max-width:700px){.branch-dialog-header,.branch-dialog-body{padding:18px}.branch-dialog-footer{padding:14px 18px}.branch-form-section{padding:14px}.branch-form-section .section-heading{flex-wrap:wrap;gap:12px}.branch-closure-row{grid-template-columns:1fr}.branch-closure-row button{justify-self:start}.branch-dialog .grid{gap:0}}
+@media(max-width:700px){
+  .service-excel-panel>.section-heading{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+  .service-excel-panel .excel-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
+  .service-excel-panel .excel-actions>.button-link,.service-excel-panel .excel-actions>button{display:grid;place-items:center;min-width:0;min-height:44px;margin:0;padding:8px;text-align:center;line-height:1.25;font-size:13px}
+}
 @media(min-width:701px) and (max-width:1500px){
   body,body.sidebar-collapsed{grid-template-columns:224px minmax(0,1fr)}
   .sidebar,.sidebar-collapsed .sidebar{position:static;display:flex;flex-direction:column;width:224px;height:auto;min-height:100dvh;min-width:0;padding:20px 12px;overflow:visible}
@@ -42267,6 +42277,21 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
   .table-wrap{max-width:100%;overflow-x:auto}
 }
 @media(min-width:701px) and (max-width:1200px){.split,.pos-workspace>.split{display:grid;grid-template-columns:minmax(0,1fr)}}
+@media(min-width:701px) and (max-width:1100px){
+  #branches .table-wrap,#inventory .table-wrap{overflow:visible}
+  #branches .mobile-card-table,#inventory .mobile-card-table,#branches .mobile-card-table tbody,#inventory .mobile-card-table tbody{display:block;width:100%;min-width:0}
+  #branches .mobile-card-table thead,#inventory .mobile-card-table thead{display:none}
+  #branches .mobile-card-table tbody,#inventory .mobile-card-table tbody{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  #branches .mobile-card-table tbody tr,#inventory .mobile-card-table tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;min-width:0;padding:14px;border:1px solid var(--line);border-radius:11px;background:#fff}
+  #branches .mobile-card-table tbody td,#inventory .mobile-card-table tbody td{display:block;min-width:0;padding:0;border:0;font-size:13px;overflow-wrap:anywhere}
+  #branches .mobile-card-table tbody td:first-child,#inventory .mobile-card-table tbody td:first-child{grid-column:1/-1;font-size:15px;font-weight:700}
+  #branches .mobile-card-table tbody td[data-label]::before,#inventory .mobile-card-table tbody td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+  #branches .mobile-card-table tbody td:nth-child(2),#inventory .mobile-card-table tbody td:nth-child(2){grid-column:1/-1}
+  #branches .mobile-card-table tbody td:last-child,#inventory .mobile-card-table tbody td:last-child{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--line)}
+  #branches .mobile-card-table tbody td:last-child::before{display:none}
+  #branches .mobile-card-table tbody tr:has(.empty-cell),#inventory .mobile-card-table tbody tr:has(.empty-cell){display:block;grid-column:1/-1}
+}
+@media(min-width:701px) and (max-width:900px){#branches .mobile-card-table tbody,#inventory .mobile-card-table tbody{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){
   .mobile-report-picker{display:block}
   .mobile-report-hidden{display:none!important}
