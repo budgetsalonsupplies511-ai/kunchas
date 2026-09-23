@@ -1,0 +1,12 @@
+{
+  "name": "cin7ai",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-14",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "CIN7_API_BASE_URL": "https://api.cin7.com/api/v1"
+  }
+}
