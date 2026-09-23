@@ -2061,9 +2061,18 @@ document.querySelector('#closingForm input[name="actualCash"]').addEventListener
 document.querySelector('#closingForm input[name="cashTaken"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCard"]').addEventListener("input", renderClosingPreview);
 document.querySelector("#staffForm").addEventListener("submit", submitStaffForm);
+function resetStaffAddForm(form) {
+  form.reset();
+  form.elements.staffId.value = "";
+  delete form.dataset.createdStaffId;
+  form.elements.username.value = "";
+  form.elements.pin.value = "";
+  renderStaffLogin(form);
+}
 document.querySelector("#addStaffButton").addEventListener("click", () => {
   if (!userCan("staff", true) || !currentUser.allBranches) return;
   const form = document.querySelector("#staffForm");
+  resetStaffAddForm(form);
   form.hidden = false;
   document.querySelector("#addStaffButton").setAttribute("aria-expanded", "true");
   closeStaffProfile();
@@ -2072,7 +2081,7 @@ document.querySelector("#addStaffButton").addEventListener("click", () => {
 });
 document.querySelector("#cancelStaffAdd").addEventListener("click", () => {
   const form = document.querySelector("#staffForm");
-  form.reset(); form.elements.staffId.value = ""; renderStaffLogin(form);
+  resetStaffAddForm(form);
   closeStaffAdd(); document.querySelector("#addStaffButton").focus();
 });
 document.querySelector("#staffSearch").addEventListener("input", renderStaff);
@@ -2606,15 +2615,17 @@ async function submitStaffForm(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const data = Object.fromEntries(new FormData(form));
+  delete data.staffId;
   const days = [...form.querySelectorAll('input[name="days"]:checked')].map((input) => Number(input.value));
   try {
     const login=staffLoginValues(form);
     message.textContent = "Saving staff...";
-    const result = form.elements.staffId.value ? (await api("/api/staff/"+encodeURIComponent(form.elements.staffId.value), {method:"PATCH",body:JSON.stringify(data)}), {id:form.elements.staffId.value}) : await api("/api/staff", { method:"POST", body:JSON.stringify(data) });
-    form.elements.staffId.value=result.id;
+    const createdStaffId = form.dataset.createdStaffId || "";
+    const result = createdStaffId ? (await api("/api/staff/"+encodeURIComponent(createdStaffId), {method:"PATCH",body:JSON.stringify(data)}), {id:createdStaffId}) : await api("/api/staff", { method:"POST", body:JSON.stringify(data) });
+    form.dataset.createdStaffId = result.id;
     await saveStaffLogin(result.id,login);
     await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId:result.id, days }) });
-    await loadData(); form.reset(); closeStaffAdd(); message.textContent = "Staff member saved.";
+    await loadData(); resetStaffAddForm(form); closeStaffAdd(); message.textContent = "Staff member saved.";
   } catch (error) { message.textContent = error.message; }
 }
 async function submitStaffProfile(event) {

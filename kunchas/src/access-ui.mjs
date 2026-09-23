@@ -44,7 +44,8 @@ async function loadAccessSettings() {
   if (!canManageAccess()) return;
   try { accessSettingsData = await api("/api/access/settings"); renderAccessPolicy();
     renderStaffLogin();
-    renderStaffLogin(document.querySelector("#staffForm"));
+    const addForm = document.querySelector("#staffForm");
+    if (addForm.hidden) renderStaffLogin(addForm);
   } catch(error) { document.querySelector("#accessPolicyMessage").textContent=error.message; }
 }
 function renderAccessPolicy() {
@@ -57,7 +58,7 @@ function renderAccessPolicy() {
 }
 function renderStaffLogin(form=document.querySelector("#staffProfileForm")) {
   if (!canManageAccess()) return;
-  const staffId=form.elements.staffId.value;
+  const staffId=form.id==="staffForm" ? form.dataset.createdStaffId||"" : form.elements.staffId.value;
   const person=accessSettingsData?.users.find(item=>item.staffId===staffId);
   form.elements.username.value=person?.username||person?.email||"";form.elements.pin.value="";
   form.elements.enabled.checked=Boolean(person?.enabled);form.elements.allBranches.checked=Boolean(person?.all_branches);
@@ -69,7 +70,8 @@ function staffLoginValues(form){
   const value={username:form.elements.username.value.trim(),pin:form.elements.pin.value,enabled:form.elements.enabled.checked,allBranches:form.elements.allBranches.checked,branchIds:[...form.querySelectorAll('[name="branchIds"]:checked')].map(input=>input.value)};
   if(!value.username)throw Error('Enter a username for this access role.');
   if(value.enabled&&!value.allBranches&&!value.branchIds.length)throw Error('Select at least one branch or allow all branches.');
-  if(value.enabled&&!value.pin&&!accessSettingsData?.users.find(person=>person.staffId===form.elements.staffId.value)?.hasPin)throw Error('Enter an individual PIN to enable sign-in.');
+  const staffId=form.id==="staffForm" ? form.dataset.createdStaffId||"" : form.elements.staffId.value;
+  if(value.enabled&&!value.pin&&!accessSettingsData?.users.find(person=>person.staffId===staffId)?.hasPin)throw Error('Enter an individual PIN to enable sign-in.');
   return value;
 }
 async function saveStaffLogin(staffId,value){if(value)await api('/api/access/users',{method:'PUT',body:JSON.stringify({...value,staffId})});}

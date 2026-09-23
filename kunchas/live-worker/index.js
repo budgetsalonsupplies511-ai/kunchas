@@ -36160,7 +36160,8 @@ async function loadAccessSettings() {
   if (!canManageAccess()) return;
   try { accessSettingsData = await api("/api/access/settings"); renderAccessPolicy();
     renderStaffLogin();
-    renderStaffLogin(document.querySelector("#staffForm"));
+    const addForm = document.querySelector("#staffForm");
+    if (addForm.hidden) renderStaffLogin(addForm);
   } catch(error) { document.querySelector("#accessPolicyMessage").textContent=error.message; }
 }
 function renderAccessPolicy() {
@@ -36194,7 +36195,7 @@ async function openRoleAccess(role) {
 }
 function renderStaffLogin(form=document.querySelector("#staffProfileForm")) {
   if (!canManageAccess()) return;
-  const staffId=form.elements.staffId.value;
+  const staffId=form.id==="staffForm" ? form.dataset.createdStaffId||"" : form.elements.staffId.value;
   const person=accessSettingsData?.users.find(item=>item.staffId===staffId);
   form.elements.username.value=person?.username||person?.email||"";form.elements.pin.value="";
   form.elements.enabled.checked=Boolean(person?.enabled);form.elements.allBranches.checked=Boolean(person?.all_branches);
@@ -36206,7 +36207,8 @@ function staffLoginValues(form){
   const value={username:form.elements.username.value.trim(),pin:form.elements.pin.value,enabled:form.elements.enabled.checked,allBranches:form.elements.allBranches.checked,branchIds:[...form.querySelectorAll('[name="branchIds"]:checked')].map(input=>input.value)};
   if(!value.username)throw Error('Enter a username for this access role.');
   if(value.enabled&&!value.allBranches&&!value.branchIds.length)throw Error('Select at least one branch or allow all branches.');
-  if(value.enabled&&!value.pin&&!accessSettingsData?.users.find(person=>person.staffId===form.elements.staffId.value)?.hasPin)throw Error('Enter an individual PIN to enable sign-in.');
+  const staffId=form.id==="staffForm" ? form.dataset.createdStaffId||"" : form.elements.staffId.value;
+  if(value.enabled&&!value.pin&&!accessSettingsData?.users.find(person=>person.staffId===staffId)?.hasPin)throw Error('Enter an individual PIN to enable sign-in.');
   return value;
 }
 async function saveStaffLogin(staffId,value){if(value)await api('/api/access/users',{method:'PUT',body:JSON.stringify({...value,staffId})});}
@@ -38586,9 +38588,18 @@ document.querySelector('#closingForm input[name="closingDate"]').addEventListene
 document.querySelector('#closingForm input[name="cashTaken"]').addEventListener("input", renderClosingPreview);
 document.querySelector('#closingForm input[name="actualCard"]').addEventListener("input", renderClosingPreview);
 document.querySelector("#staffForm").addEventListener("submit", submitStaffForm);
+function resetStaffAddForm(form) {
+  form.reset();
+  form.elements.staffId.value = "";
+  delete form.dataset.createdStaffId;
+  form.elements.username.value = "";
+  form.elements.pin.value = "";
+  renderStaffLogin(form);
+}
 document.querySelector("#addStaffButton").addEventListener("click", () => {
   if (!userCan("staff", true) || !currentUser.allBranches) return;
   const form = document.querySelector("#staffForm");
+  resetStaffAddForm(form);
   form.hidden = false; document.querySelector("#staffFormMessage").textContent = "";
   document.querySelector("#addStaffButton").setAttribute("aria-expanded", "true");
   closeStaffProfile();
@@ -38597,7 +38608,7 @@ document.querySelector("#addStaffButton").addEventListener("click", () => {
 });
 document.querySelectorAll("#cancelStaffAdd,#cancelStaffAddFooter").forEach((button) => button.addEventListener("click", () => {
   const form = document.querySelector("#staffForm");
-  form.reset(); form.elements.staffId.value = ""; renderStaffLogin(form);
+  resetStaffAddForm(form);
   closeStaffAdd(); document.querySelector("#addStaffButton").focus();
 }));
 document.querySelector("#staffSearch").addEventListener("input", renderStaff);
@@ -39233,15 +39244,17 @@ async function submitStaffForm(event) {
   const status = document.querySelector("#staffFormMessage");
   const button = form.querySelector('[type="submit"]');
   const data = Object.fromEntries(new FormData(form));
+  delete data.staffId;
   const days = [...form.querySelectorAll('input[name="days"]:checked')].map((input) => Number(input.value));
   try {
     const login=staffLoginValues(form);
     button.disabled = true; status.textContent = "Saving staff..."; message.textContent = "Saving staff...";
-    const result = form.elements.staffId.value ? (await api("/api/staff/"+encodeURIComponent(form.elements.staffId.value), {method:"PATCH",body:JSON.stringify(data)}), {id:form.elements.staffId.value}) : await api("/api/staff", { method:"POST", body:JSON.stringify(data) });
-    form.elements.staffId.value=result.id;
+    const createdStaffId = form.dataset.createdStaffId || "";
+    const result = createdStaffId ? (await api("/api/staff/"+encodeURIComponent(createdStaffId), {method:"PATCH",body:JSON.stringify(data)}), {id:createdStaffId}) : await api("/api/staff", { method:"POST", body:JSON.stringify(data) });
+    form.dataset.createdStaffId = result.id;
     await saveStaffLogin(result.id,login);
     await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId:result.id, days }) });
-    await loadData(); form.reset(); closeStaffAdd(); message.textContent = "Staff member saved.";
+    await loadData(); resetStaffAddForm(form); closeStaffAdd(); message.textContent = "Staff member saved.";
   } catch (error) { status.textContent = error.message; message.textContent = error.message; }
   finally { button.disabled = false; }
 }
