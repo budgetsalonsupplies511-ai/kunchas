@@ -60,7 +60,7 @@ export async function branchGate(request,env,personal){
 async function actorAccounts(env,branchId,anyBranch=false,clocking=false){return (await rows(env,"SELECT u.*,s.name,s.role AS job_role,s.status AS staff_status,r.permissions FROM access_users u LEFT JOIN staff s ON s.id=u.staff_id LEFT JOIN access_roles r ON r.role=u.role WHERE u.enabled=1 AND u.role IN ('owner','admin','manager','staff')")).filter(a=>(!a.staff_id||a.staff_status==='Active')&&(anyBranch||clocking&&(a.role==='manager'||/\bmanager\b/i.test(a.job_role||''))||a.role==='owner'||a.all_branches||parse(a.branch_ids).includes(branchId)));}
 export async function verifyActor(request,env,branchId,elevated=false,reasonRequired=elevated,managerOnly=false,checkout=false,clocking=false){
   const body=await request.clone().json(),id=text(body.actorId),pin=text(body.actorPin),ip=request.headers.get('cf-connecting-ip')||'local';
-  if(!/^\d{6,12}$/.test(pin))return {response:json({error:'Enter your individual staff PIN.'},403)};
+  if(!/^[A-Za-z0-9]{4,12}$/.test(pin))return {response:json({error:'Enter your individual staff PIN.'},403)};
   const limitKey='action-pin:'+await digest(ip+':'+(id||branchId));
   if(!await limit(env,limitKey))return {response:json({error:'Too many PIN attempts. Try again in 15 minutes.'},429)};
   const eligible=(await actorAccounts(env,branchId,checkout&&!elevated&&!managerOnly,clocking)).filter(a=>managerOnly?a.role==='manager':!elevated||['owner','admin','manager'].includes(a.role));
@@ -81,7 +81,7 @@ export async function verifyManagerDashboardPin(request,env){
   const body=await request.clone().json(),branchId=text(body.branchId),pin=text(body.pin),ip=request.headers.get('cf-connecting-ip')||'local';
   const branchSession=await session(request,env);
   if(!branchSession||!hasBranch(branchSession,branchId))return {response:json({error:'Open this branch workspace before accessing its manager dashboard.'},401)};
-  if(!/^\d{6,12}$/.test(pin))return {response:json({error:'Enter the manager PIN containing 6–12 digits.'},400)};
+  if(!/^[A-Za-z0-9]{4,12}$/.test(pin))return {response:json({error:'Enter the manager PIN.'},400)};
   const limitKey='manager-dashboard:'+await digest(ip+':'+branchId);
   if(!await limit(env,limitKey))return {response:json({error:'Too many manager PIN attempts. Try again in 15 minutes.'},429)};
   const managers=(await actorAccounts(env,branchId)).filter(account=>account.role==='manager');

@@ -10,7 +10,7 @@ async function fixture(role='manager',permissions={dashboard:1,customers:1,repor
  const db=new DatabaseSync(':memory:');
  db.exec(`CREATE TABLE staff(id TEXT PRIMARY KEY,name TEXT,role TEXT,status TEXT);
  CREATE TABLE branches(id TEXT PRIMARY KEY,name TEXT,status TEXT,pin_code TEXT);
- CREATE TABLE access_users(id TEXT PRIMARY KEY,staff_id TEXT,username TEXT,role TEXT,enabled INTEGER,all_branches INTEGER,branch_ids TEXT,pin_salt TEXT,pin_hash TEXT);
+ CREATE TABLE access_users(id TEXT PRIMARY KEY,staff_id TEXT,username TEXT,role TEXT,enabled INTEGER,all_branches INTEGER,branch_ids TEXT,pin_salt TEXT,pin_hash TEXT,updated_at TEXT);
  CREATE TABLE access_roles(role TEXT PRIMARY KEY,permissions TEXT);
  CREATE TABLE access_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT,expires_at INTEGER);
  CREATE TABLE branch_pos_sessions(token_hash TEXT PRIMARY KEY,branch_id TEXT,pin_hash TEXT,expires_at INTEGER);
@@ -21,7 +21,7 @@ async function fixture(role='manager',permissions={dashboard:1,customers:1,repor
  INSERT INTO branches VALUES('a','Branch A','Open','1234'),('b','Branch B','Open','5678');
  INSERT INTO customers VALUES('ca','a'),('cb','b');`);
  db.exec(readFileSync(new URL('../manager-sessions-upgrade.sql',import.meta.url),'utf8'));
- db.prepare('INSERT INTO access_users VALUES(?,?,?,?,?,?,?,?,?)').run('u','s','tester',role,1,1,'[]','salt',await hashPin('987654','salt'));
+ db.prepare('INSERT INTO access_users(id,staff_id,username,role,enabled,all_branches,branch_ids,pin_salt,pin_hash) VALUES(?,?,?,?,?,?,?,?,?)').run('u','s','tester',role,1,1,'[]','salt',await hashPin('987654','salt'));
  db.prepare('INSERT INTO access_roles VALUES(?,?)').run(role,JSON.stringify(permissions));
  db.prepare('INSERT INTO branch_pos_sessions VALUES(?,?,?,?)').run(await sha('branch-token'),'a',await sha('1234'),Math.floor(Date.now()/1000)+3600);
  const wrap=(sql,args=[])=>({bind(...values){return wrap(sql,values);},async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){return db.prepare(sql).run(...args);},sql,args});
@@ -36,6 +36,31 @@ test('all-branch manager PIN creates single-branch identity and report scope',as
  const f=await fixture();await f.signIn();const user=await identity(f.req('/manager'),f.env);
  assert.equal(user.allBranches,false);assert.deepEqual(user.branchIds,['a']);assert.equal(user.managerBranchId,'a');
  assert.equal(dashboardPath(user),'/manager');assert.deepEqual(scopeReportParams(user),['a']);assert.match(scopeReportSql(user,'branch_id'),/IN \(\?\)/);
+});
+test('manager dashboard accepts a four-character text PIN',async()=>{
+ const f=await fixture();
+ f.db.prepare('UPDATE access_users SET pin_hash=? WHERE id=?').run(await hashPin('Ab4x','salt'),'u');
+ const result=await accessGate(f.req('/api/auth/manager-dashboard','POST',{branchId:'a',pin:'Ab4x'}),f.env);
+ assert.equal(result.response.status,200);
+});
+test('staff PIN settings accept four to six letters or digits',async()=>{
+ const f=await fixture('admin',{access:2});await f.personal();
+ const body=(pin)=>({staffId:'s',username:'tester',enabled:true,allBranches:true,branchIds:[],pin});
+ for(const pin of ['Ab3','Ab12Cd7','Ab!4']){
+  const result=await accessGate(f.req('/api/access/users','PUT',body(pin)),f.env);
+  assert.equal(result.response.status,400);
+ }
+ const result=await accessGate(f.req('/api/access/users','PUT',body('Ab12Cd')),f.env);
+ assert.equal(result.response.status,200);
+ const saved=f.db.prepare('SELECT pin_salt,pin_hash FROM access_users WHERE id=?').get('u');
+ assert.equal(saved.pin_hash,await hashPin('Ab12Cd',saved.pin_salt));
+});
+test('changing a staff PIN accepts four-character text',async()=>{
+ const f=await fixture();await f.personal();
+ const result=await accessGate(f.req('/api/auth/change-pin','POST',{currentPin:'987654',newPin:'Ab4x'}),f.env);
+ assert.equal(result.response.status,200);
+ const saved=f.db.prepare('SELECT pin_salt,pin_hash FROM access_users WHERE id=?').get('u');
+ assert.equal(saved.pin_hash,await hashPin('Ab4x',saved.pin_salt));
 });
 test('manager cannot enter Owner/Admin pages or request another branch report',async()=>{
  const f=await fixture();await f.signIn();

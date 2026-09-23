@@ -7,6 +7,19 @@ const account={id:'staff-account',staff_id:'staff-id',name:'Test staff',role:'st
 function envFor(accounts){return {DB:{prepare(sql){const statement={bind(){return statement;},async first(){return {attempts:1};},async all(){return {results:accounts.filter(a=>a.enabled)};},async run(){return {};}};return statement;}}};}
 const request=(actorPin=pin)=>new Request('https://test/api/sales',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({actorPin})});
 test('checkout accepts active staff from another branch and records identity',async()=>{const result=await verifyActor(request(),envFor([account]),'branch-city',false,false,false,true);assert.equal(result.actor.id,account.id);assert.equal(result.actor.name,'Test staff');});
+test('checkout accepts four-character text PINs and existing longer numeric PINs',async()=>{
+ for(const value of ['Ab4x','12345678']){
+  const actor={...account,pin_hash:await hashPin(value,salt)};
+  const result=await verifyActor(request(value),envFor([actor]),'branch-city',false,false,false,true);
+  assert.equal(result.actor.id,account.id);
+ }
+});
+test('checkout rejects PINs shorter than four characters and punctuation',async()=>{
+ for(const value of ['Ab3','Ab4!']){
+  const result=await verifyActor(request(value),envFor([account]),'branch-city',false,false,false,true);
+  assert.equal(result.response.status,403);
+ }
+});
 test('other actions remain branch restricted',async()=>{const result=await verifyActor(request(),envFor([account]),'branch-city');assert.equal(result.response.status,403);});
 test('checkout rejects wrong PIN, inactive and disabled accounts',async()=>{for(const [a,p] of [[account,'111111'],[{...account,staff_status:'Inactive'},pin],[{...account,enabled:0},pin]]){const result=await verifyActor(request(p),envFor([a]),'branch-city',false,false,false,true);assert.equal(result.response.status,403);}});
 test('checkout rejects ambiguous PINs rather than crediting wrong staff',async()=>{const result=await verifyActor(request(),envFor([account,{...account,id:'other-account',name:'Other staff'}]),'branch-city',false,false,false,true);assert.equal(result.response.status,409);});
