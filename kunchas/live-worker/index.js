@@ -762,12 +762,13 @@ __name(recordCashDrawerOpen, "recordCashDrawerOpen");
 
 // src/public-booking-ui.mjs
 function publicBookingPage() {
+  const bookingScript = bookingClient.toString().replace(/\b__name\d+\s*\(/g, "__name(");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Book an appointment | Kunchas Hair & Beauty</title><meta name="description" content="Book your Kunchas hair and beauty appointment. Choose your branch, combine services and find a time that suits you."><style>
 *{box-sizing:border-box}body{margin:0;background:#fff8fb;color:#241c2b;font:15px/1.5 system-ui,-apple-system,sans-serif}button,input,select,textarea{font:inherit}button,a,input,select,textarea{outline-offset:4px}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}[hidden]{display:none!important}header{background:#fff;color:white;padding:22px max(24px,calc((100% - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:20px}.brand{font-size:24px;font-weight:800;letter-spacing:-1px}.brand small{display:block;letter-spacing:2px;font-size:10px;font-weight:500;text-transform:uppercase}.secure{font-size:12px;color:#8c345f}main{max-width:1168px;margin:auto;padding:35px 24px 60px}.eyebrow{text-transform:uppercase;letter-spacing:2px;color:#9c3468;font-weight:750;font-size:11px}h1{font-size:clamp(27px,4vw,39px);letter-spacing:-1.3px;line-height:1.15;margin:8px 0 12px}h2{font-size:22px;margin:0 0 8px;letter-spacing:-.5px}h3{font-size:16px;margin:20px 0 10px}p{margin:8px 0 18px}.muted{color:#776d7d;font-size:13px}.steps{display:flex;list-style:none;padding:0;gap:8px;margin:28px 0}.steps li{flex:1;color:#82748b;font-size:12px;border-top:3px solid #f0dce6;padding-top:9px}.steps li.active{border-color:#b7447e;color:#b7447e;font-weight:750}.layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;align-items:start;gap:24px}.panel{background:#fff;border:1px solid #efdae4;border-radius:16px;padding:26px;box-shadow:0 6px 24px #40234704}.summary{position:sticky;top:20px}.summary h2{font-size:18px}.summary ul{list-style:none;padding:0;margin:20px 0}.summary li{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #f6e8ef;padding:10px 0;font-size:13px}.summary li small{display:block;color:#85748c}.summary-line{display:flex;justify-content:space-between;padding:12px 0;border-top:1px solid #efdae4}.summary-line strong{font-size:22px}.summary-when{background:#fff0f6;border-radius:9px;padding:12px;margin-top:16px;font-size:13px;white-space:pre-line}.branch-list{display:grid;gap:12px;margin-top:24px}.branch-card{display:block;width:100%;border:1px solid #efdae4;border-radius:12px;background:white;text-align:left;padding:18px}.branch-card strong{display:block;font-size:16px}.branch-card span{display:block;color:#7b6d80;font-size:13px;margin-top:4px}.branch-card.selected,.branch-card:hover{border-color:#b7447e;background:#fff2f7}.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:block;font-size:13px;font-weight:650}input,select,textarea{width:100%;padding:12px;border:1px solid #dcc2cf;border-radius:8px;margin-top:6px;min-height:46px;background:white;color:inherit}textarea{min-height:90px;resize:vertical}.filters{display:grid;grid-template-columns:1fr 180px;gap:12px;margin:20px 0}.service{display:flex;align-items:center;gap:14px;border:1px solid #f1dfe8;border-radius:10px;padding:14px;margin:9px 0;cursor:pointer}.service:has(input:checked){border-color:#b7447e;background:#fff2f7}.service input{width:20px;height:20px;min-height:20px;margin:0;accent-color:#b7447e}.service span{flex:1}.service small{display:block;color:#83718a;font-weight:400}.service b{font-size:14px;white-space:nowrap}.services{max-height:550px;overflow:auto;padding:2px}.actions{display:flex;justify-content:space-between;gap:12px;margin-top:24px;padding-top:20px;border-top:1px solid #f1e1e9}.primary,.secondary{border:0;border-radius:9px;min-height:46px;padding:12px 22px;font-weight:700}.primary{background:#b7447e;color:white}.secondary{background:#fceaf2;color:#b7447e}.slots{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}.slot{border:1px solid #e9cad9;border-radius:8px;background:white;padding:11px 5px;color:#b7447e;font-weight:600}.slot.selected{background:#b7447e;color:white;border-color:#b7447e}.alert{padding:14px 18px;border-radius:9px;background:#fff2ef;color:#983a25;margin:0 0 18px}.notice{margin-top:18px;color:#74657b;font-size:12px}.review{background:#fff1f7;padding:16px;border-radius:10px;margin-bottom:22px;white-space:pre-line}.full-field{grid-column:1/-1}.honeypot{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}.success{max-width:680px;margin:30px auto;text-align:center}.success-mark{font-size:30px;color:#218157;background:#eaf7ef;width:64px;height:64px;border-radius:50%;display:grid;place-items:center;margin:0 auto 20px}.success .review{text-align:left;margin-top:25px}.success a{color:#b7447e}.confirmation-reference{font:12px ui-monospace,monospace;overflow-wrap:anywhere}footer{text-align:center;color:#8b7b93;font-size:12px;padding:24px}.loading{padding:30px 0;text-align:center;color:#776d7d}@media(max-width:850px){.layout{grid-template-columns:1fr}.summary{position:static;order:2}.slots{grid-template-columns:repeat(4,1fr)}}@media(max-width:500px){main{padding:24px 14px}.panel{padding:20px}.fields,.filters{grid-template-columns:1fr}.full-field{grid-column:auto}.slots{grid-template-columns:repeat(3,1fr)}header{padding:18px}.secure{max-width:110px;text-align:right}.steps li{font-size:11px}.actions .primary{flex:1}.service{padding:12px}}
 .brand img{display:block;width:260px;max-width:100%;height:auto}.brand{flex:0 1 260px}header{border-bottom:1px solid #efdae4;padding-top:8px;padding-bottom:8px}.primary:hover,.slot.selected:hover{background:#9c3468}.primary:focus-visible,.slot:focus-visible,.branch-card:focus-visible{outline:3px solid #c4456b}.steps li.active{color:#9c3468}.secondary,.slot,.success a{color:#9c3468}@media(max-width:500px){.brand{flex-basis:210px}.brand img{width:210px}.secure{font-size:11px;max-width:100px}}
 
 .steps button{width:100%;min-height:44px;padding:6px 2px;border:0;background:transparent;color:inherit;font-weight:700;font-size:12px;border-radius:7px}.steps button:focus-visible{outline:2px solid #b7447e}.steps li{padding-top:2px}.steps button:disabled{opacity:.5}.summary>summary{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:750;min-height:44px;list-style:none}.summary>summary::-webkit-details-marker{display:none}.summary>summary:after{content:'+';color:#9c3468}.summary[open]>summary:after{content:'\u2212'}.summary-content{padding-top:12px}.summary li{align-items:center}.remove-service{border:0;background:#fceaf2;color:#9c3468;min-width:44px;min-height:44px;border-radius:8px;font-size:22px}.summary li>span{min-width:0;flex:1;overflow-wrap:anywhere}.mobile-total{display:none}.date-navigation{display:grid;grid-template-columns:48px minmax(0,1fr) 48px;align-items:end;gap:10px}.date-navigation button{padding:10px;min-height:48px;font-size:24px}.date-navigation input{margin-bottom:0}#categories{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#categories .branch-card{min-height:88px;padding:14px}#categories strong{font-size:14px}.service span{min-width:0;overflow-wrap:anywhere}button,label,input,summary{-webkit-tap-highlight-color:transparent}input,select,textarea{font-size:16px}.slot{min-height:48px}.slot.selected{color:white}.branch-card.selected{box-shadow:inset 4px 0 #b7447e}section[data-step]{scroll-margin-top:20px}.summary-content .notice{margin-bottom:0}
-@media(max-width:850px){header{padding:6px 18px}.brand{flex-basis:175px}.brand img{width:175px}.secure{max-width:130px;text-align:right}main{padding:20px 14px 160px}.steps{margin:18px 0;gap:5px}.steps button{font-size:12px}h1{font-size:28px}.layout{gap:14px;display:flex;flex-direction:column}.layout>.panel{width:100%}.summary{order:-1;padding:10px 16px}.summary>summary{font-size:14px}.summary-content{border-top:1px solid #efdae4;margin-top:8px}.layout>.panel:not(.summary){padding:20px 16px}.services{max-height:none;overflow:visible}.actions{position:fixed;bottom:0;left:0;right:0;z-index:20;background:#fff;padding:10px 16px max(12px,env(safe-area-inset-bottom));margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 12px;box-shadow:0 -4px 24px #58203512}.mobile-total{display:block;grid-column:1/-1;border:0;background:transparent;color:#743052;text-align:left;font-size:13px;min-height:36px;padding:2px 0}.actions #next{grid-column:2;min-height:50px}.actions #back[hidden]+#next{grid-column:1/-1}.actions #back{min-height:50px;padding:10px 18px}.service{min-height:72px;padding:14px 10px;gap:10px}.service input{flex:0 0 22px;width:22px;height:22px}.fields{grid-template-columns:1fr}.full-field{grid-column:1}.slots{grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.slot{min-height:50px;font-size:14px}footer{padding-bottom:150px}#intro .muted{margin-bottom:8px}#categoryServices{margin-top:16px}#allCategories{width:100%;text-align:left}.review{font-size:14px}}
+@media(max-width:850px){header{padding:6px 18px}.brand{flex-basis:175px}.brand img{width:175px}.secure{max-width:130px;text-align:right}main{padding:20px 14px 160px}.steps{margin:18px 0;gap:5px}.steps button{font-size:12px}h1{font-size:28px}.layout{gap:14px;display:flex;flex-direction:column}.layout>.panel{width:100%}.summary{order:2;padding:10px 16px}.summary>summary{font-size:14px}.summary-content{border-top:1px solid #efdae4;margin-top:8px}.layout>.panel:not(.summary){padding:20px 16px}.services{max-height:none;overflow:visible}.actions{position:fixed;bottom:0;left:0;right:0;z-index:20;background:#fff;padding:10px 16px max(12px,env(safe-area-inset-bottom));margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 12px;box-shadow:0 -4px 24px #58203512}.mobile-total{display:block;grid-column:1/-1;border:0;background:transparent;color:#743052;text-align:left;font-size:13px;min-height:36px;padding:2px 0}.actions #next{grid-column:2;min-height:50px}.actions #back[hidden]+#next{grid-column:1/-1}.actions #back{min-height:50px;padding:10px 18px}.service{min-height:72px;padding:14px 10px;gap:10px}.service input{flex:0 0 22px;width:22px;height:22px}.fields{grid-template-columns:1fr}.full-field{grid-column:1}.slots{grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.slot{min-height:50px;font-size:14px}footer{padding-bottom:150px}#intro .muted{margin-bottom:8px}#categoryServices{margin-top:16px}#allCategories{width:100%;text-align:left}.review{font-size:14px}}
 @media(max-width:850px){#flow>nav{position:sticky;top:0;z-index:15;background:#fff8fb;padding:4px 0;border-bottom:1px solid #efdae4}#flow>nav .steps{margin:0}section[data-step],section[data-step] h2,#appointmentSummary,#search{scroll-margin-top:75px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 .add-more-services{width:100%;min-height:48px;margin:12px 0;text-align:center;border:1px dashed #b7447e}
@@ -776,7 +777,7 @@ function publicBookingPage() {
 <section data-step="1" hidden><h2>What would you like to book?</h2><p class="muted">Search all services or choose a category. You can add services from different categories.</p><label>Find a service<input id="search" type="search" placeholder="Search all services"></label><div id="categories" class="branch-list"></div><div id="categoryServices" hidden><button id="allCategories" class="secondary" type="button">\u2190 All categories</button><h3 id="categoryTitle"></h3><div id="services" class="services"></div></div></section>
 <section data-step="2" hidden><h2>Choose a date & time</h2><p class="muted">Start times are every 15 minutes. All times are Sydney local time (AEST/AEDT).</p><div class="date-navigation"><button id="previousDate" class="secondary" type="button" aria-label="Previous date">\u2039</button><label>Appointment date<input id="date" type="date" required></label><button id="nextDate" class="secondary" type="button" aria-label="Next date">\u203A</button></div><p id="slotStatus" class="muted" role="status"></p><div id="slots" class="slots" role="group" aria-label="Available appointment times"></div></section>
 <section data-step="3" hidden><h2>Your details</h2><p class="muted">Almost there. Check your appointment and add your contact details.</p><div id="review" class="review"></div><form id="details"><div class="fields"><label>First name<input name="firstName" autocomplete="given-name" maxlength="80" required></label><label>Last name<input name="lastName" autocomplete="family-name" maxlength="80" required></label><label>Email<input name="email" type="email" autocomplete="email" maxlength="254" required></label><label>Phone number<input name="phone" type="tel" autocomplete="tel" maxlength="25" pattern="[+0-9 ()-]{8,25}" required></label><label class="full-field">Anything we should know? (optional)<textarea name="notes" maxlength="1000" placeholder="Tell us about your appointment"></textarea></label></div><div class="honeypot" aria-hidden="true"><label>Leave blank<input name="website" tabindex="-1" autocomplete="off"></label></div><p class="notice">Your details are used to manage your appointment. Payment is made at the salon. Please call your selected branch if you need to change or cancel.</p></form></section>
-<div class="actions"><button class="mobile-total" id="mobileSummary" type="button" aria-controls="appointmentSummary" aria-expanded="false">Your appointment</button><button id="back" class="secondary" type="button">Back</button><button id="next" class="primary" type="button">Continue</button></div></div><details id="appointmentSummary" class="panel summary" open><summary><span>Your appointment</span><span id="summaryCount" class="muted">View details</span></summary><div class="summary-content"><p id="summaryBranch" class="muted">Choose a branch to get started.</p><ul id="summaryServices"></ul><button class="secondary add-more-services" data-add-services type="button" hidden>+ Add more services</button><div class="summary-line"><span>Total duration</span><b id="duration">0 min</b></div><div class="summary-line"><span>Total (AUD)</span><strong id="total">$0.00</strong></div><div id="summaryWhen" class="summary-when" hidden></div><p class="notice">Pay at the salon \xB7 No online payment required</p></div></details></div></div><section id="confirmation" class="panel success" hidden aria-live="polite"></section></main><footer>Kunchas Hair & Beauty \xB7 Online appointments</footer><script>function __name(value){return value;} (${bookingClient.toString()})();<\/script></body></html>`;
+<div class="actions"><button class="mobile-total" id="mobileSummary" type="button" aria-controls="appointmentSummary" aria-expanded="false">Your appointment</button><button id="back" class="secondary" type="button">Back</button><button id="next" class="primary" type="button">Continue</button></div></div><details id="appointmentSummary" class="panel summary" open><summary><span>Your appointment</span><span id="summaryCount" class="muted">View details</span></summary><div class="summary-content"><p id="summaryBranch" class="muted">Choose a branch to get started.</p><ul id="summaryServices"></ul><button class="secondary add-more-services" data-add-services type="button" hidden>+ Add more services</button><div class="summary-line"><span>Total duration</span><b id="duration">0 min</b></div><div class="summary-line"><span>Total (AUD)</span><strong id="total">$0.00</strong></div><div id="summaryWhen" class="summary-when" hidden></div><p class="notice">Pay at the salon \xB7 No online payment required</p></div></details></div></div><section id="confirmation" class="panel success" hidden aria-live="polite"></section></main><footer>Kunchas Hair & Beauty \xB7 Online appointments</footer><script>function __name(value){return value;} (${bookingScript})();<\/script></body></html>`;
 }
 __name(publicBookingPage, "publicBookingPage");
 function bookingClient() {
@@ -37964,8 +37965,9 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
   <style>${styles()}</style>
 </head>
 <body class="${isAdmin ? "admin-mode" : "staff-mode pos-locked"}">
-  <aside class="sidebar">
+  <aside class="sidebar" id="appSidebar" aria-label="Main navigation">
     <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Minimise sidebar" aria-expanded="true" title="Minimise sidebar"><span aria-hidden="true">\u2039</span></button>
+    <button class="mobile-menu-close" id="mobileMenuClose" type="button" aria-label="Close menu">\u00d7</button>
     <div class="brand"><img src="${brandLogo}" alt="Kuncha\u2019s Hair & Beauty Art" width="2551" height="1189"></div>
     <nav>
       ${isAdmin ? `
@@ -37987,12 +37989,14 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
     </nav>
     ${isAdmin ? `<div class="sidebar-footer admin-only"><div class="sidebar-user"><span class="sidebar-user-avatar">${escapeAccessHtml(accessUser.name.slice(0, 2).toUpperCase())}</span><span><strong>${escapeAccessHtml(accessUser.role === "owner" && !accessUser.staffId ? "Owner" : accessUser.name)}</strong><small>${escapeAccessHtml(accessUser.role === "owner" ? "Owner" : accessUser.role === "manager" ? "Manager" : "Admin")}</small></span></div></div>` : `<div class="sidebar-footer staff-only"><button class="nav" data-tab="closing">${appIcon("closing")}<span>Daily Closing</span></button><button class="nav" id="switchBranch" type="button">${appIcon("branches")}<span>Change branch</span></button><button class="nav" id="managerDashboardButton" type="button">${appIcon("dashboard")}<span>Dashboard</span></button></div>`}
   </aside>
+  <button class="mobile-nav-backdrop" id="mobileNavBackdrop" type="button" aria-label="Close menu" tabindex="-1"></button>
 
   <main class="app">
     <header class="topbar">
-      <div>
+      <button class="mobile-menu-button" id="mobileMenuButton" type="button" aria-label="Open menu" aria-controls="appSidebar" aria-expanded="false"><span></span><span></span><span></span></button>
+      <div class="topbar-title">
         <p class="eyebrow">${isAdmin ? dashboardTitle : "Branch POS"}</p>
-        <h1 id="appTitle">${isAdmin ? dashboardTitle : "Kunchas branch"}</h1>
+        <h1 id="appTitle">${isAdmin ? "Dashboard" : "Kunchas branch"}</h1>
       </div>
       ${isAdmin ? `<div class="admin-controls"><label class="branch-switcher"><span>Viewing</span><select id="globalBranchFilter" aria-label="Choose branch"><option value="">All branches</option></select></label><details class="account-dropdown" id="accountDropdown"><summary class="admin-avatar" aria-label="Account menu"><span>${escapeAccessHtml(accessUser.name.slice(0, 2).toUpperCase())}</span><strong>${escapeAccessHtml(accessUser.name)}</strong><b aria-hidden="true">\u2304</b></summary><div class="account-dropdown-panel"><p>${escapeAccessHtml(dashboardTitle)}</p><button type="button" id="changePinButton">Change PIN</button><button type="button" id="signOutButton">Sign out</button></div></details></div>` : ""}
     </header>
@@ -38498,6 +38502,12 @@ document.querySelectorAll(".nav[data-tab]").forEach((button) => button.addEventL
 }));
 document.querySelectorAll("[data-team-tab]").forEach((button) => button.addEventListener("click", () => showTab(button.dataset.teamTab)));
 document.querySelector("#sidebarToggle")?.addEventListener("click", toggleSidebar);
+document.querySelector("#mobileMenuButton")?.addEventListener("click", () => setMobileNavOpen(true));
+document.querySelector("#mobileMenuClose")?.addEventListener("click", () => setMobileNavOpen(false, true));
+document.querySelector("#mobileNavBackdrop")?.addEventListener("click", () => setMobileNavOpen(false, true));
+document.querySelector("#appSidebar")?.addEventListener("click", (event) => { if (event.target.closest(".nav")) setMobileNavOpen(false); });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && document.body.classList.contains("mobile-nav-open")) setMobileNavOpen(false, true); });
+window.matchMedia("(max-width:700px)").addEventListener("change", () => setMobileNavOpen(false));
 document.querySelector("#customerDirectorySearch")?.addEventListener("input", scheduleCustomerSearch);
 document.querySelector("#loadData").addEventListener("click", loadData);
 document.querySelector("#openPos").addEventListener("click", openPos);
@@ -38607,6 +38617,7 @@ function closeStaffAdd() {
 }
 syncLastReceiptButton();
 restoreSidebarPreference();
+setMobileNavOpen(false);
 document.querySelector("#staffProfileForm").addEventListener("submit", submitStaffProfile);
 document.querySelector("#closeStaffProfile").addEventListener("click", closeStaffProfile);
 document.querySelector("#deleteStaffButton").addEventListener("click", deleteStaffFromProfile);
@@ -40029,6 +40040,17 @@ function restoreSidebarPreference() {
   setSidebarCollapsed(collapsed);
 }
 function toggleSidebar() { setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed")); }
+function setMobileNavOpen(open, restoreFocus = false) {
+  const mobile = window.matchMedia("(max-width:700px)").matches;
+  const active = Boolean(open && mobile);
+  const sidebar = document.querySelector("#appSidebar"), button = document.querySelector("#mobileMenuButton");
+  document.body.classList.toggle("mobile-nav-open", active);
+  sidebar.inert = mobile && !active;
+  button.setAttribute("aria-expanded", String(active));
+  button.setAttribute("aria-label", active ? "Close menu" : "Open menu");
+  if (active) sidebar.querySelector(".nav:not([hidden])")?.focus();
+  else if (restoreFocus && mobile) button.focus();
+}
 function setSidebarCollapsed(collapsed) {
   document.body.classList.toggle("sidebar-collapsed", collapsed);
   const button = document.querySelector("#sidebarToggle");
@@ -41476,6 +41498,7 @@ function styles() {
 body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Poppins,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; transition:grid-template-columns .2s ease; }
 .sidebar { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; overflow-y:auto; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
 .sidebar-toggle { position:absolute; z-index:2; top:8px; right:8px; display:grid; place-items:center; width:30px; min-height:30px; padding:0; border:1px solid #ffffff66; border-radius:50%; color:#fff; background:#542064; box-shadow:0 3px 10px #230b2c55; font-size:24px; line-height:1; }
+.mobile-menu-button,.mobile-menu-close,.mobile-nav-backdrop{display:none}
 .sidebar-toggle span { display:block; transform:translateY(-1px); transition:transform .2s ease; }
 body.sidebar-collapsed { grid-template-columns:72px minmax(0,1fr); }
 .sidebar-collapsed .sidebar { padding-inline:9px; }
@@ -42189,22 +42212,60 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 @media(min-width:701px) and (max-width:1200px){.split,.pos-workspace>.split{display:grid;grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){
   body,body.sidebar-collapsed{grid-template-columns:minmax(0,1fr)}
-  .sidebar,.sidebar-collapsed .sidebar{position:relative;top:auto;display:grid;grid-template-columns:100px minmax(0,1fr);align-items:center;height:auto;min-width:0;overflow:visible}
+  body.mobile-nav-open{overflow:hidden}
+  .sidebar,.sidebar-collapsed .sidebar{position:fixed;z-index:101;inset:0 auto 0 0;display:flex;flex-direction:column;align-items:stretch;width:min(82vw,304px);height:100dvh;min-height:0;padding:18px 14px max(16px,env(safe-area-inset-bottom));overflow-y:auto;transform:translateX(-105%);transition:transform .22s ease;box-shadow:none}
+  .mobile-nav-open .sidebar,.mobile-nav-open.sidebar-collapsed .sidebar{transform:translateX(0);box-shadow:14px 0 38px #1a0f2270}
   .sidebar-toggle{display:none}
-  .sidebar,.sidebar-collapsed .sidebar{grid-template-columns:100px minmax(0,1fr);gap:4px 8px;padding:7px 10px}
-  .sidebar .brand,.sidebar-collapsed .brand{width:100px}
-  .sidebar .brand img{max-width:94px}
-  .sidebar nav,.sidebar-collapsed nav{display:flex;align-items:center;gap:5px;min-width:0;overflow-x:auto;scrollbar-width:thin}
-  .sidebar .nav,.sidebar-collapsed .nav{padding:7px 9px;font-size:12px}
-  .sidebar .nav,.sidebar-collapsed .nav{flex:0 0 auto;white-space:nowrap}
+  .mobile-menu-close{position:absolute;top:14px;right:12px;display:grid;place-items:center;width:44px;min-height:44px;padding:0;color:#fff;background:#ffffff22;font-size:27px}
+  .sidebar .brand,.sidebar-collapsed .brand{width:auto;margin:0 48px 18px 0;padding:7px}
+  .sidebar .brand img{max-width:172px}
+  .sidebar nav,.sidebar-collapsed nav{display:grid;gap:4px;min-width:0;overflow:visible}
+  .sidebar .nav,.sidebar-collapsed .nav{flex:none;justify-content:flex-start;gap:12px;width:100%;min-height:48px;padding:9px 13px;white-space:normal;font-size:14px}
   .sidebar-collapsed .nav span,.sidebar-collapsed .sidebar-user>span:last-child{display:block}
-  .sidebar .sidebar-footer,.sidebar-collapsed .sidebar-footer{grid-column:1/-1;display:flex;gap:5px;width:100%;min-width:0;margin:0;padding:0;overflow-x:auto}
-  .sidebar .sidebar-footer .nav,.sidebar-collapsed .sidebar-footer .nav{width:auto;border-top:0}
-  .sidebar .nav .ui-icon{width:17px;height:17px}
+  .sidebar .sidebar-footer,.sidebar-collapsed .sidebar-footer{display:grid;gap:4px;width:100%;margin-top:auto;padding-top:14px;overflow:visible}
+  .sidebar .sidebar-footer .nav,.sidebar-collapsed .sidebar-footer .nav{width:100%;border-top:0;border-radius:9px}
+  .sidebar-user-avatar{display:none}
+  .sidebar .sidebar-user,.sidebar-collapsed .sidebar-user{padding:12px 10px 0}
+  .mobile-nav-backdrop{position:fixed;z-index:100;inset:0;display:block;width:100%;height:100%;min-height:0;padding:0;border:0;border-radius:0;background:#15101b80;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .22s ease,visibility .22s ease}
+  .mobile-nav-open .mobile-nav-backdrop{opacity:1;visibility:visible;pointer-events:auto}
   .app{padding:12px 12px 28px}
-  .topbar{margin:-12px -12px 14px;padding:12px}
-  .account-tools{padding:8px 12px}
+  .topbar{position:relative;display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:8px;margin:-12px -12px 12px;padding:10px 12px}
+  .topbar-title{min-width:0}
+  .topbar-title .eyebrow{display:none}
+  .topbar h1{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:18px}
+  .mobile-menu-button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;width:44px;min-height:44px;padding:0;color:var(--brand);background:var(--brand-soft);border:1px solid #e2d2e8}
+  .mobile-menu-button span{display:block;width:19px;height:2px;border-radius:2px;background:currentColor}
+  .admin-controls{display:contents}
+  .account-dropdown{grid-column:3;grid-row:1}
+  .account-dropdown summary{display:flex;align-items:center;justify-content:center;width:44px;min-height:44px;padding:0}
+  .admin-avatar{gap:0}
+  .admin-avatar span{width:36px;height:36px}
+  .admin-avatar strong,.admin-avatar b{display:none}
+  .branch-switcher:not(.hidden){grid-column:1/-1;grid-row:2;width:100%;min-width:0;margin:0}
+  .branch-switcher select{margin:0}
+  .account-tools{gap:8px;padding:4px 12px 8px;font-size:12px}
+  .account-tools button{flex:1;padding:7px 9px}
   .panel{padding:16px}
+  .metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+  .metrics article{min-width:0;padding:12px}
+  .metrics .metric-card{display:block;min-height:118px}
+  .metrics .metric-icon{width:34px;height:34px;margin-bottom:8px}
+  .metrics strong{font-size:clamp(18px,5vw,22px);white-space:nowrap}
+  .pos-mode-switch{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .pos-mode-switch span{min-height:68px;padding:10px}
+  .payment-methods{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .payment-methods button:last-child{grid-column:auto}
+  .payment-methods button{min-width:0;padding:8px;font-size:13px}
+  .payment-balance{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .payment-balance article:last-child{grid-column:1/-1}
+  .pos-sale-heading{gap:8px}
+  .print-last-receipt{margin-left:auto;padding:7px 10px;font-size:12px}
+  .booking-date-heading{gap:10px}
+  .booking-header-actions>#newBookingButton{min-height:42px}
+  .booking-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
+  .booking-dialog form{padding:16px}
+  .booking-service-row{grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .booking-service-row button{grid-column:2}
   .cart-summary{min-height:0}
   .held-sales-heading{align-items:stretch;flex-direction:column}
   .held-sales-heading label{width:100%}
