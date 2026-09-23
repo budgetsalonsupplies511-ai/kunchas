@@ -42251,6 +42251,21 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .branch-dialog [hidden] { display:none!important; }
 @media(max-width:700px){.branch-dialog-header,.branch-dialog-body{padding:18px}.branch-dialog-footer{padding:14px 18px}.branch-form-section{padding:14px}.branch-form-section .section-heading{flex-wrap:wrap;gap:12px}.branch-closure-row{grid-template-columns:1fr}.branch-closure-row button{justify-self:start}.branch-dialog .grid{gap:0}}
 @media(max-width:700px){
+  #branchEditor .table-wrap{max-width:100%;overflow-x:hidden}
+  .branch-hours-table{min-width:0;width:100%;table-layout:auto}
+  .branch-hours-table thead{display:none}
+  .branch-hours-table tbody{display:grid;gap:10px}
+  .branch-hours-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px;border:1px solid var(--line);border-radius:9px}
+  .branch-hours-table td{display:block;min-width:0;padding:0}
+  .branch-hours-table td:first-child{grid-column:1/-1;font-weight:800}
+  .branch-hours-table td:nth-child(2)::before,.branch-hours-table td:nth-child(3)::before{display:block;margin-bottom:4px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}
+  .branch-hours-table td:nth-child(2)::before{content:"Open"}
+  .branch-hours-table td:nth-child(3)::before{content:"Close"}
+  .branch-hours-table td:last-child{grid-column:1/-1;display:flex;align-items:center;gap:8px}
+  .branch-hours-table td:last-child::after{content:"Closed";font-size:12px;font-weight:700}
+  #branchHoursEditor input[type=time]{width:100%;min-width:0;font-size:16px}
+}
+@media(max-width:700px){
   .service-excel-panel>.section-heading{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
   .service-excel-panel .excel-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
   .service-excel-panel .excel-actions>.button-link,.service-excel-panel .excel-actions>button{display:grid;place-items:center;min-width:0;min-height:44px;margin:0;padding:8px;text-align:center;line-height:1.25;font-size:13px}
