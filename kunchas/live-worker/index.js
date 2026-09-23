@@ -39133,7 +39133,7 @@ function renderStaff() {
   const status = document.querySelector("#staffStatusFilter").value;
   const staffRows = state.staff.filter(person => (!status || person.status === status) && [person.name,person.role,person.email,person.phone].join(" ").toLowerCase().includes(search));
   document.querySelector("#staffCount").textContent = staffRows.length + " of " + state.staff.length + " staff \xB7 " + state.staff.filter(person => person.status === "Active").length + " active";
-  document.querySelector("#staffTable").innerHTML = staffRows.map((staff) => '<tr class="staff-row" data-staff-id="' + esc(staff.id) + '" tabindex="0"><td><strong>' + esc(staff.name) + '</strong><div class="hint">' + esc(staff.email || staff.phone || "") + '</div></td><td>' + esc(staff.role || "") + '<div class="hint">Access: ' + esc(roleName(staff.access_role)) + '</div></td><td>' + esc(dayOffLabel(staff.id)) + '</td><td>' + '<span class="pill">' + esc(staff.status) + '</span></td><td><strong>' + money(staffSalesTotal(staff.id)) + '</strong></td></tr>').join("");
+  document.querySelector("#staffTable").innerHTML = staffRows.map((staff) => '<tr class="staff-row" data-staff-id="' + esc(staff.id) + '" tabindex="0"><td><strong>' + esc(staff.name) + '</strong><div class="hint">' + esc(staff.email || staff.phone || "") + '</div></td><td>' + esc(staff.role || "") + '<div class="hint">Access: ' + esc(roleName(staff.access_role)) + '</div></td><td data-label="Day off">' + esc(dayOffLabel(staff.id)) + '</td><td>' + '<span class="pill">' + esc(staff.status) + '</span></td><td data-label="Sales made"><strong>' + money(staffSalesTotal(staff.id)) + '</strong></td></tr>').join("");
   if (!staffRows.length) document.querySelector("#staffTable").innerHTML = '<tr><td colspan="5" class="empty-state">No staff match your search.</td></tr>';
   if (document.querySelector("#staffForm").hidden) document.querySelector("#staffForm [data-day-off-checks]").innerHTML = dayOffChecksHtml();
   document.querySelectorAll(".staff-row").forEach((row) => {
@@ -41610,6 +41610,33 @@ button:disabled { cursor:wait; opacity:.65; }
 .staff-list-filters input { min-width:240px; }
 @media(max-width:640px) { .staff-list-heading { align-items:stretch; flex-direction:column; } .staff-list-filters { display:grid; grid-template-columns:1fr; } .staff-list-filters input { min-width:0; } .account-dropdown summary strong { max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } }
 @media(max-width:700px){.team-tabs{gap:14px;overflow-x:auto}.team-tabs button{white-space:nowrap}.role-summary-grid{grid-template-columns:1fr}.role-summary-card{min-height:0}}
+@media(max-width:700px){
+  .team-tabs{gap:0;padding:0;overflow:visible}
+  .team-tabs button{flex:1;min-width:0;white-space:normal;padding:6px 2px;font-size:10px;line-height:1.2;letter-spacing:0}
+  .page-heading #addStaffButton{flex:0 0 auto;align-self:flex-start;min-height:42px;padding:9px 12px;white-space:nowrap;font-size:13px}
+  .section-heading.staff-list-heading{align-items:stretch;gap:12px}
+  .staff-directory,.staff-directory>.panel,.staff-list-heading,.staff-list-filters{min-width:0}
+  .staff-list-filters{width:100%}
+  .staff-list-filters label,.staff-list-filters input,.staff-list-filters select{width:100%;min-width:0}
+  .staff-directory .table-wrap{width:100%;overflow:visible}
+  .staff-directory table,.staff-directory tbody{display:block;width:100%;min-width:0}
+  .staff-directory thead{display:none}
+  .staff-directory tbody{display:grid;gap:10px}
+  .staff-directory .staff-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px 12px;min-width:0;padding:13px;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:0 4px 14px #3818420a}
+  .staff-directory .staff-row:hover,.staff-directory .staff-row:focus-visible{border-color:#cbaed5;background:#fdf9ff;outline:2px solid #eadcf0;outline-offset:1px}
+  .staff-directory .staff-row td{display:block;min-width:0;padding:0;border:0;font-size:13px;overflow-wrap:anywhere}
+  .staff-directory .staff-row td:first-child{grid-column:1;grid-row:1}
+  .staff-directory .staff-row td:first-child strong{font-size:15px}
+  .staff-directory .staff-row td:nth-child(2){grid-column:1/-1;grid-row:2}
+  .staff-directory .staff-row td:nth-child(3){grid-column:1;grid-row:3}
+  .staff-directory .staff-row td:nth-child(4){grid-column:2;grid-row:1;justify-self:end}
+  .staff-directory .staff-row td:nth-child(5){grid-column:2;grid-row:3;justify-self:end;text-align:right;white-space:nowrap}
+  .staff-directory .staff-row td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+  .staff-directory .staff-row .hint{margin-top:2px;font-size:12px}
+  .staff-directory .staff-row .pill{font-size:11px;padding:3px 7px}
+  .staff-directory tbody>tr:not(.staff-row){display:block}
+  .staff-directory tbody>tr:not(.staff-row) td{display:block;padding:16px 4px}
+}
 .admin-controls,.admin-avatar { display:flex; align-items:center; gap:14px; }
 .branch-switcher { min-width:250px; margin:0; }
 .branch-switcher span { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; }
