@@ -473,20 +473,20 @@ async function branchGate(request, env, personal) {
       if (matches.some((row) => row.branch_id !== branchId)) return { response: json({ error: "Customer belongs to another branch." }, 403) };
     }
   }
-  if (p === "/api/pos-actors") return { response: json({ actors: (await actorAccounts(env, branchId)).map((a) => ({ id: a.id, name: a.name || "Owner", role: a.role })) }) };
+  if (p === "/api/pos-actors") return { response: json({ actors: (await actorAccounts(env, branchId, false, url.searchParams.get("purpose") === "time-clock")).map((a) => ({ id: a.id, name: a.name || "Owner", role: a.role })) }) };
   return { user };
 }
 __name(branchGate, "branchGate");
-async function actorAccounts(env, branchId, anyBranch = false) {
-  return (await rows2(env, "SELECT u.*,s.name,s.status AS staff_status,r.permissions FROM access_users u LEFT JOIN staff s ON s.id=u.staff_id LEFT JOIN access_roles r ON r.role=u.role WHERE u.enabled=1 AND u.role IN ('owner','admin','manager','staff')")).filter((a) => (!a.staff_id || a.staff_status === "Active") && (anyBranch || a.role === "owner" || a.all_branches || parse2(a.branch_ids).includes(branchId)));
+async function actorAccounts(env, branchId, anyBranch = false, clocking = false) {
+  return (await rows2(env, "SELECT u.*,s.name,s.role AS job_role,s.status AS staff_status,r.permissions FROM access_users u LEFT JOIN staff s ON s.id=u.staff_id LEFT JOIN access_roles r ON r.role=u.role WHERE u.enabled=1 AND u.role IN ('owner','admin','manager','staff')")).filter((a) => (!a.staff_id || a.staff_status === "Active") && (anyBranch || clocking && (a.role === "manager" || /\bmanager\b/i.test(a.job_role || "")) || a.role === "owner" || a.all_branches || parse2(a.branch_ids).includes(branchId)));
 }
 __name(actorAccounts, "actorAccounts");
-async function verifyActor(request, env, branchId, elevated = false, reasonRequired = elevated, managerOnly = false, checkout = false) {
+async function verifyActor(request, env, branchId, elevated = false, reasonRequired = elevated, managerOnly = false, checkout = false, clocking = false) {
   const body = await request.clone().json(), id = text2(body.actorId), pin = text2(body.actorPin), ip = request.headers.get("cf-connecting-ip") || "local";
   if (!/^\d{6,12}$/.test(pin)) return { response: json({ error: "Enter your individual staff PIN." }, 403) };
   const limitKey = "action-pin:" + await digest2(ip + ":" + (id || branchId));
   if (!await limit(env, limitKey)) return { response: json({ error: "Too many PIN attempts. Try again in 15 minutes." }, 429) };
-  const eligible = (await actorAccounts(env, branchId, checkout && !elevated && !managerOnly)).filter((a) => managerOnly ? a.role === "manager" : !elevated || ["owner", "admin", "manager"].includes(a.role));
+  const eligible = (await actorAccounts(env, branchId, checkout && !elevated && !managerOnly, clocking)).filter((a) => managerOnly ? a.role === "manager" : !elevated || ["owner", "admin", "manager"].includes(a.role));
   let account = id ? eligible.find((a) => a.id === id) : null;
   if (account) {
     const actual = await hashPin(pin, account.pin_salt || "dummy-action-pin");
@@ -589,8 +589,8 @@ __name(posPinHtml, "posPinHtml");
 function posPinScript() {
   return `
 let pendingActor=null,editingSale=null,saleEditActor=null;
-async function askActor(branchId,elevated=false,title='Confirm with your staff PIN',reasonRequired=elevated,managerOnly=false,checkout=false){
-  const result=checkout?{actors:[]}:await api('/api/pos-actors?branchId='+encodeURIComponent(branchId));
+async function askActor(branchId,elevated=false,title='Confirm with your staff PIN',reasonRequired=elevated,managerOnly=false,checkout=false,clocking=false){
+  const result=checkout?{actors:[]}:await api('/api/pos-actors?branchId='+encodeURIComponent(branchId)+(clocking?'&purpose=time-clock':''));
   const form=document.querySelector('#actorForm');form.reset();
   form.elements.actorId.innerHTML=result.actors.filter(a=>managerOnly?a.role==='manager':!elevated||['owner','admin','manager'].includes(a.role)).map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name)+' ('+esc(a.role)+')</option>').join('');
   if(!checkout&&!form.elements.actorId.options.length)throw Error('No enabled '+(elevated?'manager':'staff')+' accounts are assigned to this branch. Configure them in Staff.');
@@ -37084,7 +37084,7 @@ async function importProducts(request, env) {
 }
 __name(importProducts, "importProducts");
 async function recordTimeClock(request, env) {
-  const who = await verifyActor(request, env, request.headers.get("x-branch-id"));
+  const who = await verifyActor(request, env, request.headers.get("x-branch-id"), false, false, false, false, true);
   if (who.response) return who.response;
   if (who.actor.staffId !== (await request.clone().json()).staffId) return jsonResponse({ error: "Use the PIN of the selected staff member." }, 403);
   const body = await request.json();
@@ -37120,9 +37120,9 @@ async function recordTimeClock(request, env) {
 }
 __name(recordTimeClock, "recordTimeClock");
 function reportDateRange(url) {
-  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const today = sydneyReportDate(new Date());
   const monthStart = today.slice(0, 8) + "01";
-  const validDate2 = /* @__PURE__ */ __name((value) => /^\d{4}-\d{2}-\d{2}$/.test(value || ""), "validDate");
+  const validDate2 = /* @__PURE__ */ __name((value) => /^\d{4}-\d{2}-\d{2}$/.test(value || "") && !Number.isNaN(Date.parse(value + "T00:00:00Z")), "validDate");
   const from = validDate2(url.searchParams.get("from")) ? url.searchParams.get("from") : monthStart;
   const to = validDate2(url.searchParams.get("to")) ? url.searchParams.get("to") : today;
   return { from: from <= to ? from : to, to: to >= from ? to : from, branchId: clean(url.searchParams.get("branchId")) };
@@ -37133,73 +37133,65 @@ function reportHours(entry) {
   return Math.max(0, (new Date(entry.clock_out).getTime() - new Date(entry.clock_in).getTime()) / 36e5 - Number(entry.break_minutes || 0) / 60);
 }
 __name(reportHours, "reportHours");
+function sydneyReportDate(value) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-AU", { timeZone:"Australia/Sydney", year:"numeric", month:"2-digit", day:"2-digit" }).formatToParts(new Date(value)).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 async function buildReportData(url, env, accessUser) {
   const { from, to, branchId } = reportDateRange(url);
   const scopeParams = scopeReportParams(accessUser);
-  const scope = /* @__PURE__ */ __name((column) => scopeReportSql(accessUser, column), "scope");
+  const scope = (column) => scopeReportSql(accessUser, column);
   const params = [from, to, branchId, branchId, ...scopeParams];
-  const [branches, staff, sales, saleItems, bookings, roster, timeEntries] = await Promise.all([
+  const previousUtcDay = new Date(Date.parse(from + "T00:00:00Z") - 86400000).toISOString().slice(0, 10);
+  const timestampParams = [previousUtcDay, to, branchId, branchId, ...scopeParams];
+  const [branches, staff, rawSales, rawSaleItems, bookings, rawTimeEntries] = await Promise.all([
     all(env, `SELECT * FROM branches WHERE (? = '' OR id = ?)${scope("id")} ORDER BY name`, [branchId, branchId, ...scopeParams]),
-    all(env, "SELECT * FROM staff ORDER BY name"),
+    all(env, "SELECT s.*, COALESCE(u.role, 'none') AS access_role FROM staff s LEFT JOIN access_users u ON u.staff_id = s.id ORDER BY s.name"),
     all(env, `SELECT s.*, date(s.created_at) AS report_date, br.name AS branch_name FROM sales s LEFT JOIN branches br ON br.id = s.branch_id
-      WHERE date(s.created_at) BETWEEN ? AND ? AND (? = '' OR s.branch_id = ?)${scope("s.branch_id")} ORDER BY s.created_at`, params),
+      WHERE date(s.created_at) BETWEEN ? AND ? AND (? = '' OR s.branch_id = ?)${scope("s.branch_id")} ORDER BY s.created_at`, timestampParams),
     all(env, `SELECT si.*, s.created_at, date(s.created_at) AS report_date, s.branch_id, br.name AS branch_name FROM sale_items si
       JOIN sales s ON s.id = si.sale_id LEFT JOIN branches br ON br.id = s.branch_id
-      WHERE date(s.created_at) BETWEEN ? AND ? AND (? = '' OR s.branch_id = ?)${scope("s.branch_id")} ORDER BY s.created_at`, params),
+      WHERE date(s.created_at) BETWEEN ? AND ? AND (? = '' OR s.branch_id = ?)${scope("s.branch_id")} ORDER BY s.created_at`, timestampParams),
     all(env, `SELECT b.*, br.name AS branch_name FROM bookings b LEFT JOIN branches br ON br.id = b.branch_id
       WHERE b.booking_date BETWEEN ? AND ? AND (? = '' OR b.branch_id = ?)${scope("b.branch_id")} ORDER BY b.booking_date, b.booking_time`, params),
-    all(env, `SELECT sr.*, br.name AS branch_name FROM staff_roster sr LEFT JOIN branches br ON br.id = sr.branch_id
-      WHERE sr.roster_date BETWEEN ? AND ? AND (? = '' OR sr.branch_id = ?)${scope("sr.branch_id")} AND sr.status = 'Working'`, params),
     all(env, `SELECT te.*, st.name AS staff_name, st.role, st.hourly_rate_cents, st.xero_employee_id, st.xero_earnings_rate_id, br.name AS branch_name
       FROM time_entries te LEFT JOIN staff st ON st.id = te.staff_id LEFT JOIN branches br ON br.id = te.branch_id
-      WHERE date(te.clock_in) BETWEEN ? AND ? AND (? = '' OR te.branch_id = ?)${scope("te.branch_id")} ORDER BY te.clock_in`, params)
+      WHERE date(te.clock_in) BETWEEN ? AND ? AND (? = '' OR te.branch_id = ?)${scope("te.branch_id")} ORDER BY te.clock_in`, timestampParams)
   ]);
-  const branchRows = branches.map((branch) => ({ branchId: branch.id, branch: branch.name, revenueCents: 0, transactions: 0, productsSold: 0, servicesSold: 0, onlineBookings: 0, manualBookings: 0, walkIns: 0 }));
-  const branchRow = /* @__PURE__ */ __name((id) => branchRows.find((row) => row.branchId === id), "branchRow");
-  sales.forEach((sale) => {
-    const row = branchRow(sale.branch_id);
-    if (row) {
-      row.revenueCents += Number(sale.total_cents || 0);
-      row.transactions += 1;
-    }
-  });
-  saleItems.forEach((item) => {
-    const row = branchRow(item.branch_id);
-    if (row) {
-      if (item.service_id) row.servicesSold += Number(item.quantity || 0);
-      else row.productsSold += Number(item.quantity || 0);
-    }
-  });
-  bookings.forEach((booking) => {
-    const row = branchRow(booking.branch_id);
-    if (!row || ["Cancelled", "No show"].includes(booking.status)) return;
-    if (booking.source === "Manual") row.manualBookings += 1;
-    else row.onlineBookings += 1;
-  });
+  const inRange = (value) => { const date = sydneyReportDate(value); return date >= from && date <= to; };
+  const sales = rawSales.filter((sale) => inRange(sale.created_at));
+  const saleItems = rawSaleItems.filter((item) => inRange(item.created_at));
+  const timeEntries = rawTimeEntries.filter((entry) => inRange(entry.clock_in));
+
+  const branchRows = branches.map((branch) => ({ branchId:branch.id, branch:branch.name, revenueCents:0, transactions:0, productsSold:0, servicesSold:0, onlineBookings:0, manualBookings:0, walkIns:0 }));
+  const branchRow = (id) => branchRows.find((row) => row.branchId === id);
+  sales.forEach((sale) => { const row = branchRow(sale.branch_id); if (row) { row.revenueCents += Number(sale.total_cents || 0); row.transactions += 1; } });
+  saleItems.forEach((item) => { const row = branchRow(item.branch_id); if (row) { if (item.service_id) row.servicesSold += Number(item.quantity || 0); else row.productsSold += Number(item.quantity || 0); } });
+  bookings.forEach((booking) => { const row = branchRow(booking.branch_id); if (!row || ["Cancelled", "No show"].includes(booking.status)) return; if (booking.source === "Manual") row.manualBookings += 1; else row.onlineBookings += 1; });
   const bookedSaleIds = new Set(bookings.map((booking) => booking.sale_id).filter(Boolean));
-  sales.filter((sale) => !bookedSaleIds.has(sale.id)).forEach((sale) => {
-    const row = branchRow(sale.branch_id);
-    if (row) row.walkIns += 1;
-  });
-  const productMap = /* @__PURE__ */ new Map(), serviceMap = /* @__PURE__ */ new Map();
+  sales.filter((sale) => !bookedSaleIds.has(sale.id)).forEach((sale) => { const row = branchRow(sale.branch_id); if (row) row.walkIns += 1; });
+
+  const productMap = new Map(), serviceMap = new Map();
   saleItems.forEach((item) => {
     const map = item.service_id ? serviceMap : productMap;
-    const key2 = item.service_id || item.item_name;
-    const current = map.get(key2) || { name: item.item_name, quantity: 0, revenueCents: 0 };
+    const key = item.service_id || item.item_name;
+    const current = map.get(key) || { name:item.item_name, quantity:0, revenueCents:0 };
     current.quantity += Number(item.quantity || 0);
     current.revenueCents += Number(item.price_cents || 0) * Number(item.quantity || 0);
-    map.set(key2, current);
+    map.set(key, current);
   });
-  const staffRows = staff.map((person) => ({ staffId: person.id, staff: person.name, role: person.role || "Staff", creditedSalesCents: 0, serviceItems: 0, managerStoreSalesCents: 0 }));
-  const staffDailyMap = /* @__PURE__ */ new Map(), branchDailyMap = /* @__PURE__ */ new Map();
-  const saleDate = /* @__PURE__ */ __name((record) => record.report_date || String(record.created_at || "").slice(0, 10), "saleDate");
-  const dateBranchKey = /* @__PURE__ */ __name((date, id) => JSON.stringify([date, id]), "dateBranchKey");
+
+  const staffRows = staff.map((person) => ({ staffId:person.id, staff:person.name, role:person.role || "Staff", creditedSalesCents:0, serviceItems:0, managerStoreSalesCents:0 }));
+  const staffDailyMap = new Map(), branchDailyMap = new Map();
+  const saleDate = (record) => sydneyReportDate(record.created_at);
+  const dateBranchKey = (date, id) => JSON.stringify([date, id]);
   for (const sale of sales) {
-    const date = saleDate(sale), key2 = dateBranchKey(date, sale.branch_id);
-    const row = branchDailyMap.get(key2) || { date, branchId: sale.branch_id, branch: sale.branch_name || "Branch", revenueCents: 0, transactions: 0, productsSold: 0, servicesSold: 0 };
+    const date = saleDate(sale), key = dateBranchKey(date, sale.branch_id);
+    const row = branchDailyMap.get(key) || { date, branchId:sale.branch_id, branch:sale.branch_name || "Branch", revenueCents:0, transactions:0, productsSold:0, servicesSold:0 };
     row.revenueCents += Number(sale.total_cents || 0);
     row.transactions += 1;
-    branchDailyMap.set(key2, row);
+    branchDailyMap.set(key, row);
   }
   for (const item of saleItems) {
     const row = branchDailyMap.get(dateBranchKey(saleDate(item), item.branch_id));
@@ -37207,16 +37199,8 @@ async function buildReportData(url, env, accessUser) {
   }
   saleItems.forEach((item) => {
     let ids = [], allocations = [];
-    try {
-      ids = JSON.parse(item.staff_ids || "[]");
-    } catch (_) {
-      ids = [];
-    }
-    try {
-      allocations = JSON.parse(item.staff_allocations || "[]");
-    } catch (_) {
-      allocations = [];
-    }
+    try { ids = JSON.parse(item.staff_ids || "[]"); } catch (_) { ids = []; }
+    try { allocations = JSON.parse(item.staff_allocations || "[]"); } catch (_) { allocations = []; }
     ids = Array.isArray(ids) ? [...new Set(ids)] : [];
     if (!Array.isArray(allocations)) allocations = [];
     ids.forEach((staffId) => {
@@ -37228,48 +37212,57 @@ async function buildReportData(url, env, accessUser) {
       if (!credit) credit = Math.round(Number(item.price_cents || 0) / Math.max(ids.length, 1));
       row.creditedSalesCents += credit;
       row.serviceItems += item.service_id ? Number(item.quantity || 0) : 0;
-      const date = saleDate(item), key2 = JSON.stringify([date, item.branch_id, staffId]);
-      const daily = staffDailyMap.get(key2) || { date, staffId, staff: row.staff, role: row.role, branchId: item.branch_id, branch: item.branch_name || "Branch", creditedSalesCents: 0, serviceItems: 0, saleIds: /* @__PURE__ */ new Set() };
+      const date = saleDate(item), key = JSON.stringify([date, item.branch_id, staffId]);
+      const daily = staffDailyMap.get(key) || { date, staffId, staff:row.staff, role:row.role, branchId:item.branch_id, branch:item.branch_name || "Branch", creditedSalesCents:0, serviceItems:0, saleIds:new Set() };
       daily.creditedSalesCents += credit;
       daily.serviceItems += item.service_id ? Number(item.quantity || 0) : 0;
       daily.saleIds.add(item.sale_id);
-      staffDailyMap.set(key2, daily);
+      staffDailyMap.set(key, daily);
     });
   });
-  const managerDailyRows = [];
-  staffRows.filter((row) => /manager/i.test(row.role)).forEach((manager) => {
-    const assignments = /* @__PURE__ */ new Map();
-    roster.filter((entry) => entry.staff_id === manager.staffId).forEach((entry) => assignments.set(dateBranchKey(entry.roster_date, entry.branch_id), entry));
-    for (const [key2, assignment] of assignments) {
-      const branchDay = branchDailyMap.get(key2);
-      const revenueCents2 = branchDay?.revenueCents || 0;
-      manager.managerStoreSalesCents += revenueCents2;
-      managerDailyRows.push({ date: assignment.roster_date, staffId: manager.staffId, manager: manager.staff, branchId: assignment.branch_id, branch: assignment.branch_name || "Branch", revenueCents: revenueCents2, transactions: branchDay?.transactions || 0 });
-    }
-  });
-  const dailyOrder = /* @__PURE__ */ __name((left, right) => right.date.localeCompare(left.date) || left.branch.localeCompare(right.branch) || String(left.staff || left.manager || "").localeCompare(String(right.staff || right.manager || "")), "dailyOrder");
-  const staffDailyRows = [...staffDailyMap.values()].map(({ saleIds, ...row }) => ({ ...row, transactions: saleIds.size })).sort(dailyOrder);
+  const managerDailyRows = [], managers = new Map(staffRows.filter((row) => {
+    const person = staff.find((entry) => entry.id === row.staffId);
+    return person?.access_role === "manager" || /\bmanager\b/i.test(row.role);
+  }).map((row) => [row.staffId, row]));
+  const managerDays = new Map();
+  for (const entry of timeEntries) {
+    if (!managers.has(entry.staff_id)) continue;
+    const date = sydneyReportDate(entry.clock_in), key = dateBranchKey(date, entry.branch_id);
+    const day = managerDays.get(key) || { date, branchId:entry.branch_id, branch:entry.branch_name || "Branch", ids:new Set() };
+    day.ids.add(entry.staff_id);
+    managerDays.set(key, day);
+  }
+  for (const [key, day] of managerDays) {
+    const branchDay = branchDailyMap.get(key), branchRevenueCents = branchDay?.revenueCents || 0;
+    const ids = [...day.ids].sort(), base = Math.trunc(branchRevenueCents / ids.length), remainder = branchRevenueCents - base * ids.length;
+    ids.forEach((id, index) => {
+      const manager = managers.get(id), revenueCents = base + (index < Math.abs(remainder) ? Math.sign(remainder) : 0);
+      manager.managerStoreSalesCents += revenueCents;
+      managerDailyRows.push({ date:day.date, staffId:id, manager:manager.staff, branchId:day.branchId, branch:day.branch, branchRevenueCents, managerCount:ids.length, revenueCents, transactions:branchDay?.transactions || 0 });
+    });
+  }
+  const dailyOrder = (left, right) => right.date.localeCompare(left.date) || left.branch.localeCompare(right.branch) || String(left.staff || left.manager || "").localeCompare(String(right.staff || right.manager || ""));
+  const staffDailyRows = [...staffDailyMap.values()].map(({ saleIds, ...row }) => ({ ...row, transactions:saleIds.size })).sort(dailyOrder);
   const branchDailyRows = [...branchDailyMap.values()].sort(dailyOrder);
   managerDailyRows.sort(dailyOrder);
-  const bookingMap = /* @__PURE__ */ new Map();
-  const addBookingRow = /* @__PURE__ */ __name((branch, source, count, valueCents, completed = 0) => {
-    const key2 = `${branch}|${source}`;
-    const row = bookingMap.get(key2) || { branch, source, count: 0, valueCents: 0, completed: 0 };
-    row.count += count;
-    row.valueCents += valueCents;
-    row.completed += completed;
-    bookingMap.set(key2, row);
-  }, "addBookingRow");
+
+  const bookingMap = new Map();
+  const addBookingRow = (branch, source, count, valueCents, completed = 0) => {
+    const key = `${branch}|${source}`;
+    const row = bookingMap.get(key) || { branch, source, count:0, valueCents:0, completed:0 };
+    row.count += count; row.valueCents += valueCents; row.completed += completed; bookingMap.set(key, row);
+  };
   bookings.filter((booking) => !["Cancelled", "No show"].includes(booking.status)).forEach((booking) => addBookingRow(booking.branch_name || "Branch", booking.source === "Manual" ? "Manual" : "Online", 1, Number(booking.total_cents || 0), booking.status === "Completed" ? 1 : 0));
   sales.filter((sale) => !bookedSaleIds.has(sale.id)).forEach((sale) => addBookingRow(sale.branch_name || "Branch", "Walk-in", 1, Number(sale.total_cents || 0), 1));
+
   const payrollRows = timeEntries.map((entry) => {
     const hours = reportHours(entry);
-    return { id: entry.id, date: String(entry.clock_in || "").slice(0, 10), staffId: entry.staff_id, staff: entry.staff_name || "Staff", role: entry.role || "", branch: entry.branch_name || "Branch", clockIn: entry.clock_in, clockOut: entry.clock_out || "", breakMinutes: Number(entry.break_minutes || 0), hours, hourlyRateCents: Number(entry.hourly_rate_cents || 0), grossPayCents: Math.round(hours * Number(entry.hourly_rate_cents || 0)), xeroEmployeeId: entry.xero_employee_id || "", xeroEarningsRateId: entry.xero_earnings_rate_id || "", status: entry.clock_out ? "Complete" : entry.break_started_at ? "On break" : "Clocked in" };
+    return { id:entry.id, date:sydneyReportDate(entry.clock_in), staffId:entry.staff_id, staff:entry.staff_name || "Staff", role:entry.role || "", branch:entry.branch_name || "Branch", clockIn:entry.clock_in, clockOut:entry.clock_out || "", breakMinutes:Number(entry.break_minutes || 0), hours, hourlyRateCents:Number(entry.hourly_rate_cents || 0), grossPayCents:Math.round(hours * Number(entry.hourly_rate_cents || 0)), xeroEmployeeId:entry.xero_employee_id || "", xeroEarningsRateId:entry.xero_earnings_rate_id || "", status:entry.clock_out ? "Complete" : entry.break_started_at ? "On break" : "Clocked in" };
   });
   const revenueCents = sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
-  return { range: { from, to, branchId }, summary: { revenueCents, transactions: sales.length, productsSold: [...productMap.values()].reduce((sum, row) => sum + row.quantity, 0), servicesSold: [...serviceMap.values()].reduce((sum, row) => sum + row.quantity, 0), onlineBookings: bookings.filter((booking) => booking.source !== "Manual" && !["Cancelled", "No show"].includes(booking.status)).length, walkIns: sales.filter((sale) => !bookedSaleIds.has(sale.id)).length, workedHours: payrollRows.reduce((sum, row) => sum + row.hours, 0) }, branchRows, staffRows, staffDailyRows, managerDailyRows, branchDailyRows, productRows: [...productMap.values()], serviceRows: [...serviceMap.values()], bookingRows: [...bookingMap.values()], payrollRows };
+  return { range:{ from, to, branchId }, summary:{ revenueCents, transactions:sales.length, productsSold:[...productMap.values()].reduce((sum, row) => sum + row.quantity, 0), servicesSold:[...serviceMap.values()].reduce((sum, row) => sum + row.quantity, 0), onlineBookings:bookings.filter((booking) => booking.source !== "Manual" && !["Cancelled", "No show"].includes(booking.status)).length, walkIns:sales.filter((sale) => !bookedSaleIds.has(sale.id)).length, workedHours:payrollRows.reduce((sum, row) => sum + row.hours, 0) }, branchRows, staffRows, staffDailyRows, managerDailyRows, branchDailyRows, productRows:[...productMap.values()], serviceRows:[...serviceMap.values()], bookingRows:[...bookingMap.values()], payrollRows };
 }
-__name(buildReportData, "buildReportData");
+
 async function getReports(url, env, accessUser) {
   return jsonResponse(await buildReportData(url, env, accessUser));
 }
@@ -37302,10 +37295,10 @@ async function exportReport(url, env, accessUser) {
   const report = await buildReportData(url, env, accessUser);
   const type = clean(url.searchParams.get("type"));
   if (type === "staff-daily") return excelReportResponse("Staff Sales by Date", ["Date", "Staff", "Role", "Branch", "Credited Sales", "Services Credited", "Transactions"], report.staffDailyRows.map((row) => [row.date, row.staff, row.role, row.branch, row.creditedSalesCents / 100, row.serviceItems, row.transactions]));
-  if (type === "manager-daily") return excelReportResponse("Manager Sales by Date", ["Date", "Manager", "Branch", "Managed Store Sales", "Transactions"], report.managerDailyRows.map((row) => [row.date, row.manager, row.branch, row.revenueCents / 100, row.transactions]));
+  if (type === "manager-daily") return excelReportResponse("Manager Sales by Date", ["Date", "Manager", "Branch", "Branch Sales", "Managers Clocked In", "Manager Share", "Branch Transactions"], report.managerDailyRows.map((row) => [row.date, row.manager, row.branch, row.branchRevenueCents / 100, row.managerCount, row.revenueCents / 100, row.transactions]));
   if (type === "branch-daily") return excelReportResponse("Branch Sales by Date", ["Date", "Branch", "Total Sales", "Transactions", "Products Sold", "Services Sold"], report.branchDailyRows.map((row) => [row.date, row.branch, row.revenueCents / 100, row.transactions, row.productsSold, row.servicesSold]));
   if (type === "branch") return excelReportResponse("Branch Sales", ["Branch", "Sales", "Transactions", "Products Sold", "Services Sold", "Online Bookings", "Manual Bookings", "Walk-ins"], report.branchRows.map((row) => [row.branch, row.revenueCents / 100, row.transactions, row.productsSold, row.servicesSold, row.onlineBookings, row.manualBookings, row.walkIns]));
-  if (type === "staff") return excelReportResponse("Staff and Managers", ["Staff", "Role", "Credited Sales", "Services Sold", "Managed Store Sales"], report.staffRows.map((row) => [row.staff, row.role, row.creditedSalesCents / 100, row.serviceItems, row.managerStoreSalesCents / 100]));
+  if (type === "staff") return excelReportResponse("Staff and Managers", ["Staff", "Role", "Credited Sales", "Services Sold", "Manager Share"], report.staffRows.map((row) => [row.staff, row.role, row.creditedSalesCents / 100, row.serviceItems, row.managerStoreSalesCents / 100]));
   if (type === "products") return excelReportResponse("Products Sold", ["Product", "Quantity", "Sales"], report.productRows.map((row) => [row.name, row.quantity, row.revenueCents / 100]));
   if (type === "services") return excelReportResponse("Services Sold", ["Service", "Quantity", "Sales"], report.serviceRows.map((row) => [row.name, row.quantity, row.revenueCents / 100]));
   if (type === "bookings") return excelReportResponse("Booking Sources", ["Branch", "Source", "Bookings or Visits", "Value", "Completed"], report.bookingRows.map((row) => [row.branch, row.source, row.count, row.valueCents / 100, row.completed]));
@@ -38248,10 +38241,10 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       <div class="panel report-filter-panel"><div><p class="eyebrow">Performance centre</p><h2>Business reports</h2><p class="hint">Filter once, then export any section.</p></div><div class="report-filters"><label>From<input id="reportFrom" type="date"></label><label>To<input id="reportTo" type="date"></label><label class="mobile-report-picker">Report by<select id="mobileReportType"><option value="overview">Overview</option><option value="staff">Staff</option><option value="branch">Branch</option><option value="manager">Manager</option><option value="services">Services</option><option value="products">Products</option><option value="bookings">Bookings</option><option value="payroll">Payroll</option><option value="closing">Closing review</option><option value="all">All reports</option></select></label><label>Branch<select id="reportBranch"><option value="">All branches</option></select></label><button class="primary" id="applyReportFilters" type="button">Get report</button></div></div>
       <div class="metrics report-summary" id="reportMetrics"></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Staff sales by date</h2><p class="hint">Daily credited sales for each staff member at each branch. Shared services use the recorded staff allocation.</p></div><a class="secondary button-link report-export" data-report-type="staff-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Role</th><th>Branch</th><th>Credited sales</th><th>Services credited</th><th>Transactions</th></tr></thead><tbody id="reportStaffDailyTable"></tbody></table></div></div>
-      <div class="panel report-section"><div class="section-heading"><div><h2>Manager sales by date</h2><p class="hint">Daily branch sales for each manager rostered there. If managers share a branch on the same day, each receives that branch total.</p></div><a class="secondary button-link report-export" data-report-type="manager-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Manager</th><th>Branch</th><th>Managed store sales</th><th>Transactions</th></tr></thead><tbody id="reportManagerDailyTable"></tbody></table></div></div>
+      <div class="panel report-section"><div class="section-heading"><div><h2>Manager sales by date</h2><p class="hint">Branch sales are shared equally between managers who clocked in that day.</p></div><a class="secondary button-link report-export" data-report-type="manager-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Manager</th><th>Branch</th><th>Branch sales</th><th>Managers</th><th>Manager share</th><th>Branch transactions</th></tr></thead><tbody id="reportManagerDailyTable"></tbody></table></div></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Branch sales by date</h2><p class="hint">Daily sales and transaction totals for each branch in the selected period.</p></div><a class="secondary button-link report-export" data-report-type="branch-daily">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Total sales</th><th>Transactions</th><th>Products</th><th>Services</th></tr></thead><tbody id="reportBranchDailyTable"></tbody></table></div></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Sales by branch</h2><p class="hint">Store sales, transactions, product and service volume, bookings and walk-ins.</p></div><a class="secondary button-link report-export" data-report-type="branch">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Total sales</th><th>Transactions</th><th>Products</th><th>Services</th><th>Online</th><th>Manual</th><th>Walk-ins</th></tr></thead><tbody id="reportBranchTable"></tbody></table></div></div>
-      <div class="panel report-section"><div class="section-heading"><div><h2>Staff and manager sales</h2><p class="hint">Staff credited sales; manager store sales add the branch totals for each day they were rostered there.</p></div><a class="secondary button-link report-export" data-report-type="staff">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Staff</th><th>Role</th><th>Credited sales</th><th>Services sold</th><th>Managed store sales</th></tr></thead><tbody id="reportStaffTable"></tbody></table></div></div>
+      <div class="panel report-section"><div class="section-heading"><div><h2>Staff and manager sales</h2><p class="hint">Staff keep their service sales credit. Managers receive a share of each branch day they clocked in.</p></div><a class="secondary button-link report-export" data-report-type="staff">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Staff</th><th>Role</th><th>Credited sales</th><th>Services sold</th><th>Manager share</th></tr></thead><tbody id="reportStaffTable"></tbody></table></div></div>
       <div class="report-two-column"><div class="panel report-section"><div class="section-heading"><div><h2>Products sold</h2></div><a class="secondary button-link report-export" data-report-type="products">Export</a></div><div class="table-wrap"><table><thead><tr><th>Product</th><th>Qty</th><th>Sales</th></tr></thead><tbody id="reportProductsTable"></tbody></table></div></div><div class="panel report-section"><div class="section-heading"><div><h2>Services sold</h2></div><a class="secondary button-link report-export" data-report-type="services">Export</a></div><div class="table-wrap"><table><thead><tr><th>Service</th><th>Qty</th><th>Sales</th></tr></thead><tbody id="reportServicesTable"></tbody></table></div></div></div>
       <div class="panel report-section"><div class="section-heading"><div><h2>Bookings and walk-ins</h2><p class="hint">Online bookings, branch-created manual bookings, and POS visits without a booking.</p></div><a class="secondary button-link report-export" data-report-type="bookings">Export Excel</a></div><div class="table-wrap"><table><thead><tr><th>Branch</th><th>Source</th><th>Bookings / visits</th><th>Value</th><th>Completed</th></tr></thead><tbody id="reportBookingsTable"></tbody></table></div></div>
       <div class="panel report-section payroll-report"><div class="section-heading"><div><h2>Clock-in/out and payroll hours</h2><p class="hint">Actual completed time entries calculate net hours, excluding recorded breaks.</p></div><div class="report-export-actions"><a class="secondary button-link report-export" data-report-type="payroll">Export Excel</a><a class="primary button-link report-export" data-report-type="xero">Export Xero CSV</a></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Staff</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Net hours</th><th>Status</th></tr></thead><tbody id="reportPayrollTable"></tbody></table></div></div>
@@ -38886,7 +38879,7 @@ async function submitTimeClock(action) {
   if (!staffId) { message.textContent = "Choose a staff member first."; return; }
   try {
     message.textContent = action === "clock-in" ? "Clocking in..." : "Clocking out...";
-    const actor=await askActor(selectedPosBranchId,false,"Confirm time clock with your PIN");if(!actor)return;
+    const actor=await askActor(selectedPosBranchId,false,"Confirm time clock with your PIN",false,false,false,true);if(!actor)return;
     const result = await api("/api/time-clock", { method:"POST", body:JSON.stringify({ ...actor, staffId, action }) });
     await refreshPosData();
     document.querySelector("#timeClockStaff").value = staffId;
@@ -40482,7 +40475,7 @@ function renderReports() {
   if (!reportData) return;
   const summary = reportData.summary || {};
   document.querySelector("#reportStaffDailyTable").innerHTML = reportData.staffDailyRows?.length ? reportData.staffDailyRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong></td><td>' + esc(row.role) + '</td><td>' + esc(row.branch) + '</td><td><strong>' + money(row.creditedSalesCents) + '</strong></td><td>' + row.serviceItems + '</td><td>' + row.transactions + '</td></tr>').join("") : reportEmpty(7, "No staff sales for this period.");
-  document.querySelector("#reportManagerDailyTable").innerHTML = reportData.managerDailyRows?.length ? reportData.managerDailyRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.manager) + '</strong></td><td>' + esc(row.branch) + '</td><td><strong>' + money(row.revenueCents) + '</strong></td><td>' + row.transactions + '</td></tr>').join("") : reportEmpty(5, "No manager roster assignments for this period.");
+  document.querySelector("#reportManagerDailyTable").innerHTML = reportData.managerDailyRows?.length ? reportData.managerDailyRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.manager) + '</strong></td><td>' + esc(row.branch) + '</td><td>' + money(row.branchRevenueCents) + '</td><td>' + row.managerCount + '</td><td><strong>' + money(row.revenueCents) + '</strong></td><td>' + row.transactions + '</td></tr>').join("") : reportEmpty(7, "No manager clock-ins for this period.");
   document.querySelector("#reportBranchDailyTable").innerHTML = reportData.branchDailyRows?.length ? reportData.branchDailyRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.branch) + '</strong></td><td><strong>' + money(row.revenueCents) + '</strong></td><td>' + row.transactions + '</td><td>' + row.productsSold + '</td><td>' + row.servicesSold + '</td></tr>').join("") : reportEmpty(6, "No branch sales for this period.");
   document.querySelector("#reportMetrics").innerHTML = [["Total sales", money(summary.revenueCents)], ["Transactions", summary.transactions || 0], ["Products sold", summary.productsSold || 0], ["Services sold", summary.servicesSold || 0], ["Online bookings", summary.onlineBookings || 0], ["Walk-ins", summary.walkIns || 0], ["Worked hours", Number(summary.workedHours || 0).toFixed(2)]].map(([label, value]) => '<article><span>' + label + '</span><strong>' + value + '</strong></article>').join("");
   document.querySelector("#reportBranchTable").innerHTML = reportData.branchRows.length ? reportData.branchRows.map((row) => '<tr><td><strong>' + esc(row.branch) + '</strong></td><td><strong>' + money(row.revenueCents) + '</strong></td><td>' + row.transactions + '</td><td>' + row.productsSold + '</td><td>' + row.servicesSold + '</td><td>' + row.onlineBookings + '</td><td>' + row.manualBookings + '</td><td>' + row.walkIns + '</td></tr>').join("") : reportEmpty(8);

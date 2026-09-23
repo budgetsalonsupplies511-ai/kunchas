@@ -16,11 +16,11 @@ async function fixture(inventoryPermission = 2) {
     CREATE TABLE branch_pos_sessions(token_hash TEXT PRIMARY KEY,branch_id TEXT,pin_hash TEXT,expires_at INTEGER);
     CREATE TABLE access_users(id TEXT PRIMARY KEY,staff_id TEXT,role TEXT,enabled INTEGER,all_branches INTEGER,branch_ids TEXT,pin_salt TEXT,pin_hash TEXT);
     CREATE TABLE access_roles(role TEXT PRIMARY KEY,permissions TEXT);
-    CREATE TABLE staff(id TEXT PRIMARY KEY,name TEXT,status TEXT);
+    CREATE TABLE staff(id TEXT PRIMARY KEY,name TEXT,role TEXT,status TEXT);
     CREATE TABLE access_login_limits(key TEXT PRIMARY KEY,attempts INTEGER,reset_at INTEGER);
     INSERT INTO branches VALUES('branch-a','Branch A','Open','2468');
     INSERT INTO products VALUES('product-a','Shampoo','Active');
-    INSERT INTO staff VALUES('staff-a','Ava','Active');
+    INSERT INTO staff VALUES('staff-a','Ava','Stylist','Active');
   `);
   db.prepare('INSERT INTO access_roles VALUES(?,?)').run('staff', JSON.stringify({ inventory:inventoryPermission }));
   db.prepare('INSERT INTO access_users VALUES(?,?,?,?,?,?,?,?)').run('user-a','staff-a','staff',1,0,'["branch-a"]','salt',await hashPin('123456','salt'));

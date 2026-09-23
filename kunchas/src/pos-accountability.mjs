@@ -54,16 +54,16 @@ export async function branchGate(request,env,personal){
     if(!record||(record.branch_id!==branchId&&!bookedCustomer))return {response:json({error:'Customer or booking belongs to another branch.'},403)};
   }
   for(const customer of [body.customer,body.newCustomer])if(customer)for(const field of ['email','phone'])if(text(customer[field])){const matches=await rows(env,'SELECT branch_id FROM customers WHERE '+field+'=?',[text(customer[field])]);if(matches.some(row=>row.branch_id!==branchId))return {response:json({error:'Customer belongs to another branch.'},403)};}
-  if(p==='/api/pos-actors')return {response:json({actors:(await actorAccounts(env,branchId)).map(a=>({id:a.id,name:a.name||'Owner',role:a.role}))})};
+  if(p==='/api/pos-actors')return {response:json({actors:(await actorAccounts(env,branchId,false,url.searchParams.get('purpose')==='time-clock')).map(a=>({id:a.id,name:a.name||'Owner',role:a.role}))})};
   return {user};
 }
-async function actorAccounts(env,branchId,anyBranch=false){return (await rows(env,"SELECT u.*,s.name,s.status AS staff_status,r.permissions FROM access_users u LEFT JOIN staff s ON s.id=u.staff_id LEFT JOIN access_roles r ON r.role=u.role WHERE u.enabled=1 AND u.role IN ('owner','admin','manager','staff')")).filter(a=>(!a.staff_id||a.staff_status==='Active')&&(anyBranch||a.role==='owner'||a.all_branches||parse(a.branch_ids).includes(branchId)));}
-export async function verifyActor(request,env,branchId,elevated=false,reasonRequired=elevated,managerOnly=false,checkout=false){
+async function actorAccounts(env,branchId,anyBranch=false,clocking=false){return (await rows(env,"SELECT u.*,s.name,s.role AS job_role,s.status AS staff_status,r.permissions FROM access_users u LEFT JOIN staff s ON s.id=u.staff_id LEFT JOIN access_roles r ON r.role=u.role WHERE u.enabled=1 AND u.role IN ('owner','admin','manager','staff')")).filter(a=>(!a.staff_id||a.staff_status==='Active')&&(anyBranch||clocking&&(a.role==='manager'||/\bmanager\b/i.test(a.job_role||''))||a.role==='owner'||a.all_branches||parse(a.branch_ids).includes(branchId)));}
+export async function verifyActor(request,env,branchId,elevated=false,reasonRequired=elevated,managerOnly=false,checkout=false,clocking=false){
   const body=await request.clone().json(),id=text(body.actorId),pin=text(body.actorPin),ip=request.headers.get('cf-connecting-ip')||'local';
   if(!/^\d{6,12}$/.test(pin))return {response:json({error:'Enter your individual staff PIN.'},403)};
   const limitKey='action-pin:'+await digest(ip+':'+(id||branchId));
   if(!await limit(env,limitKey))return {response:json({error:'Too many PIN attempts. Try again in 15 minutes.'},429)};
-  const eligible=(await actorAccounts(env,branchId,checkout&&!elevated&&!managerOnly)).filter(a=>managerOnly?a.role==='manager':!elevated||['owner','admin','manager'].includes(a.role));
+  const eligible=(await actorAccounts(env,branchId,checkout&&!elevated&&!managerOnly,clocking)).filter(a=>managerOnly?a.role==='manager':!elevated||['owner','admin','manager'].includes(a.role));
   let account=id?eligible.find(a=>a.id===id):null;
   if(account){const actual=await hashPin(pin,account.pin_salt||'dummy-action-pin');if(!equal(actual,account.pin_hash||''))account=null;}
   else if(!id){

@@ -8,7 +8,7 @@ import vm from 'node:vm';
 const sha=async value=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))).toString('hex');
 async function fixture(role='manager',permissions={dashboard:1,customers:1,reports:1,staff:1}){
  const db=new DatabaseSync(':memory:');
- db.exec(`CREATE TABLE staff(id TEXT PRIMARY KEY,name TEXT,status TEXT);
+ db.exec(`CREATE TABLE staff(id TEXT PRIMARY KEY,name TEXT,role TEXT,status TEXT);
  CREATE TABLE branches(id TEXT PRIMARY KEY,name TEXT,status TEXT,pin_code TEXT);
  CREATE TABLE access_users(id TEXT PRIMARY KEY,staff_id TEXT,username TEXT,role TEXT,enabled INTEGER,all_branches INTEGER,branch_ids TEXT,pin_salt TEXT,pin_hash TEXT);
  CREATE TABLE access_roles(role TEXT PRIMARY KEY,permissions TEXT);
@@ -17,7 +17,7 @@ async function fixture(role='manager',permissions={dashboard:1,customers:1,repor
  CREATE TABLE access_login_limits(key TEXT PRIMARY KEY,attempts INTEGER,reset_at INTEGER);
  CREATE TABLE access_audit(id TEXT,actor_id TEXT,action TEXT,target_id TEXT,created_at TEXT);
  CREATE TABLE customers(id TEXT,branch_id TEXT);
- INSERT INTO staff VALUES('s','Test Manager','Active');
+ INSERT INTO staff VALUES('s','Test Manager','Manager','Active');
  INSERT INTO branches VALUES('a','Branch A','Open','1234'),('b','Branch B','Open','5678');
  INSERT INTO customers VALUES('ca','a'),('cb','b');`);
  db.exec(readFileSync(new URL('../manager-sessions-upgrade.sql',import.meta.url),'utf8'));
