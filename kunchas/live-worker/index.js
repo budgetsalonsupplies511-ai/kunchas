@@ -39028,10 +39028,20 @@ function renderBranches() {
   const archived = state.archivedBranches || [];
   document.querySelector("#branchArchiveCount").textContent = archived.length;
   document.querySelector("#branchArchiveTable").innerHTML = archived.map((b) => '<tr><td><strong>' + esc(b.name) + '</strong></td><td>' + esc(b.address) + '</td><td><button class="secondary small restore-branch" type="button" data-branch-id="' + esc(b.id) + '">Restore</button> <button class="danger branch-icon-button purge-branch" type="button" data-branch-id="' + esc(b.id) + '" aria-label="Permanently delete branch" title="Permanently delete">' + branchTrashIcon() + '</button></td></tr>').join("") || '<tr><td colspan="3" class="empty-cell">No archived branches.</td></tr>';
+  labelResponsiveTable(document.querySelector("#branchTable").closest("table"));
+  labelResponsiveTable(document.querySelector("#branchArchiveTable").closest("table"));
   document.querySelectorAll(".restore-branch").forEach((button) => button.addEventListener("click", () => openBranchAction(button.dataset.branchId, "restore")));
   document.querySelectorAll(".purge-branch").forEach((button) => button.addEventListener("click", () => openBranchAction(button.dataset.branchId, "permanent")));
   document.querySelectorAll(".edit-branch").forEach((button) => button.addEventListener("click", () => openBranchEditor(button.dataset.branchId)));
   document.querySelectorAll(".delete-branch").forEach((button) => button.addEventListener("click", deleteBranch));
+}
+function labelResponsiveTable(table) {
+  table.classList.add("mobile-card-table");
+  const headings = [...table.tHead?.querySelectorAll("th") || []].map((heading) => heading.textContent.trim() || "Action");
+  table.tBodies[0]?.querySelectorAll("tr").forEach((row) => {
+    if (row.cells.length === 1 && row.cells[0].colSpan > 1) return;
+    [...row.cells].forEach((cell, index) => { cell.dataset.label = headings[index] || ""; });
+  });
 }
 function openBranchEditor(branchId = "") {
   const branch = state.branches.find((b) => b.id === branchId);
@@ -40375,6 +40385,7 @@ function renderInventory() {
   const matrix = inventoryMatrixMarkup();
   document.querySelector("#inventoryHead").innerHTML = matrix.head;
   document.querySelector("#inventoryTable").innerHTML = matrix.body;
+  labelResponsiveTable(document.querySelector("#inventoryTable").closest("table"));
 }
 function setReceiveProductsDate() {
   const input = document.querySelector('#receiveProductsForm input[name="reference"]');
@@ -40424,6 +40435,7 @@ async function submitReceivedProducts(event) {
 function renderClosings() {
   document.querySelector("#closingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr><td>' + esc(c.closing_date) + '<div class="hint">Closed by '+esc(c.closed_by||'Not recorded')+'</div></td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + '</div></td><td>' + money(c.cash_taken_cents || 0) + '</td><td>' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '<div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><span class="pill">' + esc(c.status) + '</span></td></tr>').join("");
   document.querySelector("#adminClosingTable").innerHTML = (state.dailyClosings || []).map((c) => '<tr data-closing-id="' + esc(c.id) + '"><td>' + esc(c.closing_date) + '</td><td>' + esc(c.branch_name) + '<div class="hint">Yesterday ' + money(c.previous_cash_cents || 0) + ' / sales cash ' + money(c.expected_cash_cents) + ' / card ' + money(c.expected_card_cents) + '</div></td><td><input name="actualCash" type="number" min="0" step="0.01" value="' + dollars(c.actual_cash_cents) + '"><div class="hint">Variance ' + money(c.cash_variance_cents) + '</div></td><td><input name="cashTaken" type="number" min="0" step="0.01" value="' + dollars(c.cash_taken_cents || 0) + '"><div class="hint">Remaining ' + money(c.remaining_cash_cents ?? c.actual_cash_cents) + '</div></td><td><input name="actualCard" type="number" min="0" step="0.01" value="' + dollars(c.actual_card_cents) + '"><div class="hint">Variance ' + money(c.card_variance_cents) + '</div></td><td><select name="status"><option' + selected(c.status, "Balanced") + '>Balanced</option><option' + selected(c.status, "Variance") + '>Variance</option><option' + selected(c.status, "Manager Review") + '>Manager Review</option><option' + selected(c.status, "Approved") + '>Approved</option></select></td><td><input name="approvedBy" value="' + esc(c.approved_by || "") + '" placeholder="Manager"><textarea name="notes" placeholder="Notes">' + esc(c.notes || "") + '</textarea></td><td><button class="secondary save-closing" type="button">Save</button></td></tr>').join("");
+  labelResponsiveTable(document.querySelector("#adminClosingTable").closest("table"));
   document.querySelectorAll(".save-closing").forEach((button) => button.addEventListener("click", saveClosingRow));
 }
 function reportQuery() {
@@ -40457,6 +40469,7 @@ function renderReports() {
   document.querySelector("#reportServicesTable").innerHTML = reportData.serviceRows.length ? reportData.serviceRows.map((row) => '<tr><td><strong>' + esc(row.name) + '</strong></td><td>' + row.quantity + '</td><td>' + money(row.revenueCents) + '</td></tr>').join("") : reportEmpty(3, "No services sold.");
   document.querySelector("#reportBookingsTable").innerHTML = reportData.bookingRows.length ? reportData.bookingRows.map((row) => '<tr><td><strong>' + esc(row.branch) + '</strong></td><td><span class="source-pill">' + esc(row.source) + '</span></td><td>' + row.count + '</td><td>' + money(row.valueCents) + '</td><td>' + row.completed + '</td></tr>').join("") : reportEmpty(5);
   document.querySelector("#reportPayrollTable").innerHTML = reportData.payrollRows.length ? reportData.payrollRows.map((row) => '<tr><td>' + esc(row.date) + '</td><td><strong>' + esc(row.staff) + '</strong><span class="table-subtext">' + esc(row.role) + '</span></td><td>' + esc(row.branch) + '</td><td>' + esc(reportTime(row.clockIn)) + '</td><td>' + Number(row.breakMinutes || 0) + ' min</td><td>' + esc(reportTime(row.clockOut)) + '</td><td><strong>' + Number(row.hours || 0).toFixed(2) + '</strong></td><td>' + '<span class="status-pill ' + (row.status === "Complete" ? "" : "inactive") + '">' + esc(row.status) + '</span></td></tr>').join("") : reportEmpty(8, "No clock-in records for this period.");
+  document.querySelectorAll("#reports .report-section table").forEach(labelResponsiveTable);
   const exportQuery = new URLSearchParams(reportData.range).toString();
   document.querySelectorAll(".report-export").forEach((link) => { link.href = "/api/reports/export?type=" + encodeURIComponent(link.dataset.reportType) + "&" + exportQuery; });
 }
@@ -42299,6 +42312,32 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
   .held-sale-row{grid-template-columns:minmax(0,1fr) auto}
   .held-sale-row button{grid-column:1/-1}
   .sale-action-row{grid-template-columns:1fr 1fr}
+  #inventory .split{grid-template-columns:minmax(0,1fr)}
+  #inventory .panel,#inventory .table-wrap,#reports .panel,#reports .table-wrap,#branches .panel,#branches .table-wrap{min-width:0;max-width:100%}
+  #inventory .table-wrap,#branches .table-wrap,#reports .table-wrap{overflow:visible}
+  .mobile-card-table,.mobile-card-table tbody{display:block;width:100%;min-width:0!important}
+  .mobile-card-table thead{display:none}
+  .mobile-card-table tbody{display:grid;gap:10px}
+  .mobile-card-table tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;min-width:0;padding:13px;border:1px solid var(--line);border-radius:11px;background:#fff}
+  .mobile-card-table tbody td{display:block;min-width:0;padding:0!important;border:0;font-size:13px;overflow-wrap:anywhere}
+  .mobile-card-table tbody td:first-child{grid-column:1/-1;font-size:15px;font-weight:700}
+  .mobile-card-table tbody td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:800;line-height:1.3;text-transform:uppercase;letter-spacing:.04em}
+  .mobile-card-table tbody td .hint,.mobile-card-table tbody td .table-subtext{display:block;margin-top:2px;font-size:11px}
+  .mobile-card-table tbody tr:has(.empty-cell){display:block}
+  #inventory .mobile-card-table td:nth-child(2){grid-column:1/-1}
+  #inventory .mobile-card-table td:last-child{grid-column:1/-1;display:flex;justify-content:space-between;align-items:baseline;padding-top:8px!important;border-top:1px solid var(--line);font-weight:800}
+  #inventory .mobile-card-table td:last-child::before{display:inline;margin:0}
+  #reports .report-section .table-wrap{padding:12px}
+  #reports .report-section .mobile-card-table{min-width:0}
+  #adminClosingTable tr{grid-template-columns:minmax(0,1fr)}
+  #adminClosingTable td{grid-column:1/-1}
+  #adminClosingTable input,#adminClosingTable select,#adminClosingTable textarea{width:100%;min-width:0}
+  #branches .mobile-card-table td:nth-child(2){grid-column:1/-1}
+  #branches .mobile-card-table td:last-child{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  #branches .mobile-card-table td:last-child::before{display:none}
+  #branches .mobile-card-table td:last-child .button-link,#branches .mobile-card-table td:last-child button{min-height:40px}
+  #branches .panel>.section-heading{align-items:stretch;flex-direction:column;gap:10px;margin-bottom:14px}
+  #createBranchButton{flex:0 0 auto;align-self:flex-start;white-space:nowrap;padding:9px 12px;font-size:13px}
 }
 `;
 }
