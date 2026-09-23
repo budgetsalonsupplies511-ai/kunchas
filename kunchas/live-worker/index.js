@@ -40621,9 +40621,10 @@ function renderCartSummary() {
   const selectedItems = [...document.querySelectorAll(".sale-item")].map((row) => {
     const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]')?.value);
     if (!item) return null;
-    return { ...item, name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
+    const staffNames = item.type === "service" ? [...row.querySelectorAll('input[name="saleStaffIds"]:checked')].map((input) => state.staff.find((staff) => staff.id === input.value)?.name).filter(Boolean) : [];
+    return { ...item, staffNames, name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
   }).filter(Boolean);
-  document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + '</em></span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
+  document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + '</em>' + (item.staffNames.length ? '<small class="cart-staff">Staff: ' + esc(item.staffNames.join(", ")) + '</small>' : '') + '</span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
   const total = selectedItems.reduce((sum, item) => sum + item.priceCents, 0);
   document.querySelector("#cartTotal").textContent = money(total);
   document.querySelector("#checkoutTotal").textContent = money(total);
@@ -40817,10 +40818,11 @@ function addStaffToSaleItem(row) {
   chip.innerHTML = '<input type="checkbox" name="saleStaffIds" value="' + esc(staff.id) + '" checked><span>' + esc(staff.name) + '</span><label>%<input name="staffPercent" type="number" min="0" max="100" step="0.01" placeholder="%"></label><label>$<input name="staffAmount" type="number" min="0" step="0.01" placeholder="$"></label><button type="button" aria-label="Remove staff">x</button>';
   chip.querySelector('input[name="staffPercent"]').addEventListener("change", () => rebalanceStaffAllocations(row, chip, "percent"));
   chip.querySelector('input[name="staffAmount"]').addEventListener("change", () => rebalanceStaffAllocations(row, chip, "amount"));
-  chip.querySelector("button").addEventListener("click", () => { chip.remove(); rebalanceStaffAllocations(row); });
+  chip.querySelector("button").addEventListener("click", () => { chip.remove(); rebalanceStaffAllocations(row); renderCartSummary(); });
   row.querySelector(".selected-staff").append(chip);
   input.value = "";
   rebalanceStaffAllocations(row);
+  renderCartSummary();
 }
 function findCustomerId(value) { return state.customers.find((c) => customerLabel(c) === value)?.id || ""; }
 function findSaleItem(value) { return saleCatalog().find((item) => item.label === value); }
@@ -41387,6 +41389,8 @@ legend { grid-column:1/-1; }
 .cart-line { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .cart-line strong,.cart-line em { display:block; }
 .cart-line em { color:var(--muted); font-style:normal; font-size:13px; }
+.cart-line>span { min-width:0; overflow-wrap:anywhere; }
+.cart-staff { display:block; margin-top:3px; color:var(--muted); font-size:12px; }
 .cart-total { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
 .cart-total span { color:var(--muted); font-weight:800; }
 .cart-total strong { font-size:30px; }
