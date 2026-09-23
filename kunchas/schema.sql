@@ -248,13 +248,6 @@ INSERT OR IGNORE INTO branches (id, name, address, phone, post_code, pin_code, s
   ('branch-blacktown', 'Kunchas Blacktown', 'Blacktown branch', '02 9000 1004', '2148', '2148', 'Open'),
   ('branch-hurstville', 'Kunchas Hurstville', 'Hurstville branch', '02 9000 1005', '2220', '2220', 'Open');
 
-INSERT OR IGNORE INTO staff (id, branch_id, name, role, email, phone, status) VALUES
-  ('staff-mia', '', 'Mia Chen', 'Branch manager', 'mia@kunchas.com.au', '0400 100 001', 'Active'),
-  ('staff-ava', '', 'Ava Singh', 'Senior stylist', 'ava@kunchas.com.au', '0400 100 002', 'Active'),
-  ('staff-noah', '', 'Noah Taylor', 'Colour specialist', 'noah@kunchas.com.au', '0400 100 003', 'Active'),
-  ('staff-ella', '', 'Ella Martin', 'Beauty therapist', 'ella@kunchas.com.au', '0400 100 004', 'Active'),
-  ('staff-lina', '', 'Lina Patel', 'Salon coordinator', 'lina@kunchas.com.au', '0400 100 005', 'Active');
-
 INSERT OR IGNORE INTO services (id, name, category, duration_minutes, price_cents, status) VALUES
   ('service-haircut', 'Haircut', 'Hair', 30, 4500, 'Active'),
   ('service-colour', 'Colour service', 'Colour', 90, 12000, 'Active'),
@@ -276,11 +269,11 @@ INSERT OR IGNORE INTO customers (id, created_at, updated_at, first_name, last_na
   ('sample-customer-zara', datetime('now'), datetime('now'), 'Zara', 'Khan', 'zara.sample@kunchas.local', '0400 555 105', 'branch-hurstville', 'Sample booking', 'Sample data for POS checkout testing');
 
 INSERT OR IGNORE INTO bookings (id, created_at, updated_at, customer_id, branch_id, staff_id, service_ids, service_names, booking_date, booking_time, duration_minutes, total_cents, status, payment_status, sale_id, notes) VALUES
-  ('sample-booking-city', datetime('now'), datetime('now'), 'sample-customer-olivia', 'branch-city', 'staff-mia', '["service-haircut","service-treatment"]', 'Haircut, Hair treatment', date('now', '+1 day'), '10:00', 75, 11500, 'Confirmed', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),
-  ('sample-booking-parramatta', datetime('now'), datetime('now'), 'sample-customer-jack', 'branch-parramatta', 'staff-ava', '["service-colour"]', 'Colour service', date('now', '+1 day'), '13:30', 90, 12000, 'Booked', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),
-  ('sample-booking-liverpool', datetime('now'), datetime('now'), 'sample-customer-sophia', 'branch-liverpool', 'staff-noah', '["service-blowdry"]', 'Blow dry', date('now', '+2 day'), '09:30', 35, 5500, 'Confirmed', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),
-  ('sample-booking-blacktown', datetime('now'), datetime('now'), 'sample-customer-liam', 'branch-blacktown', 'staff-ella', '["service-facial"]', 'Beauty facial', date('now', '+2 day'), '15:00', 60, 9500, 'Booked', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),
-  ('sample-booking-hurstville', datetime('now'), datetime('now'), 'sample-customer-zara', 'branch-hurstville', 'staff-lina', '["service-threading","service-haircut"]', 'Threading, Haircut', date('now', '+3 day'), '11:15', 50, 7000, 'Confirmed', 'Pay at store', NULL, 'Sample booking — ready for POS checkout');
+  ('sample-booking-city', datetime('now'), datetime('now'), 'sample-customer-olivia', 'branch-city', NULL, '["service-haircut","service-treatment"]', 'Haircut, Hair treatment', date('now', '+1 day'), '10:00', 75, 11500, 'Confirmed', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),
+  ('sample-booking-parramatta', datetime('now'), datetime('now'), 'sample-customer-jack', 'branch-parramatta', NULL, '["service-colour"]', 'Colour service', date('now', '+1 day'), '13:30', 90, 12000, 'Booked', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),
+  ('sample-booking-liverpool', datetime('now'), datetime('now'), 'sample-customer-sophia', 'branch-liverpool', NULL, '["service-blowdry"]', 'Blow dry', date('now', '+2 day'), '09:30', 35, 5500, 'Confirmed', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),
+  ('sample-booking-blacktown', datetime('now'), datetime('now'), 'sample-customer-liam', 'branch-blacktown', NULL, '["service-facial"]', 'Beauty facial', date('now', '+2 day'), '15:00', 60, 9500, 'Booked', 'Pay at store', NULL, 'Sample booking — ready for POS checkout'),
+  ('sample-booking-hurstville', datetime('now'), datetime('now'), 'sample-customer-zara', 'branch-hurstville', NULL, '["service-threading","service-haircut"]', 'Threading, Haircut', date('now', '+3 day'), '11:15', 50, 7000, 'Confirmed', 'Pay at store', NULL, 'Sample booking — ready for POS checkout');
 
 CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
 CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(booking_date);

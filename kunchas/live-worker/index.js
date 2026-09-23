@@ -37617,7 +37617,8 @@ async function holdSale(request, env) {
     const row = await env.DB.prepare("SELECT first_name,last_name,phone FROM customers WHERE id=? AND branch_id=?").bind(clean(body.customerId), branchId).first();
     if (row) customer = { name: [row.first_name, row.last_name].join(" ").trim(), phone: clean(row.phone) };
   } else if (customerMode === "new" && clean(body.newCustomer?.firstName) && clean(body.newCustomer?.lastName)) customer = { name: [clean(body.newCustomer.firstName), clean(body.newCustomer.lastName)].join(" "), phone: clean(body.newCustomer.phone) };
-  if (!customer?.name || !customer.phone) return jsonResponse({ error: "Customer name and phone number are required to hold a sale." }, 400);
+  if (customerMode === "guest" && !bookingId) customer = { name: "Guest customer", phone: "" };
+  if (!customer?.name || customerMode !== "guest" && !customer.phone) return jsonResponse({ error: "Customer name and phone number are required to hold a sale." }, 400);
   const items = body.items.map((item) => ({ itemType:clean(item.itemType), itemId:clean(item.itemId), instanceName:clean(item.instanceName), instancePrice:clean(item.instancePrice), staffIds:Array.isArray(item.staffIds) ? item.staffIds.map(clean).filter(Boolean) : [], staffAllocations:Array.isArray(item.staffAllocations) ? item.staffAllocations : [] }));
   if (items.some((item) => !["service", "product"].includes(item.itemType) || !item.itemId || item.itemType === "service" && (!item.instanceName || !(Number(item.instancePrice) > 0)))) return jsonResponse({ error: "Finish selecting every service or product before holding." }, 400);
   const totalCents = Number(body.totalCents);
@@ -37671,7 +37672,8 @@ async function createSale(request, env) {
     customerId = booking.customer_id;
   }
   const saleCustomer = customerId ? await env.DB.prepare("SELECT first_name,last_name,phone FROM customers WHERE id=? AND branch_id=?").bind(customerId, branchId).first() : null;
-  if (!saleCustomer || !clean(saleCustomer.first_name) || !clean(saleCustomer.last_name) || !clean(saleCustomer.phone)) return jsonResponse({ error: "Customer name and phone number are required for checkout." }, 400);
+  const guestCheckout = !bookingId && clean(body.customerMode) === "guest" && !customerId;
+  if (!guestCheckout && (!saleCustomer || !clean(saleCustomer.first_name) || !clean(saleCustomer.last_name) || !clean(saleCustomer.phone))) return jsonResponse({ error: "Customer name and phone number are required for checkout." }, 400);
   const serviceIds = items.filter((item) => clean(item.itemType || "service") === "service").map((item) => clean(item.itemId || item.serviceId)).filter(Boolean);
   const productIds = items.filter((item) => clean(item.itemType) === "product").map((item) => clean(item.itemId)).filter(Boolean);
   if (!serviceIds.length && !productIds.length) {
@@ -38056,7 +38058,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
             <label><input type="radio" name="checkoutMode" value="booking"><span><strong>Booking</strong><small>Find an appointment</small></span></label>
           </div>
           <div id="walkinCustomerFlow" class="pos-flow-panel">
-            <label>Customer<select name="customerMode"><option value="new">New customer</option><option value="existing">Existing customer</option></select></label>
+            <label>Customer<select name="customerMode"><option value="guest">Guest customer</option><option value="new">New customer</option><option value="existing">Existing customer</option></select></label>
             <div class="customer-existing hidden">
               <label for="posCustomerSearch">Find customer</label>
               <div class="pos-customer-picker"><input id="posCustomerSearch" name="customerSearch" type="search" placeholder="Name, phone, email or customer number" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="posCustomerResults" aria-autocomplete="list"><div class="pos-customer-results hidden" id="posCustomerResults" role="listbox" aria-label="Matching customers"></div></div>
@@ -38112,7 +38114,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <form class="panel" id="receiveProductsForm">
             <input name="branchId" type="hidden">
             <input name="movementType" type="hidden" value="Receive">
-            <label>Product<select name="productId" required></select></label>
+            <label for="receiveProductSearch">Product</label><div class="pos-search-picker receive-product-picker"><input id="receiveProductSearch" type="search" placeholder="Search name, SKU or barcode" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="receiveProductMenu" aria-autocomplete="list" required><button class="sale-picker-toggle" id="receiveProductToggle" type="button" aria-label="Browse products" aria-expanded="false">⌄</button><div class="sale-picker-menu hidden" id="receiveProductMenu"><div class="sale-picker-options" id="receiveProductOptions" role="listbox"></div></div></div><input name="productId" type="hidden">
             <div class="grid"><label>Quantity received<input name="quantity" type="number" min="1" step="1" required></label><label>Date received<input name="reference" type="date" required></label></div>
             <label>Delivery note<input name="reason" maxlength="500" placeholder="Supplier, damaged cartons, or other note"></label>
             <button class="primary full" type="submit">Receive into products</button>
@@ -38674,6 +38676,12 @@ document.querySelector("#importProductsButton").addEventListener("click", () => 
 document.querySelector("#productImportFile").addEventListener("change", importProductsWorkbook);
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
 document.querySelector("#receiveProductsForm").addEventListener("submit", submitReceivedProducts);
+document.querySelector("#receiveProductSearch").addEventListener("input", () => { document.querySelector('#receiveProductsForm input[name="productId"]').value = ""; renderReceiveProductPicker(true); });
+document.querySelector("#receiveProductSearch").addEventListener("focus", () => renderReceiveProductPicker(true));
+document.querySelector("#receiveProductSearch").addEventListener("keydown", (event) => { if (event.key === "Escape") closeReceiveProductPicker(); if (event.key === "ArrowDown") { const first = document.querySelector("#receiveProductOptions .sale-picker-option"); if (first) { event.preventDefault(); first.focus(); } } if (event.key === "Enter") { const first = document.querySelector("#receiveProductOptions .sale-picker-option"); if (first) { event.preventDefault(); first.click(); } } });
+document.querySelector("#receiveProductOptions").addEventListener("keydown", (event) => { const options = [...document.querySelectorAll("#receiveProductOptions .sale-picker-option")], index = options.indexOf(document.activeElement); if (event.key === "Escape") { closeReceiveProductPicker(); document.querySelector("#receiveProductSearch").focus(); } else if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); options[Math.max(0, Math.min(options.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus(); } });
+document.querySelector("#receiveProductToggle").addEventListener("click", () => document.querySelector("#receiveProductMenu").classList.contains("hidden") ? renderReceiveProductPicker(true) : closeReceiveProductPicker());
+document.addEventListener("click", (event) => { if (!event.target.closest(".receive-product-picker")) closeReceiveProductPicker(); });
 document.querySelector("#closingForm").addEventListener("submit", submitCountedClosing);
 
 
@@ -38948,6 +38956,7 @@ function fillSelects() {
   document.querySelectorAll('select[name="staffId"]').forEach((select) => select.innerHTML = staffSelectOptions);
   document.querySelectorAll('select[name="customerId"]').forEach((select) => select.innerHTML = customerOptions);
   document.querySelectorAll('select[name="productId"]').forEach((select) => select.innerHTML = productOptions);
+  syncReceiveProductPicker();
   document.querySelector("#staffList").innerHTML = state.staff.map((s) => '<option value="' + esc(staffLabel(s)) + '"></option>').join("");
   renderBookingCheckoutOptions();
   document.querySelectorAll(".staff-checks").forEach((box) => box.innerHTML = staffCheckboxes());
@@ -40364,9 +40373,9 @@ async function loadRecentSales() {
 }
 function renderSales() {
   const query=document.querySelector('#recentSalesSearch').value.trim().toLowerCase();
-  const sales=recentSales.filter(sale=>sale.branch_id===selectedPosBranchId && (!query||[sale.customer_name||'Walking customer',sale.customer_phone,sale.customer_email].some(value=>String(value||'').toLowerCase().includes(query))));
+  const sales=recentSales.filter(sale=>sale.branch_id===selectedPosBranchId && (!query||[sale.customer_name||'Guest customer',sale.customer_phone,sale.customer_email].some(value=>String(value||'').toLowerCase().includes(query))));
   document.querySelector('#recentSalesStatus').textContent=recentSalesLoading?'Loading sales\u2026':sales.length+' sales for the selected day'+(query?' matching your customer search':'');
-  document.querySelector('#salesTable').innerHTML=recentSalesLoading?'<tr><td colspan="7">Loading sales\u2026</td></tr>':sales.length?sales.map(s=>'<tr><td>'+esc(new Date(s.created_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}))+'</td><td>'+esc(s.customer_name||'Walking customer')+'</td><td>'+money(s.total_cents)+'</td><td>'+esc(s.payment_method)+'</td><td>'+esc(s.status)+'</td><td>'+esc(s.recorded_by_name||'Not recorded')+'</td><td><button type="button" class="secondary" aria-label="Edit sale" title="Manager PIN and reason required" data-edit-sale="'+esc(s.id)+'">&#9998;</button></td></tr>').join(''):'<tr><td colspan="7">No sales found for this date and customer search.</td></tr>';
+  document.querySelector('#salesTable').innerHTML=recentSalesLoading?'<tr><td colspan="7">Loading sales\u2026</td></tr>':sales.length?sales.map(s=>'<tr><td>'+esc(new Date(s.created_at).toLocaleTimeString('en-AU',{hour:'2-digit',minute:'2-digit'}))+'</td><td>'+esc(s.customer_name||'Guest customer')+'</td><td>'+money(s.total_cents)+'</td><td>'+esc(s.payment_method)+'</td><td>'+esc(s.status)+'</td><td>'+esc(s.recorded_by_name||'Not recorded')+'</td><td><button type="button" class="secondary" aria-label="Edit sale" title="Manager PIN and reason required" data-edit-sale="'+esc(s.id)+'">&#9998;</button></td></tr>').join(''):'<tr><td colspan="7">No sales found for this date and customer search.</td></tr>';
   document.querySelectorAll('[data-edit-sale]').forEach(button=>button.addEventListener('click',()=>openSaleEditor(button.dataset.editSale)));
 }
 function inventoryRows() {
@@ -40393,9 +40402,29 @@ function setReceiveProductsDate() {
   const input = document.querySelector('#receiveProductsForm input[name="reference"]');
   if (input && !input.value) input.value = localIsoDate();
 }
+function closeReceiveProductPicker() {
+  document.querySelector("#receiveProductMenu").classList.add("hidden");
+  document.querySelector("#receiveProductSearch").setAttribute("aria-expanded", "false");
+  document.querySelector("#receiveProductToggle").setAttribute("aria-expanded", "false");
+}
+function syncReceiveProductPicker() {
+  const id = document.querySelector('#receiveProductsForm input[name="productId"]').value;
+  const product = (state.products || []).find((item) => item.id === id && item.status !== "Inactive");
+  if (id && !product) { document.querySelector('#receiveProductsForm input[name="productId"]').value = ""; document.querySelector("#receiveProductSearch").value = ""; }
+  else if (product) document.querySelector("#receiveProductSearch").value = product.name;
+}
+function renderReceiveProductPicker(open = false) {
+  const search = document.querySelector("#receiveProductSearch");
+  const query = search.value.trim().toLowerCase();
+  const matches = (state.products || []).filter((product) => product.status !== "Inactive" && [product.name, product.sku, product.barcode, product.brand, product.category].some((value) => String(value || "").toLowerCase().includes(query))).slice(0, 40);
+  const options = document.querySelector("#receiveProductOptions");
+  options.innerHTML = matches.length ? matches.map((product) => '<button class="sale-picker-option" type="button" role="option" data-product-id="' + esc(product.id) + '"><span><strong>' + esc(product.name) + '</strong><small>' + esc([product.sku, product.brand].filter(Boolean).join(" · ")) + '</small></span></button>').join("") : '<p class="sale-picker-empty">No matching products</p>';
+  options.querySelectorAll("[data-product-id]").forEach((button) => button.addEventListener("click", () => { const product = state.products.find((item) => item.id === button.dataset.productId); document.querySelector('#receiveProductsForm input[name="productId"]').value = product.id; search.value = product.name; closeReceiveProductPicker(); document.querySelector('#receiveProductsForm input[name="quantity"]').focus(); }));
+  if (open) { document.querySelector("#receiveProductMenu").classList.remove("hidden"); search.setAttribute("aria-expanded", "true"); document.querySelector("#receiveProductToggle").setAttribute("aria-expanded", "true"); }
+}
 function receivedProductDate(movement) {
   const savedDate = String(movement.reference || "").trim();
-  const dateValue = /^d{4}-d{2}-d{2}$/.test(savedDate) ? savedDate : String(movement.created_at || "").slice(0, 10);
+  const dateValue = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(savedDate) ? savedDate : String(movement.created_at || "").slice(0, 10);
   const date = new Date(dateValue + "T12:00:00");
   return Number.isNaN(date.getTime()) ? "\u2014" : date.toLocaleDateString("en-AU", { dateStyle:"medium" });
 }
@@ -40417,7 +40446,7 @@ async function submitReceivedProducts(event) {
   const status = document.querySelector("#receiveProductsMessage");
   const values = Object.fromEntries(new FormData(form));
   if (!values.productId || !Number.isSafeInteger(Number(values.quantity)) || Number(values.quantity) < 1) { status.textContent = "Choose a product and enter a positive whole quantity."; return; }
-  if (!/^d{4}-d{2}-d{2}$/.test(String(values.reference || ""))) { status.textContent = "Choose the date received."; return; }
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(values.reference || ""))) { status.textContent = "Choose the date received."; return; }
   button.disabled = true;
   status.textContent = "";
   try {
@@ -40428,6 +40457,8 @@ async function submitReceivedProducts(event) {
     form.reset();
     form.elements.branchId.value = selectedPosBranchId;
     form.elements.movementType.value = "Receive";
+    document.querySelector("#receiveProductSearch").value = "";
+    closeReceiveProductPicker();
     setReceiveProductsDate();
     await refreshPosData();
     status.textContent = Number(values.quantity) + " \xD7 " + productName + " received into branch stock.";
@@ -40804,7 +40835,7 @@ async function holdCurrentSale() {
       const key = "held-sales-local:" + selectedPosBranchId;
       const local = await offlineLoad(key).catch(() => []) || [];
       const customer = booking ? state.customers.find((item) => item.id === booking.customer_id) : state.customers.find((item) => item.id === customerId);
-      const name = customer ? customer.first_name + " " + customer.last_name : booking?.customer_name || [payload.newCustomer.firstName, payload.newCustomer.lastName].join(" ").trim();
+      const name = customer ? customer.first_name + " " + customer.last_name : booking?.customer_name || (customerMode === "guest" ? "Guest customer" : [payload.newCustomer.firstName, payload.newCustomer.lastName].join(" ").trim());
       const phone = customer?.phone || booking?.customer_phone || payload.newCustomer.phone || "";
       const existingLocal = local.find((item) => item.id === payload.id);
       const record = { id:payload.id, branch_id:selectedPosBranchId, booking_id:bookingId, customer_name:name, customer_phone:phone, total_cents:payload.totalCents, payload, updated_at:new Date().toISOString(), local:true, cloudExisting:Boolean(form.dataset.heldSaleId || existingLocal?.cloudExisting) };
@@ -41007,7 +41038,7 @@ function updateCheckoutMode() {
   if (!bookingMode && form.elements.bookingId.value) {
     form.elements.bookingId.value = "";
     form.elements.customerId.value = "";
-    form.elements.customerMode.value = "new";
+    form.elements.customerMode.value = "guest";
     form.elements.customerSearch.value = "";
     document.querySelector("#bookingCheckoutSearch").value = "";
     closeBookingCheckoutResults();
