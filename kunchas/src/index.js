@@ -4706,6 +4706,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
   .branch-hours-table td:last-child::after{content:"Closed";font-size:12px;font-weight:700}
   #branchHoursEditor input[type=time]{width:100%;min-width:0;font-size:16px}
 }
+@media(max-width:460px){.branch-hours-table tr{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){
   .service-excel-panel>.section-heading{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
   .service-excel-panel .excel-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
