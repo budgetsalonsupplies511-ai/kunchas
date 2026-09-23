@@ -442,7 +442,7 @@ async function branchGate(request, env, personal) {
   const saleAuthorization = method === "POST" && /^\/api\/sales\/[^/]+\/authorize$/.test(p);
   const special = p === "/api/pos-actors" || /^\/api\/sales\/[^/]+$/.test(p) || saleAuthorization;
   if (!shared && !special) return null;
-  const allowed = method === "GET" && ["/api/pos-data", "/api/pos-actors", "/api/checkout-bookings", "/api/pos-customers"].includes(p) || method === "GET" && /^\/api\/pos-customers\/[^/]+\/history$/.test(p) || method === "POST" && ["/api/sales", "/api/daily-closing", "/api/cash-drawer-open", "/api/branch-bookings", "/api/time-clock", "/api/stock-movements", "/api/pos-customers"].includes(p) || ["GET", "PATCH"].includes(method) && /^\/api\/sales\/[^/]+$/.test(p) || method === "PATCH" && /^\/api\/(bookings|daily-closing|pos-customers)\/[^/]+$/.test(p);
+  const allowed = method === "GET" && ["/api/pos-data", "/api/pos-actors", "/api/checkout-bookings", "/api/pos-customers", "/api/held-sales"].includes(p) || method === "GET" && /^\/api\/pos-customers\/[^/]+\/history$/.test(p) || method === "POST" && ["/api/sales", "/api/daily-closing", "/api/cash-drawer-open", "/api/branch-bookings", "/api/time-clock", "/api/stock-movements", "/api/pos-customers", "/api/held-sales"].includes(p) || ["GET", "PATCH"].includes(method) && /^\/api\/sales\/[^/]+$/.test(p) || method === "PATCH" && /^\/api\/(bookings|daily-closing|pos-customers)\/[^/]+$/.test(p);
   if (!allowed && !saleAuthorization && !(method === "GET" && ["/api/closing-sales", "/api/recent-sales"].includes(p))) return personal ? null : { response: json({ error: "Use an individual login to access the dashboard." }, 403) };
   if (!shared && special && personal && !can(personal, "pos") && !(p === "/api/pos-actors" && (can(personal, "branches", true) || can(personal, "closing", true)))) return { response: json({ error: "Your account does not have POS access." }, 403) };
   const user = personal && !request.headers.get("x-branch-id") && special ? personal : shared || personal;
@@ -36279,6 +36279,8 @@ var application = {
         const sales = await all(env, "SELECT s.*,b.name AS branch_name,trim(coalesce(c.first_name,'') || ' ' || coalesce(c.last_name,'')) AS customer_name,c.phone AS customer_phone,c.email AS customer_email FROM sales s JOIN branches b ON b.id=s.branch_id LEFT JOIN customers c ON c.id=s.customer_id WHERE s.branch_id=? AND s.created_at>=? AND s.created_at<? ORDER BY s.created_at DESC", [branchId, from.toISOString(), to.toISOString()]);
         return jsonResponse({ sales });
       }
+      if (request.method === "GET" && url.pathname === "/api/held-sales") return listHeldSales(env, clean(request.headers.get("x-branch-id")));
+      if (request.method === "POST" && url.pathname === "/api/held-sales") return holdSale(request, env);
       if (request.method === "POST" && url.pathname === "/api/branch-bookings") {
         const auth = await authorizeBranch(request, env);
         if (auth) return auth;
@@ -36485,7 +36487,7 @@ __name(searchCustomers, "searchCustomers");
 async function posCustomerHistory(env, customerId, branchId) {
   const customer = await env.DB.prepare("SELECT id FROM customers WHERE id=? AND branch_id=?").bind(customerId, branchId).first();
   if (!customer) return jsonResponse({ error: "Customer not found for this branch." }, 404);
-  const sales = await all(env, "SELECT id,created_at,branch_id,customer_id,total_cents,payment_method,status FROM sales WHERE customer_id=? AND branch_id=? ORDER BY created_at DESC LIMIT 100", [customerId, branchId]);
+  const sales = await all(env, "SELECT id,created_at,branch_id,customer_id,total_cents,payment_method,status,notes FROM sales WHERE customer_id=? AND branch_id=? ORDER BY created_at DESC LIMIT 100", [customerId, branchId]);
   if (!sales.length) return jsonResponse({ sales: [], items: [] });
   const items = await all(env, `SELECT si.sale_id,si.item_name,si.price_cents,si.staff_ids,si.service_note,b.name AS branch_name
     FROM sale_items si JOIN sales s ON s.id=si.sale_id JOIN branches b ON b.id=s.branch_id
@@ -37593,6 +37595,44 @@ async function createDiscount(request, env) {
   return jsonResponse({ ok: true });
 }
 __name(createDiscount, "createDiscount");
+async function listHeldSales(env, branchId) {
+  const rows = await all(env, "SELECT id,branch_id,booking_id,customer_name,customer_phone,total_cents,payload_json,created_at,updated_at FROM held_sales WHERE branch_id=? ORDER BY updated_at DESC LIMIT 100", [branchId]);
+  return jsonResponse({ heldSales: rows.map((row) => ({ ...row, payload: JSON.parse(row.payload_json), payload_json: void 0 })) });
+}
+__name(listHeldSales, "listHeldSales");
+async function holdSale(request, env) {
+  const body = await request.json();
+  const id = clean(body.id) || crypto.randomUUID();
+  const branchId = clean(body.branchId);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return jsonResponse({ error: "Invalid hold ID." }, 400);
+  if (!branchId || !Array.isArray(body.items) || !body.items.length || body.items.length > 50) return jsonResponse({ error: "Select a customer and up to 50 sale items before holding." }, 400);
+  const customerMode = clean(body.customerMode);
+  const bookingId = clean(body.bookingId);
+  let customer;
+  if (bookingId) {
+    const booking = await env.DB.prepare("SELECT b.id,b.sale_id,b.payment_status,c.first_name,c.last_name,c.phone FROM bookings b JOIN customers c ON c.id=b.customer_id WHERE b.id=? AND b.branch_id=?").bind(bookingId, branchId).first();
+    if (!booking || booking.sale_id || booking.payment_status === "Paid") return jsonResponse({ error: "This booking is no longer available to hold." }, 409);
+    customer = { name: [booking.first_name, booking.last_name].join(" ").trim(), phone: clean(booking.phone) };
+  } else if (customerMode === "existing") {
+    const row = await env.DB.prepare("SELECT first_name,last_name,phone FROM customers WHERE id=? AND branch_id=?").bind(clean(body.customerId), branchId).first();
+    if (row) customer = { name: [row.first_name, row.last_name].join(" ").trim(), phone: clean(row.phone) };
+  } else if (customerMode === "new" && clean(body.newCustomer?.firstName) && clean(body.newCustomer?.lastName)) customer = { name: [clean(body.newCustomer.firstName), clean(body.newCustomer.lastName)].join(" "), phone: clean(body.newCustomer.phone) };
+  if (!customer?.name || !customer.phone) return jsonResponse({ error: "Customer name and phone number are required to hold a sale." }, 400);
+  const items = body.items.map((item) => ({ itemType:clean(item.itemType), itemId:clean(item.itemId), instanceName:clean(item.instanceName), instancePrice:clean(item.instancePrice), staffIds:Array.isArray(item.staffIds) ? item.staffIds.map(clean).filter(Boolean) : [], staffAllocations:Array.isArray(item.staffAllocations) ? item.staffAllocations : [] }));
+  if (items.some((item) => !["service", "product"].includes(item.itemType) || !item.itemId || item.itemType === "service" && (!item.instanceName || !(Number(item.instancePrice) > 0)))) return jsonResponse({ error: "Finish selecting every service or product before holding." }, 400);
+  const totalCents = Number(body.totalCents);
+  if (!Number.isSafeInteger(totalCents) || totalCents <= 0) return jsonResponse({ error: "The held sale needs a valid total." }, 400);
+  const existing = await env.DB.prepare("SELECT branch_id FROM held_sales WHERE id=?").bind(id).first();
+  if (existing && existing.branch_id !== branchId) return jsonResponse({ error: "Held sale belongs to another branch." }, 403);
+  if (await env.DB.prepare("SELECT id FROM sales WHERE id=?").bind(id).first()) return jsonResponse({ error: "This payment has already been completed." }, 409);
+  const payload = { checkoutMode:bookingId ? "booking" : "walkin", customerMode:bookingId ? "existing" : customerMode, customerId:clean(body.customerId), customerCategory:clean(body.customerCategory), newCustomer:body.newCustomer || {}, bookingId, branchId, items, notes:clean(body.notes).slice(0, 2e3) };
+  const now = new Date().toISOString();
+  try {
+    await env.DB.prepare("INSERT INTO held_sales(id,branch_id,booking_id,customer_name,customer_phone,total_cents,payload_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET booking_id=excluded.booking_id,customer_name=excluded.customer_name,customer_phone=excluded.customer_phone,total_cents=excluded.total_cents,payload_json=excluded.payload_json,updated_at=excluded.updated_at WHERE held_sales.branch_id=excluded.branch_id").bind(id, branchId, bookingId || null, customer.name, customer.phone, totalCents, JSON.stringify(payload), now, now).run();
+  } catch (error) { if (String(error).includes("UNIQUE")) return jsonResponse({ error: "This booking is already on hold. Open its held sale to continue." }, 409); throw error; }
+  return jsonResponse({ ok:true, id });
+}
+__name(holdSale, "holdSale");
 async function createSale(request, env) {
   const body = await request.clone().json();
   const auth = await verifyActor(request, env, clean(body.branchId), false, false, false, true);
@@ -37602,6 +37642,12 @@ async function createSale(request, env) {
   if (clientSaleId) {
     const existing = await env.DB.prepare("SELECT id,branch_id FROM sales WHERE id=?").bind(clientSaleId).first();
     if (existing) return existing.branch_id === clean(body.branchId) ? jsonResponse({ ok: true, saleId: clientSaleId, alreadySynced: true }) : jsonResponse({ error: "Sale belongs to another branch." }, 403);
+  }
+  const heldSaleId = clean(body.heldSaleId);
+  if (heldSaleId) {
+    if (heldSaleId !== clientSaleId) return jsonResponse({ error: "Held sale ID does not match this checkout." }, 400);
+    const held = await env.DB.prepare("SELECT branch_id FROM held_sales WHERE id=?").bind(heldSaleId).first();
+    if (!held || held.branch_id !== clean(body.branchId)) return jsonResponse({ error: "This held sale is no longer available at this branch." }, 409);
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const id = clientSaleId || crypto.randomUUID();
@@ -37651,7 +37697,7 @@ async function createSale(request, env) {
       serviceId: isProduct ? null : record.id,
       productId: isProduct ? record.id : null,
       name: isProduct ? record.name : clean(item.instanceName) || record.name,
-      serviceNote: isProduct ? "" : clean(item.serviceNote).slice(0, 1e3),
+      serviceNote: "",
       priceCents: !isProduct && instancePriceCents > 0 ? instancePriceCents : isProduct && Number(record.special_price_cents || 0) > 0 ? Number(record.special_price_cents) : Number(record.price_cents || 0),
       staffIds: isProduct ? [] : Array.isArray(item.staffIds) ? item.staffIds.map(clean).filter(Boolean) : [],
       staffAllocations: isProduct ? [] : normalizeStaffAllocations(item.staffAllocations)
@@ -37699,8 +37745,8 @@ async function createSale(request, env) {
   const paymentMethod = payments.map((payment) => `${payment.method} ${formatDollars(payment.amountCents)}`).join(" / ") + (changeCents ? ` / change ${formatDollars(changeCents)}` : "");
   const saleStatements = [
     env.DB.prepare(
-      `INSERT INTO sales (id, created_at, branch_id, customer_id, staff_id, total_cents, payment_method, status, recorded_by_id, recorded_by_name, cash_cents, card_cents, change_cents)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO sales (id, created_at, branch_id, customer_id, staff_id, total_cents, payment_method, status, recorded_by_id, recorded_by_name, cash_cents, card_cents, change_cents, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       id,
       now,
@@ -37714,7 +37760,8 @@ async function createSale(request, env) {
       auth.actor.name,
       cashCents,
       cardCents,
-      changeCents
+      changeCents,
+      clean(body.notes).slice(0, 2e3)
     ),
     ...saleItems.map(
       (item) => env.DB.prepare(
@@ -37726,7 +37773,9 @@ async function createSale(request, env) {
     saleStatements.push(env.DB.prepare(
       "UPDATE bookings SET updated_at = ?, status = 'Completed', payment_status = 'Paid', sale_id = ? WHERE id = ? AND sale_id IS NULL"
     ).bind(now, id, booking.id));
+    saleStatements.push(env.DB.prepare("DELETE FROM held_sales WHERE booking_id=? AND branch_id=?").bind(booking.id, branchId));
   }
+  if (heldSaleId) saleStatements.push(env.DB.prepare("DELETE FROM held_sales WHERE id=? AND branch_id=?").bind(heldSaleId, branchId));
   const productItems = saleItems.filter((item) => item.productId);
   if (productItems.length) {
     saleStatements.push(...productItems.map(
@@ -37993,6 +38042,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
     <section class="tab staff-only ${initialTab === "pos" ? "active" : ""}" id="pos">
       <div class="pos-workspace hidden" id="posWorkspace">
       <div class="offline-pos-status" id="offlinePosStatus" role="status" aria-live="polite" hidden><span id="offlinePosStatusText"></span><button class="secondary" id="retryOfflineSync" type="button" hidden>Sync now</button></div>
+      <div class="panel held-sales-panel hidden" id="heldSalesPanel"><div class="held-sales-heading"><h2>Held payments</h2><label>Find held sale<input id="heldSalesSearch" type="search" placeholder="Customer name or phone" autocomplete="off"></label></div><div id="heldSalesList" class="held-sales-list"></div></div>
       <div class="split">
         <form class="panel" id="saleForm" novalidate>
           <div class="pos-sale-heading"><span class="pos-step-number">1</span><div><p class="eyebrow">New sale</p><h2>Choose customer type</h2></div><button class="secondary print-last-receipt" id="printLastReceiptButton" type="button" disabled>Print last receipt</button></div>
@@ -38026,8 +38076,9 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <div class="pos-step-heading"><span class="pos-step-number">2</span><div><p class="eyebrow">Sale items</p><h2>Add services or products</h2></div></div>
           <div id="saleItems"></div>
           <button class="secondary pos-add-item" id="addSaleItem" type="button">+ Add item</button>
+          <label class="sale-note">Sale note<textarea name="saleNote" rows="2" maxlength="2000" placeholder="Optional note about this sale"></textarea></label>
           <div class="checkout-total"><span>Total amount</span><strong id="checkoutTotal">$0.00</strong></div>
-          <button class="primary full pay-button" id="showPaymentMethods" type="button">Click to pay</button>
+          <div class="sale-action-row"><button class="secondary" id="holdSaleButton" type="button">Hold payment</button><button class="primary pay-button" id="showPaymentMethods" type="button">Click to pay</button></div>
           <div class="payment-panel hidden" id="paymentPanel">
             <div class="payment-heading"><div><p class="eyebrow">Make a payment</p><h3>Select payment method</h3></div><label>Amount to pay $<input name="paymentAmount" type="number" min="0.01" step="0.01" placeholder="0.00"></label></div>
             <div class="payment-methods" role="group" aria-label="Payment method">
@@ -38228,6 +38279,8 @@ let reportRequestId = 0;
 let lastReceipt = null;
 try { lastReceipt = JSON.parse(sessionStorage.getItem("kunchasLastReceipt") || "null"); } catch {}
 let salePayments = [];
+let heldSales = [];
+let heldSalesSyncing = false;
 let paymentTotalSnapshot = 0;
 let closingSalesKey = '';
 let closingSalesLoading = false;
@@ -38467,6 +38520,8 @@ document.querySelector("#bookingCheckoutSearch").addEventListener("focus", () =>
 document.querySelector(".booking-checkout-picker").addEventListener("keydown", (event) => { if (event.key === "Escape") { closeBookingCheckoutResults(); return; } if (event.key === "Enter" && event.target.id === "bookingCheckoutSearch") { const first = document.querySelector("#bookingCheckoutResults [data-booking-id]"); if (first) { event.preventDefault(); first.click(); } return; } if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return; const options = [...document.querySelectorAll("#bookingCheckoutResults [data-booking-id]")]; if (!options.length) return; const current = options.indexOf(document.activeElement); event.preventDefault(); options[(current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length].focus(); });
 document.querySelectorAll('input[name="checkoutMode"]').forEach((input) => input.addEventListener("change", updateCheckoutMode));
 document.querySelector("#showPaymentMethods").addEventListener("click", showPaymentMethods);
+document.querySelector("#holdSaleButton").addEventListener("click", holdCurrentSale);
+document.querySelector("#heldSalesSearch").addEventListener("input", renderHeldSales);
 document.querySelectorAll("[data-payment-method]").forEach((button) => button.addEventListener("click", () => addPayment(button.dataset.paymentMethod)));
 document.querySelector("#printLastReceiptButton")?.addEventListener("click", printLastReceipt);
 document.querySelector("#checkoutPrintReceipt").addEventListener("click", () => { printLastReceipt(); document.querySelector("#checkoutCompleteDialog").close("printed"); });
@@ -38625,17 +38680,17 @@ if (appMode === "admin") loadData();
 if (appMode === "staff") {
   navigator.serviceWorker?.register("/offline-pos-sw.js").catch(() => {});
   if (location.pathname.startsWith("/bookings")) showTab("bookings");
-  window.addEventListener("online", () => { if (selectedPosBranchId) refreshPosData(); updateOfflineStatus(); syncOfflineSales(); syncOfflineBookings(); });
+  window.addEventListener("online", () => { if (selectedPosBranchId) refreshPosData(); updateOfflineStatus(); syncOfflineSales(); syncOfflineBookings(); syncLocalHolds(); });
   window.addEventListener("offline", updateOfflineStatus);
   document.querySelector("#retryOfflineSync")?.addEventListener("click", () => { syncOfflineSales(true); syncOfflineBookings(); });
-  setInterval(() => { if (selectedPosBranchId && navigator.onLine) { syncOfflineSales(); syncOfflineBookings(); } }, 20000);
+  setInterval(() => { if (selectedPosBranchId && navigator.onLine) { syncOfflineSales(); syncOfflineBookings(); syncLocalHolds(); } }, 20000);
 }
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (appMode === "staff") headers["x-pos-workspace"] = "1";
   else if (currentUser.managerBranchId) headers["x-branch-id"] = currentUser.managerBranchId;
-  if (selectedPosBranchId && (path.startsWith("/api/checkout-bookings") || path.startsWith("/api/pos-customers") || path === "/api/pos-data" || path === "/api/sales" || path === "/api/stock-movements" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
+  if (selectedPosBranchId && (path.startsWith("/api/checkout-bookings") || path.startsWith("/api/pos-customers") || path.startsWith("/api/held-sales") || path === "/api/pos-data" || path === "/api/sales" || path === "/api/stock-movements" || path === "/api/branch-bookings" || path === "/api/daily-closing" || path === "/api/time-clock" || path.startsWith("/api/bookings/") || path.startsWith("/api/sales/") || path.startsWith("/api/daily-closing/"))) {
     headers["x-branch-id"] = selectedPosBranchId;
 
   }
@@ -38651,6 +38706,7 @@ async function loadData() {
     message.textContent = "Loading Kunchas data...";
     state = normalizeState(await api("/api/app-data"));
     renderAll();
+    if (appMode === "staff") await loadHeldSales();
     message.textContent = "";
   } catch (error) {
     message.textContent = error.message;
@@ -38781,7 +38837,7 @@ async function refreshPosData() {
     if (appMode === "staff" && offlineNetworkError(error) && sessionStorage.getItem(OFFLINE_BRANCH_KEY) === selectedPosBranchId) {
       try {
         const cached = await offlineLoad("snapshot:" + selectedPosBranchId);
-        if (cached?.branches?.length) { state = normalizeState(cached); usingOfflineSnapshot = true; renderAll(); message.textContent = "Offline. Using the latest saved branch data."; await updateOfflineStatus(); return true; }
+        if (cached?.branches?.length) { state = normalizeState(cached); usingOfflineSnapshot = true; renderAll(); await loadHeldSales(); message.textContent = "Offline. Using the latest saved branch data."; await updateOfflineStatus(); return true; }
       } catch {}
     }
     message.textContent = error.message; return false;
@@ -40072,10 +40128,13 @@ function renderCustomerProfileHistory(sales, history) {
   const spent = sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
   document.querySelector("#customerProfileSummary").textContent = sales.length + " sale" + (sales.length === 1 ? "" : "s") + " · " + money(spent) + " total spent";
   const saleById = Object.fromEntries(sales.map((sale) => [sale.id, sale]));
+  const notedSales = new Set();
   document.querySelector("#customerHistoryTable").innerHTML = history.length ? history.map((item) => {
     const sale = saleById[item.sale_id];
     if (!sale) return "";
-    return '<tr><td>' + esc(formatCustomerDate(sale.created_at)) + '</td><td><strong>' + esc(item.branch_name || sale.branch_name || "") + '</strong></td><td>' + esc(item.item_name) + (item.service_note ? '<small class="customer-service-note">' + esc(item.service_note) + '</small>' : '') + '</td><td>' + esc(customerSaleStaff(item)) + '</td><td>' + money(item.price_cents) + '</td><td>' + esc(sale.payment_method || "") + '</td></tr>';
+    const saleNote = sale.notes && !notedSales.has(sale.id) ? '<small class="customer-service-note">Sale note: ' + esc(sale.notes) + '</small>' : '';
+    notedSales.add(sale.id);
+    return '<tr><td>' + esc(formatCustomerDate(sale.created_at)) + '</td><td><strong>' + esc(item.branch_name || sale.branch_name || "") + '</strong></td><td>' + esc(item.item_name) + (item.service_note ? '<small class="customer-service-note">' + esc(item.service_note) + '</small>' : '') + saleNote + '</td><td>' + esc(customerSaleStaff(item)) + '</td><td>' + money(item.price_cents) + '</td><td>' + esc(sale.payment_method || "") + '</td></tr>';
   }).join("") : '<tr><td colspan="6" class="empty-cell">No sales recorded for this customer yet.</td></tr>';
 }
 function customerSaleStaff(item) {
@@ -40383,7 +40442,7 @@ function addSaleItem(selectedItem = null, selectedStaffId = "", requestedType = 
   const row = document.createElement("div");
   row.className = "sale-item";
   row.dataset.itemType = selectedItem?.type || requestedType;
-  row.innerHTML = '<div class="sale-item-heading"><span class="field-label">Service or product</span><span class="sale-item-kind hidden"></span><button class="sale-item-remove" type="button" aria-label="Remove item" title="Remove">×</button></div><div class="sale-item-picker"><div class="pos-search-picker"><input name="saleItemSearch" type="search" autocomplete="off" required placeholder="Search or choose an item" role="combobox" aria-label="Search services and products" aria-autocomplete="list" aria-expanded="false"><button class="sale-picker-toggle" type="button" aria-label="Browse services and products" aria-expanded="false">⌄</button><div class="sale-picker-menu hidden"><div class="sale-picker-types" role="group" aria-label="Item type"><button type="button" data-sale-type="service">Services</button><button type="button" data-sale-type="product">Products</button></div><div class="sale-picker-filters"><select name="saleItemCategory" aria-label="Category"></select><select name="saleItemSubCategory" aria-label="Sub-category"></select></div><div class="sale-picker-options" role="listbox"></div></div></div></div><div class="line-meta"></div><details class="instance-edit hidden"><summary>Edit name or price</summary><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div></details><div class="staff-area hidden"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Select staff by name, phone, or email" aria-label="Select staff for this service"></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div><label class="service-note hidden">Service note<textarea name="serviceNote" rows="2" maxlength="1000" placeholder="Optional note about this service"></textarea></label>';
+  row.innerHTML = '<div class="sale-item-heading"><span class="field-label">Service or product</span><span class="sale-item-kind hidden"></span><button class="sale-item-remove" type="button" aria-label="Remove item" title="Remove">×</button></div><div class="sale-item-picker"><div class="pos-search-picker"><input name="saleItemSearch" type="search" autocomplete="off" required placeholder="Search or choose an item" role="combobox" aria-label="Search services and products" aria-autocomplete="list" aria-expanded="false"><button class="sale-picker-toggle" type="button" aria-label="Browse services and products" aria-expanded="false">⌄</button><div class="sale-picker-menu hidden"><div class="sale-picker-types" role="group" aria-label="Item type"><button type="button" data-sale-type="service">Services</button><button type="button" data-sale-type="product">Products</button></div><div class="sale-picker-filters"><select name="saleItemCategory" aria-label="Category"></select><select name="saleItemSubCategory" aria-label="Sub-category"></select></div><div class="sale-picker-options" role="listbox"></div></div></div></div><div class="line-meta"></div><details class="instance-edit hidden"><summary>Edit name or price</summary><div class="grid"><label>Name for this sale<input name="instanceName"></label><label>Amount for this sale $<input name="instancePrice" type="number" min="0.01" step="0.01"></label></div></details><div class="staff-area hidden"><span class="field-label">Staff involved</span><div class="staff-add-row"><input name="saleStaffSearch" list="staffList" placeholder="Select staff by name, phone, or email" aria-label="Select staff for this service"></div><div class="selected-staff"></div><p class="hint allocation-summary">Staff percentages: 0% · Staff dollars: $0.00</p></div>';
   document.querySelector("#saleItems").append(row);
   row.querySelector(".sale-item-remove").addEventListener("click", () => { row.remove(); renderCartSummary(); });
   const staffInput = row.querySelector('input[name="saleStaffSearch"]');
@@ -40409,7 +40468,6 @@ function addSaleItem(selectedItem = null, selectedStaffId = "", requestedType = 
   });
   row.querySelector('input[name="instanceName"]').addEventListener("input", renderCartSummary);
   row.querySelector('input[name="instancePrice"]').addEventListener("input", () => { rebalanceStaffAllocations(row, null, "preserve"); renderCartSummary(); });
-  row.querySelector('textarea[name="serviceNote"]').addEventListener("input", renderCartSummary);
   if (selectedItem) input.value = selectedItem.label;
   updateSaleItemRow(row);
   if (selectedStaffId && selectedItem?.type === "service") {
@@ -40610,6 +40668,163 @@ async function submitBooking(event) {
   finally { button.disabled = false; }
 }
 async function submitAdminForm(event, path) { event.preventDefault(); await submitJson(path, Object.fromEntries(new FormData(event.target)), event.target); }
+function saleDraftItems(form) {
+  return [...form.querySelectorAll(".sale-item")].map((row) => {
+    const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
+    if (!item) return null;
+    return { itemType:item.type, itemId:item.id,
+      instanceName:item.type === "service" ? row.querySelector('input[name="instanceName"]').value : "",
+      instancePrice:item.type === "service" ? row.querySelector('input[name="instancePrice"]').value : "",
+      staffIds:item.type === "service" ? [...row.querySelectorAll('input[name="saleStaffIds"]:checked')].map((input) => input.value) : [],
+      staffAllocations:item.type === "service" ? [...row.querySelectorAll(".staff-chip")].map((chip) => ({ staffId:chip.querySelector('input[name="saleStaffIds"]').value, percent:chip.querySelector('input[name="staffPercent"]').value, amount:chip.querySelector('input[name="staffAmount"]').value })) : [] };
+  });
+}
+async function loadHeldSales() {
+  if (!selectedPosBranchId) return;
+  const local = appMode === "staff" ? await offlineLoad("held-sales-local:" + selectedPosBranchId).catch(() => []) || [] : [];
+  let remote = [];
+  try {
+    const result = await api("/api/held-sales?branchId=" + encodeURIComponent(selectedPosBranchId));
+    remote = result.heldSales || [];
+    if (appMode === "staff") offlineSave("held-sales:" + selectedPosBranchId, remote).catch(() => {});
+  } catch (error) {
+    if (offlineNetworkError(error) && appMode === "staff") remote = await offlineLoad("held-sales:" + selectedPosBranchId).catch(() => []) || [];
+    else { message.textContent = error.message; return; }
+  }
+  const pendingSaleIds = new Set((appMode === "staff" ? await offlineQueue().catch(() => []) : []).map((item) => item.payload?.heldSaleId).filter(Boolean));
+  heldSales = [...local, ...remote.filter((item) => !local.some((pending) => pending.id === item.id))].filter((item) => !pendingSaleIds.has(item.id));
+  renderHeldSales();
+}
+async function syncLocalHolds() {
+  if (heldSalesSyncing || !navigator.onLine || !selectedPosBranchId) return;
+  heldSalesSyncing = true;
+  try {
+    const key = "held-sales-local:" + selectedPosBranchId;
+    const local = await offlineLoad(key).catch(() => []) || [];
+    let changed = false;
+    for (const hold of local.slice()) {
+      if (document.querySelector("#saleForm")?.dataset.localHeldSaleId === hold.id) continue;
+      try {
+        await api("/api/held-sales", { method:"POST", body:JSON.stringify(hold.payload) });
+        local.splice(local.findIndex((item) => item.id === hold.id), 1);
+        await offlineSave(key, local);
+        changed = true;
+      } catch (error) { if (offlineNetworkError(error)) break; hold.syncError = error.message; await offlineSave(key, local); }
+    }
+    if (changed) await loadHeldSales();
+  } finally { heldSalesSyncing = false; }
+}
+async function removeLocalHeldSale(id) {
+  if (!id || appMode !== "staff") return;
+  const key = "held-sales-local:" + selectedPosBranchId;
+  const local = await offlineLoad(key).catch(() => []) || [];
+  if (local.some((item) => item.id === id)) await offlineSave(key, local.filter((item) => item.id !== id));
+}
+function renderHeldSales() {
+  const panel = document.querySelector("#heldSalesPanel"), list = document.querySelector("#heldSalesList");
+  const query = document.querySelector("#heldSalesSearch").value.trim().toLowerCase();
+  panel.classList.toggle("hidden", !heldSales.length);
+  const rows = heldSales.filter((hold) => !query || [hold.customer_name, hold.customer_phone].some((value) => String(value || "").toLowerCase().includes(query)));
+  list.innerHTML = rows.length ? rows.map((hold) => '<div class="held-sale-row"><div><strong>' + esc(hold.customer_name) + '</strong><span>' + esc(hold.customer_phone) + ' · ' + esc(new Date(hold.updated_at).toLocaleString("en-AU")) + (hold.local ? ' · ' + esc(hold.syncError || "Saved on this device") : '') + '</span></div><b>' + money(hold.total_cents) + '</b><button class="secondary" type="button" data-resume-hold="' + esc(hold.id) + '">Open payment</button></div>').join("") : '<p class="hint">No matching held sales.</p>';
+  list.querySelectorAll("[data-resume-hold]").forEach((button) => button.addEventListener("click", () => resumeHeldSale(button.dataset.resumeHold)));
+}
+async function holdCurrentSale() {
+  const form = document.querySelector("#saleForm"), data = new FormData(form), button = document.querySelector("#holdSaleButton");
+  setSaleMessage("");
+  if (salePayments.length) { setSaleMessage("Remove entered payment amounts before holding this sale.", true); return; }
+  const bookingId = String(data.get("bookingId") || ""), customerMode = data.get("customerMode");
+  const booking = state.bookings.find((item) => item.id === bookingId);
+  if (data.get("checkoutMode") === "booking" && !booking) { setSaleMessage("Select a booking before holding its payment.", true); return; }
+  const customerId = booking?.customer_id || (customerMode === "existing" ? data.get("customerId") || findCustomerId(data.get("customerSearch")) : "");
+  if (!booking && customerMode === "existing" && !customerId) { setSaleMessage("Select an existing customer first.", true); return; }
+  if (!booking && customerMode === "existing" && !String(state.customers.find((item) => item.id === customerId)?.phone || "").trim()) { setSaleMessage("This customer needs a phone number before holding a sale.", true); return; }
+  if (booking && !String(state.customers.find((item) => item.id === booking.customer_id)?.phone || booking.customer_phone || "").trim()) { setSaleMessage("The booking customer needs a phone number before holding a sale.", true); return; }
+  if (!booking && customerMode === "new" && (!String(data.get("newFirstName") || "").trim() || !String(data.get("newLastName") || "").trim() || !String(data.get("newPhone") || "").trim())) { setSaleMessage("Customer name and phone number are required.", true); return; }
+  const items = saleDraftItems(form);
+  if (!items.length || items.some((item) => !item || item.itemType === "service" && (!item.instanceName.trim() || !(Number(item.instancePrice) > 0)))) { setSaleMessage("Finish selecting every service or product before holding.", true); return; }
+  for (const row of form.querySelectorAll(".sale-item")) { const error = allocationError(row); if (error) { setSaleMessage(error, true); return; } }
+  const payload = { id:form.dataset.heldSaleId || form.dataset.localHeldSaleId || crypto.randomUUID(), branchId:data.get("branchId"), bookingId, checkoutMode:data.get("checkoutMode"), customerMode, customerId, customerCategory:data.get("customerCategory"), newCustomer:{ firstName:data.get("newFirstName"), lastName:data.get("newLastName"), phone:data.get("newPhone"), email:data.get("newEmail") }, items, notes:data.get("saleNote"), totalCents:saleTotalCents() };
+  button.disabled = true;
+  try {
+    let savedOffline = false;
+    try { await api("/api/held-sales", { method:"POST", body:JSON.stringify(payload) }); await removeLocalHeldSale(payload.id).catch(() => {}); }
+    catch (error) {
+      if (!offlineNetworkError(error) || appMode !== "staff") throw error;
+      const key = "held-sales-local:" + selectedPosBranchId;
+      const local = await offlineLoad(key).catch(() => []) || [];
+      const customer = booking ? state.customers.find((item) => item.id === booking.customer_id) : state.customers.find((item) => item.id === customerId);
+      const name = customer ? customer.first_name + " " + customer.last_name : booking?.customer_name || [payload.newCustomer.firstName, payload.newCustomer.lastName].join(" ").trim();
+      const phone = customer?.phone || booking?.customer_phone || payload.newCustomer.phone || "";
+      const existingLocal = local.find((item) => item.id === payload.id);
+      const record = { id:payload.id, branch_id:selectedPosBranchId, booking_id:bookingId, customer_name:name, customer_phone:phone, total_cents:payload.totalCents, payload, updated_at:new Date().toISOString(), local:true, cloudExisting:Boolean(form.dataset.heldSaleId || existingLocal?.cloudExisting) };
+      if (existingLocal) Object.assign(existingLocal, record); else local.push(record);
+      await offlineSave(key, local);
+      savedOffline = true;
+    }
+    form.reset(); delete form.dataset.heldSaleId; delete form.dataset.localHeldSaleId; delete form.dataset.saleAttemptId; form.elements.branchId.value = selectedPosBranchId;
+    document.querySelector("#saleItems").innerHTML = "";
+    document.querySelector("#bookingCheckoutSearch").value = "";
+    document.querySelector("#bookingCustomerCard").classList.add("hidden");
+    updateCheckoutMode(); updateCustomerMode(); resetPaymentUi(); renderCartSummary();
+    await loadHeldSales();
+    setSaleMessage(savedOffline ? "Payment held on this iPad. It will sync when internet returns." : "Payment held. Open it from Held payments when the customer is ready.");
+  } catch (error) { setSaleMessage(error.message, true); }
+  finally { button.disabled = false; }
+}
+async function resumeHeldSale(id) {
+  let hold = heldSales.find((item) => item.id === id);
+  if (!hold) return;
+  if (hold.local && navigator.onLine) { await syncLocalHolds().catch(() => {}); hold = heldSales.find((item) => item.id === id) || hold; }
+  const draft = hold.payload || {}, form = document.querySelector("#saleForm");
+  if ([...form.querySelectorAll(".sale-item")].some((row) => findSaleItem(row.querySelector('input[name="saleItemSearch"]').value)) && !window.confirm("Replace the current sale with this held payment?")) return;
+  try {
+    if (draft.bookingId && !state.bookings.some((item) => item.id === draft.bookingId)) {
+      const result = await api("/api/checkout-bookings?branchId=" + encodeURIComponent(selectedPosBranchId) + "&search=" + encodeURIComponent(hold.customer_phone));
+      state.bookings.push(...(result.bookings || []).filter((item) => !state.bookings.some((current) => current.id === item.id)));
+      state.customers.push(...(result.customers || []).filter((item) => !state.customers.some((current) => current.id === item.id)));
+    }
+    if (draft.customerId && !state.customers.some((item) => item.id === draft.customerId)) {
+      const result = await api("/api/pos-customers?branchId=" + encodeURIComponent(selectedPosBranchId) + "&q=" + encodeURIComponent(hold.customer_phone));
+      state.customers.push(...(result.customers || []).filter((item) => !state.customers.some((current) => current.id === item.id)));
+    }
+    if (draft.bookingId && !state.bookings.some((item) => item.id === draft.bookingId)) throw Error("Booking is no longer available. Refresh bookings before payment.");
+    if (draft.customerId && !state.customers.some((item) => item.id === draft.customerId)) throw Error("Customer is no longer available. Refresh customers before payment.");
+    if (draft.bookingId && !canCheckoutBooking(state.bookings.find((item) => item.id === draft.bookingId))) throw Error("This booking has already been checked out.");
+    if ((draft.items || []).some((saved) => !saleCatalog().some((item) => item.id === saved.itemId && item.type === saved.itemType))) throw Error("A held item is no longer available. Update the sale before payment.");
+  } catch (error) { setSaleMessage(error.message, true); return; }
+  form.reset(); form.elements.branchId.value = selectedPosBranchId; document.querySelector("#saleItems").innerHTML = ""; resetPaymentUi();
+  delete form.dataset.heldSaleId; delete form.dataset.localHeldSaleId; delete form.dataset.saleAttemptId;
+  if (hold.local && !hold.cloudExisting) form.dataset.localHeldSaleId = id;
+  else { form.dataset.heldSaleId = id; form.dataset.saleAttemptId = id; }
+  form.elements.checkoutMode.value = draft.bookingId ? "booking" : "walkin";
+  updateCheckoutMode();
+  form.elements.customerMode.value = draft.customerMode || "new";
+  form.elements.customerCategory.value = draft.customerCategory || "Member";
+  form.elements.newFirstName.value = draft.newCustomer?.firstName || "";
+  form.elements.newLastName.value = draft.newCustomer?.lastName || "";
+  form.elements.newPhone.value = draft.newCustomer?.phone || "";
+  form.elements.newEmail.value = draft.newCustomer?.email || "";
+  if (draft.bookingId) { selectBookingForCheckout(draft.bookingId); form.elements.bookingId.value = draft.bookingId; }
+  else { updateCustomerMode(); form.elements.customerId.value = draft.customerId || ""; const customer = state.customers.find((item) => item.id === draft.customerId); form.elements.customerSearch.value = customer ? customerLabel(customer) : ""; }
+  document.querySelector("#saleItems").innerHTML = "";
+  for (const saved of draft.items || []) {
+    const catalogItem = saleCatalog().find((item) => item.id === saved.itemId && item.type === saved.itemType);
+    if (!catalogItem) continue;
+    addSaleItem(catalogItem);
+    const row = document.querySelector("#saleItems .sale-item:last-child");
+    if (saved.itemType === "service") {
+      row.querySelector('input[name="instanceName"]').value = saved.instanceName || catalogItem.name;
+      row.querySelector('input[name="instancePrice"]').value = saved.instancePrice || dollars(catalogItem.priceCents);
+      for (const staffId of saved.staffIds || []) { const staff = state.staff.find((item) => item.id === staffId); if (staff) { row.querySelector('input[name="saleStaffSearch"]').value = staffLabel(staff); addStaffToSaleItem(row); } }
+      for (const allocation of saved.staffAllocations || []) { const chip = [...row.querySelectorAll(".staff-chip")].find((item) => item.querySelector('input[name="saleStaffIds"]').value === allocation.staffId); if (chip) { chip.querySelector('input[name="staffPercent"]').value = allocation.percent; chip.querySelector('input[name="staffAmount"]').value = allocation.amount; } }
+      updateAllocationSummary(row);
+    }
+  }
+  form.elements.saleNote.value = draft.notes || "";
+  renderCartSummary();
+  setSaleMessage("Held payment opened. Check the details, then complete payment.");
+  form.scrollIntoView({ behavior:"smooth", block:"start" });
+}
 async function submitSale(event) {
   event.preventDefault();
   const form = event.target;
@@ -40636,23 +40851,7 @@ async function submitSale(event) {
   const customer = state.customers.find((item) => item.id === customerId) || selectedBooking;
   if (customerMode === "existing" && !String(customer?.phone || "").trim()) { setSaleMessage("This customer needs a phone number before checkout.", true); return; }
   const saleRows = [...form.querySelectorAll(".sale-item")];
-  const items = saleRows.map((row) => {
-    const selectedItem = findSaleItem(row.querySelector('input[name="saleItemSearch"]').value);
-    if (!selectedItem) return null;
-    return {
-      itemType: selectedItem.type,
-      itemId: selectedItem.id,
-      instanceName: selectedItem.type === "service" ? row.querySelector('input[name="instanceName"]').value : "",
-      instancePrice: selectedItem.type === "service" ? row.querySelector('input[name="instancePrice"]').value : "",
-      serviceNote: selectedItem.type === "service" ? row.querySelector('textarea[name="serviceNote"]').value : "",
-      staffIds: selectedItem.type === "service" ? [...row.querySelectorAll('input[name="saleStaffIds"]:checked')].map((input) => input.value) : [],
-      staffAllocations: selectedItem.type === "service" ? [...row.querySelectorAll(".staff-chip")].map((chip) => ({
-        staffId: chip.querySelector('input[name="saleStaffIds"]').value,
-        percent: chip.querySelector('input[name="staffPercent"]').value,
-        amount: chip.querySelector('input[name="staffAmount"]').value
-      })) : []
-    };
-  }).filter(Boolean);
+  const items = saleDraftItems(form).filter(Boolean);
   if (!items.length || items.length !== saleRows.length) {
     setSaleMessage("Select a valid service or product for every sale item.", true);
     return;
@@ -40687,7 +40886,8 @@ async function submitSale(event) {
   submitButton.disabled = true;
   submitButton.textContent = "Processing payment...";
   await submitJson("/api/sales", {
-    clientSaleId:form.dataset.saleAttemptId || (form.dataset.saleAttemptId = crypto.randomUUID()),
+    clientSaleId:form.dataset.heldSaleId || form.dataset.saleAttemptId || (form.dataset.saleAttemptId = crypto.randomUUID()),
+    heldSaleId:form.dataset.heldSaleId || "",
     ...actor,
     branchId:data.get("branchId"),
     bookingId:data.get("bookingId"),
@@ -40695,6 +40895,7 @@ async function submitSale(event) {
     customerId,
     customerCategory:data.get("customerCategory"),
     newCustomer:{ firstName:data.get("newFirstName"), lastName:data.get("newLastName"), phone:data.get("newPhone"), email:data.get("newEmail") },
+    notes:data.get("saleNote"),
     payments:salePayments.map((payment) => ({ method:payment.method, amount:(payment.amountCents / 100).toFixed(2) })),
     items
   }, form);
@@ -40717,8 +40918,10 @@ async function submitJson(path, payload, form) {
       try { sessionStorage.setItem("kunchasLastReceipt", JSON.stringify(lastReceipt)); } catch {}
       syncLastReceiptButton();
     }
+    await removeLocalHeldSale(form.dataset.localHeldSaleId || form.dataset.heldSaleId).catch(() => {});
     form.reset();
-    if (form.id === "saleForm") delete form.dataset.saleAttemptId;
+    if (form.id === "saleForm") form.elements.branchId.value = selectedPosBranchId;
+    if (form.id === "saleForm") { delete form.dataset.saleAttemptId; delete form.dataset.heldSaleId; delete form.dataset.localHeldSaleId; }
     if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckoutSearch").value = ""; closeBookingCheckoutResults(); document.querySelector("#bookingCustomerCard").classList.add("hidden"); document.querySelector("#bookingCustomerCard").innerHTML = ""; updateCheckoutMode(); updateCustomerMode(); resetPaymentUi(); setSaleMessage(result.receipt?.changeCents ? "Purchase complete. Return " + money(result.receipt.changeCents) + " change." : "Purchase completed successfully."); if (result.receipt) showCheckoutReceiptPrompt(result.receipt); }
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); document.querySelector("#bookingDialog").close(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
@@ -40727,8 +40930,10 @@ async function submitJson(path, payload, form) {
     if (path === "/api/sales" && offlineNetworkError(error)) {
       try {
         await queueOfflineSale(payload);
+        await removeLocalHeldSale(form.dataset.localHeldSaleId || form.dataset.heldSaleId).catch(() => {});
         form.reset();
-        delete form.dataset.saleAttemptId;
+        form.elements.branchId.value = selectedPosBranchId;
+        delete form.dataset.saleAttemptId; delete form.dataset.heldSaleId; delete form.dataset.localHeldSaleId;
         document.querySelector("#saleItems").innerHTML = "";
         document.querySelector("#bookingCheckoutSearch").value = "";
         closeBookingCheckoutResults();
@@ -40961,9 +41166,9 @@ function renderCartSummary() {
     const item = findSaleItem(row.querySelector('input[name="saleItemSearch"]')?.value);
     if (!item) return null;
     const staffNames = item.type === "service" ? [...row.querySelectorAll('input[name="saleStaffIds"]:checked')].map((input) => state.staff.find((staff) => staff.id === input.value)?.name).filter(Boolean) : [];
-    return { ...item, staffNames, serviceNote:item.type === "service" ? row.querySelector('textarea[name="serviceNote"]').value.trim() : "", name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
+    return { ...item, staffNames, name:item.type === "service" ? (row.querySelector('input[name="instanceName"]').value || item.name) : item.name, priceCents:item.type === "service" ? Math.round(Number(row.querySelector('input[name="instancePrice"]').value || 0) * 100) || item.priceCents : item.priceCents };
   }).filter(Boolean);
-  document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + '</em>' + (item.staffNames.length ? '<small class="cart-staff">Staff: ' + esc(item.staffNames.join(", ")) + '</small>' : '') + (item.serviceNote ? '<small class="cart-service-note">Note: ' + esc(item.serviceNote) + '</small>' : '') + '</span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
+  document.querySelector("#cartSummary").innerHTML = selectedItems.length ? selectedItems.map((item) => '<div class="cart-line"><span><strong>' + esc(item.name) + '</strong><em>' + esc(item.typeLabel) + '</em>' + (item.staffNames.length ? '<small class="cart-staff">Staff: ' + esc(item.staffNames.join(", ")) + '</small>' : '') + '</span><b>' + money(item.priceCents) + '</b></div>').join("") : '<p class="hint">Search and add services or products to build the sale.</p>';
   const total = selectedItems.reduce((sum, item) => sum + item.priceCents, 0);
   document.querySelector("#cartTotal").textContent = money(total);
   document.querySelector("#checkoutTotal").textContent = money(total);
@@ -41053,7 +41258,6 @@ function updateSaleItemRow(row) {
     row.dataset.itemType = selectedItem.type;
     row.querySelector('input[name="instanceName"]').value = selectedItem.name;
     row.querySelector('input[name="instancePrice"]').value = (selectedItem.priceCents / 100).toFixed(2);
-    row.querySelector('textarea[name="serviceNote"]').value = "";
   }
   row.dataset.itemKey = itemKey;
   row.querySelector(".sale-item-kind").textContent = selectedItem?.typeLabel || "";
@@ -41063,7 +41267,6 @@ function updateSaleItemRow(row) {
   row.querySelector('input[name="instanceName"]').required = selectedItem?.type === "service";
   row.querySelector('input[name="instancePrice"]').required = selectedItem?.type === "service";
   row.querySelector(".staff-area").classList.toggle("hidden", selectedItem?.type !== "service");
-  row.querySelector(".service-note").classList.toggle("hidden", selectedItem?.type !== "service");
   if (selectedItem?.type === "product") row.querySelector(".selected-staff").innerHTML = "";
   updateAllocationSummary(row);
   renderCartSummary();
@@ -41440,6 +41643,7 @@ button:disabled { cursor:wait; opacity:.65; }
 .customer-row:hover,.customer-row:focus-visible,.staff-row:hover,.staff-row:focus-visible { background:var(--brand-soft); outline:2px solid #d9bee2; outline-offset:-2px; }
 .empty-cell { padding:24px; color:var(--muted); text-align:center; }
 .split { display:grid; grid-template-columns:minmax(320px,.8fr) minmax(0,1.2fr); gap:20px; align-items:start; }
+.pos-workspace>.split { grid-template-columns:minmax(0,1.35fr) minmax(290px,.65fr); }
 .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 label,legend { display:block; font-weight:800; }
 fieldset { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:0 0 14px; padding:0; border:0; }
@@ -41725,7 +41929,21 @@ legend { grid-column:1/-1; }
 .line-meta { display:flex; align-items:center; justify-content:flex-end; gap:12px; min-height:28px; margin:4px 0 8px; }
 .line-meta:empty { display:none; }
 .line-meta strong { font-size:18px; }
-.cart-panel { position:sticky; top:20px; }
+.cart-panel { position:static; }
+.sale-note { display:block; margin:2px 0 16px; }
+.sale-note textarea { display:block; min-height:76px; margin:6px 0 0; line-height:1.5; }
+.sale-action-row { display:grid; grid-template-columns:minmax(150px,.34fr) minmax(0,1fr); gap:10px; }
+.sale-action-row button { width:100%; min-height:52px; }
+.held-sales-panel { margin-bottom:16px; }
+.held-sales-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin-bottom:12px; }
+.held-sales-heading h2 { margin:0; font-size:18px; }
+.held-sales-heading label { width:min(320px,55%); font-size:12px; }
+.held-sales-heading input { margin:4px 0 0; }
+.held-sales-list { display:grid; gap:8px; }
+.held-sale-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:12px; padding:10px 12px; background:#faf8fb; border:1px solid var(--line); border-radius:9px; }
+.held-sale-row strong,.held-sale-row span { display:block; overflow-wrap:anywhere; }
+.held-sale-row span { color:var(--muted); font-size:12px; }
+.held-sale-row b { white-space:nowrap; }
 .cart-summary { display:grid; gap:10px; min-height:120px; }
 .cart-line { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
 .cart-line strong,.cart-line em { display:block; }
@@ -41789,9 +42007,8 @@ legend { grid-column:1/-1; }
 .mini-check input { width:auto; min-height:auto; margin:0; }
 .staff-add-row { display:block; min-width:0; }
 .staff-add-row input { margin-top:0; }
-.service-note { margin-top:12px; }
-.service-note textarea { display:block; margin:6px 0 0; min-height:76px; line-height:1.5; }
-.cart-service-note,.customer-service-note { display:block; margin-top:4px; color:var(--muted); font-size:12px; font-weight:500; white-space:pre-wrap; overflow-wrap:anywhere; }
+.customer-service-note { display:block; margin-top:4px; color:var(--muted); font-size:12px; font-weight:500; white-space:pre-wrap; overflow-wrap:anywhere; }
+.sale-action-row:has(#showPaymentMethods.hidden){grid-template-columns:1fr}
 .booking-service-picker { margin-bottom:14px; }
 .booking-service-picker>.field-label { margin-bottom:6px; }
 .booking-service-picker .sale-picker-menu { max-height:280px; }
@@ -41948,41 +42165,52 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .branch-action-dialog { width:min(520px,calc(100vw - 32px)); }.branch-action-warning { padding:16px; border:1px solid #eed7b4; background:#fff8eb; color:#715321; border-radius:10px; font-size:14px; line-height:1.6; margin-bottom:20px; }
 .branch-dialog [hidden] { display:none!important; }
 @media(max-width:700px){.branch-dialog-header,.branch-dialog-body{padding:18px}.branch-dialog-footer{padding:14px 18px}.branch-form-section{padding:14px}.branch-form-section .section-heading{flex-wrap:wrap;gap:12px}.branch-closure-row{grid-template-columns:1fr}.branch-closure-row button{justify-self:start}.branch-dialog .grid{gap:0}}
-@media(max-width:1200px){
-  body,body.sidebar-collapsed{grid-template-columns:minmax(0,1fr)}
-  .sidebar,.sidebar-collapsed .sidebar{position:relative;top:auto;display:grid;grid-template-columns:130px minmax(0,1fr);align-items:center;gap:8px 14px;width:100%;height:auto;min-width:0;padding:8px 16px;overflow:visible}
+@media(min-width:701px) and (max-width:1500px){
+  body,body.sidebar-collapsed{grid-template-columns:224px minmax(0,1fr)}
+  .sidebar,.sidebar-collapsed .sidebar{position:static;display:flex;flex-direction:column;width:224px;height:auto;min-height:100dvh;min-width:0;padding:20px 12px;overflow:visible}
   .sidebar-toggle{display:none}
-  .sidebar .brand,.sidebar-collapsed .brand{width:130px;margin:0;padding:4px}
-  .sidebar .brand img{max-width:120px}
-  .sidebar nav,.sidebar-collapsed nav{display:flex;align-items:center;gap:5px;min-width:0;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin}
-  .sidebar .nav,.sidebar-collapsed .nav{flex:0 0 auto;justify-content:center;gap:7px;min-height:44px;padding:8px 11px;white-space:nowrap;font-size:13px}
-  .sidebar-collapsed .nav span{display:inline}
-  .sidebar .sidebar-footer,.sidebar-collapsed .sidebar-footer{grid-column:1/-1;display:flex;align-items:center;gap:5px;width:100%;min-width:0;margin:0;padding:0;overflow-x:auto;border-top:1px solid #ffffff30}
-  .sidebar .sidebar-footer .nav,.sidebar-collapsed .sidebar-footer .nav{width:auto;border-top:0}
-  .sidebar .sidebar-user,.sidebar-collapsed .sidebar-user{padding:6px 0;border-top:0}
-  .sidebar-collapsed .sidebar-user>span:last-child{display:block}
-  .app{min-width:0;padding:16px 20px 36px}
-  .topbar{display:flex;align-items:center;gap:12px;min-width:0;margin:-16px -20px 16px;padding:14px 20px}
+  .sidebar .brand,.sidebar-collapsed .brand{width:auto;margin:0 0 18px;padding:8px}
+  .sidebar .brand img{max-width:190px}
+  .sidebar nav,.sidebar-collapsed nav{display:grid;gap:6px;overflow:visible}
+  .sidebar .nav,.sidebar-collapsed .nav{justify-content:flex-start;gap:10px;width:100%;min-height:46px;padding:8px 12px;white-space:normal;font-size:13px}
+  .sidebar-collapsed .nav span,.sidebar-collapsed .sidebar-user>span:last-child{display:block}
+  .sidebar .sidebar-footer,.sidebar-collapsed .sidebar-footer{display:grid;gap:6px;margin-top:auto;padding-top:18px}
+  .sidebar .sidebar-footer .nav,.sidebar-collapsed .sidebar-footer .nav{width:100%;border-radius:9px}
+  .sidebar .sidebar-user,.sidebar-collapsed .sidebar-user{justify-content:flex-start;padding:10px 8px 0}
+  .app{min-width:0;padding:20px 20px 36px}
+  .topbar{display:flex;align-items:center;gap:12px;min-width:0;margin:-20px -20px 18px;padding:16px 20px}
   .topbar>*{min-width:0}
-  .topbar h1{font-size:clamp(21px,3vw,28px);overflow-wrap:anywhere}
+  .topbar h1{font-size:clamp(21px,2.4vw,29px);overflow-wrap:anywhere}
   .account-tools{padding:8px 20px}
-  .split{grid-template-columns:minmax(0,1fr)}
   .split>*,.pos-flow-panel,.sale-item,.panel{min-width:0}
-  .cart-panel{position:static;top:auto}
   input,select,textarea{font-size:16px}
   .table-wrap{max-width:100%;overflow-x:auto}
 }
+@media(min-width:701px) and (max-width:1200px){.split,.pos-workspace>.split{display:grid;grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){
+  body,body.sidebar-collapsed{grid-template-columns:minmax(0,1fr)}
+  .sidebar,.sidebar-collapsed .sidebar{position:relative;top:auto;display:grid;grid-template-columns:100px minmax(0,1fr);align-items:center;height:auto;min-width:0;overflow:visible}
+  .sidebar-toggle{display:none}
   .sidebar,.sidebar-collapsed .sidebar{grid-template-columns:100px minmax(0,1fr);gap:4px 8px;padding:7px 10px}
   .sidebar .brand,.sidebar-collapsed .brand{width:100px}
   .sidebar .brand img{max-width:94px}
+  .sidebar nav,.sidebar-collapsed nav{display:flex;align-items:center;gap:5px;min-width:0;overflow-x:auto;scrollbar-width:thin}
   .sidebar .nav,.sidebar-collapsed .nav{padding:7px 9px;font-size:12px}
+  .sidebar .nav,.sidebar-collapsed .nav{flex:0 0 auto;white-space:nowrap}
+  .sidebar-collapsed .nav span,.sidebar-collapsed .sidebar-user>span:last-child{display:block}
+  .sidebar .sidebar-footer,.sidebar-collapsed .sidebar-footer{grid-column:1/-1;display:flex;gap:5px;width:100%;min-width:0;margin:0;padding:0;overflow-x:auto}
+  .sidebar .sidebar-footer .nav,.sidebar-collapsed .sidebar-footer .nav{width:auto;border-top:0}
   .sidebar .nav .ui-icon{width:17px;height:17px}
   .app{padding:12px 12px 28px}
   .topbar{margin:-12px -12px 14px;padding:12px}
   .account-tools{padding:8px 12px}
   .panel{padding:16px}
   .cart-summary{min-height:0}
+  .held-sales-heading{align-items:stretch;flex-direction:column}
+  .held-sales-heading label{width:100%}
+  .held-sale-row{grid-template-columns:minmax(0,1fr) auto}
+  .held-sale-row button{grid-column:1/-1}
+  .sale-action-row{grid-template-columns:1fr 1fr}
 }
 `;
 }
