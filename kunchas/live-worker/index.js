@@ -39241,7 +39241,7 @@ async function submitStaffForm(event) {
     form.elements.staffId.value=result.id;
     await saveStaffLogin(result.id,login);
     await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId:result.id, days }) });
-    form.reset(); closeStaffAdd(); await loadData(); openStaffProfile(result.id); message.textContent = "Staff member saved.";
+    await loadData(); form.reset(); closeStaffAdd(); message.textContent = "Staff member saved.";
   } catch (error) { status.textContent = error.message; message.textContent = error.message; }
   finally { button.disabled = false; }
 }
@@ -39252,7 +39252,7 @@ async function submitStaffProfile(event) {
   const data = Object.fromEntries(new FormData(event.currentTarget));
   const staffId = data.staffId;
   const days = [...event.currentTarget.querySelectorAll('input[name="days"]:checked')].map((input) => Number(input.value));
-  try { const login=staffLoginValues(event.currentTarget); button.disabled = true; status.textContent = "Saving staff details..."; message.textContent = "Saving staff details..."; await api("/api/staff/" + encodeURIComponent(staffId), { method:"PATCH", body:JSON.stringify(data) }); await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId, days }) }); await saveStaffLogin(staffId,login); await loadData(); openStaffProfile(staffId); document.querySelector("#staffProfileMessage").textContent = "Staff details saved."; message.textContent = "Staff details saved."; }
+  try { const login=staffLoginValues(event.currentTarget); button.disabled = true; status.textContent = "Saving staff details..."; message.textContent = "Saving staff details..."; await api("/api/staff/" + encodeURIComponent(staffId), { method:"PATCH", body:JSON.stringify(data) }); await api("/api/staff-regular-days-off", { method:"POST", body:JSON.stringify({ staffId, days }) }); await saveStaffLogin(staffId,login); await loadData(); closeStaffProfile(); message.textContent = "Staff details saved."; }
   catch (error) { status.textContent = error.message; message.textContent = error.message; }
   finally { button.disabled = false; }
 }
