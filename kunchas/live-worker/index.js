@@ -657,6 +657,11 @@ function salonNow(now = /* @__PURE__ */ new Date()) {
   return { date: parts.year + "-" + parts.month + "-" + parts.day, minutes: Number(parts.hour) * 60 + Number(parts.minute) };
 }
 __name(salonNow, "salonNow");
+function bookingStartIsPast(date, time, now = /* @__PURE__ */ new Date()) {
+  const current = salonNow(now);
+  return date < current.date || date === current.date && minutesOf(time) <= current.minutes;
+}
+__name(bookingStartIsPast, "bookingStartIsPast");
 function dateRange(now = /* @__PURE__ */ new Date()) {
   const { date } = salonNow(now);
   return { min: date, max: new Date(Date.parse(date + "T00:00:00Z") + BOOKING_RULES.advanceDays * 864e5).toISOString().slice(0, 10) };
@@ -36588,6 +36593,7 @@ async function createBooking(request, env) {
   if (!timeMatch || !Number.isFinite(minutesOf(bookingTime)) || Number(timeMatch[2]) % 15 !== 0) {
     return jsonResponse({ error: "Booking time must use a 15-minute interval." }, 400);
   }
+  if (bookingStartIsPast(bookingDate, bookingTime)) return jsonResponse({ error: "Choose a future booking date and time." }, 400);
   const placeholders = serviceIds.map(() => "?").join(",");
   const serviceRows = await all(env, `SELECT id, name, duration_minutes, price_cents FROM services WHERE id IN (${placeholders})`, serviceIds);
   const totalMinutes = serviceRows.reduce((total, service) => total + Number(service.duration_minutes || 0), 0);
@@ -36601,9 +36607,9 @@ async function createBooking(request, env) {
   if (await exceedsBookingCapacity(env, branchId, bookingDate, startMinutes, startMinutes + totalMinutes)) {
     return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
   }
-  customerId ||= await ensureBookingCustomer(env, body.customer || {}, branchId, "Online booking");
+  customerId ||= await ensureBookingCustomer(env, body.customer || {}, branchId, clean(body.source) === "Manual" ? "Manual booking" : "Online booking");
   if (!customerId) return jsonResponse({ error: "Customer details are required." }, 400);
-  await env.DB.prepare(
+  try { await env.DB.prepare(
     `INSERT INTO bookings (
       id, created_at, updated_at, customer_id, branch_id, staff_id, service_ids,
       service_names, booking_date, booking_time, duration_minutes, total_cents,
@@ -36626,7 +36632,11 @@ async function createBooking(request, env) {
     "Pay at store",
     clean(body.notes),
     ["Online", "Manual", "Walk-in"].includes(clean(body.source)) ? clean(body.source) : "Online"
-  ).run();
+  ).run(); }
+  catch (error) {
+    if (String(error.message).includes("BOOKING_CAPACITY")) return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
+    throw error;
+  }
   return jsonResponse({ ok: true, bookingId: id });
 }
 __name(createBooking, "createBooking");
@@ -36668,12 +36678,11 @@ async function createBranchBooking(request, env) {
   }
   const customer = body.customer || {};
   if (!customerId && (!clean(customer.firstName) || !clean(customer.lastName) || !clean(customer.phone))) return jsonResponse({ error: "Customer name and phone number are required." }, 400);
-  customerId ||= await ensureBookingCustomer(env, body.customer || {}, branchId, "Manual booking");
-  if (!customerId) return jsonResponse({ error: "Customer name and either phone or email are required." }, 400);
   const bookingRequest = new Request(request.url, {
     method: "POST",
     body: JSON.stringify({
       customerId,
+      customer,
       branchId,
       staffId: clean(body.staffId),
       serviceIds: Array.isArray(body.serviceIds) ? body.serviceIds : [],
@@ -36703,7 +36712,9 @@ async function updateBooking(request, env, bookingId) {
   const totalCents = Array.isArray(body.serviceIds) ? serviceRows.reduce((total, service) => total + Number(service.price_cents || 0), 0) : existing.total_cents;
   const bookingDate = clean(body.bookingDate) || existing.booking_date;
   const bookingTime = clean(body.bookingTime) || existing.booking_time;
-  if (body.bookingDate !== void 0 || body.bookingTime !== void 0 || Array.isArray(body.serviceIds) || ["Cancelled", "No show"].includes(existing.status) && !["Cancelled", "No show"].includes(clean(body.status) || existing.status)) {
+  const reactivating = ["Cancelled", "No show"].includes(existing.status) && !["Cancelled", "No show"].includes(clean(body.status) || existing.status);
+  if ((bookingDate !== existing.booking_date || bookingTime !== existing.booking_time || reactivating) && bookingStartIsPast(bookingDate, bookingTime)) return jsonResponse({ error: "Choose a future booking date and time." }, 400);
+  if (body.bookingDate !== void 0 || body.bookingTime !== void 0 || Array.isArray(body.serviceIds) || reactivating) {
     const timeMatch = bookingTime.match(/^(\d{2}):(\d{2})$/);
     if (!validDate(bookingDate) || !timeMatch || !Number.isFinite(minutesOf(bookingTime)) || Number(timeMatch[2]) % 15 !== 0) return jsonResponse({ error: "Choose a valid date and a 15-minute booking interval." }, 400);
     const startMinutes = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
@@ -36712,7 +36723,7 @@ async function updateBooking(request, env, bookingId) {
     const nextStatus = clean(body.status) || existing.status;
     if (!["Cancelled", "No show"].includes(nextStatus) && await exceedsBookingCapacity(env, existing.branch_id, bookingDate, startMinutes, startMinutes + totalMinutes, bookingId)) return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
   }
-  await env.DB.prepare(
+  try { await env.DB.prepare(
     `UPDATE bookings SET
       updated_at = ?, staff_id = ?, service_ids = ?, service_names = ?,
       booking_date = ?, booking_time = ?, duration_minutes = ?, total_cents = ?,
@@ -36730,7 +36741,11 @@ async function updateBooking(request, env, bookingId) {
     clean(body.status) || existing.status,
     [body.notes !== void 0 ? clean(body.notes) : existing.notes, body.status && body.status !== existing.status ? (/* @__PURE__ */ new Date()).toISOString() + " \u2014 " + body.status + " by " + auth.actor.name + ": " + auth.reason : ""].filter(Boolean).join("\n"),
     bookingId
-  ).run();
+  ).run(); }
+  catch (error) {
+    if (String(error.message).includes("BOOKING_CAPACITY")) return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
+    throw error;
+  }
   return jsonResponse({ ok: true });
 }
 __name(updateBooking, "updateBooking");
@@ -38253,7 +38268,8 @@ document.querySelector("#customerExportForm")?.addEventListener("submit", export
 document.querySelector("#importCustomersButton")?.addEventListener("click", () => document.querySelector("#customerImportFile").click());
 document.querySelector("#customerImportFile")?.addEventListener("change", importCustomersWorkbook);
 document.querySelector("#bookingForm").addEventListener("submit", submitBooking);
-document.querySelector("#newBookingButton").addEventListener("click", () => { const dialog = document.querySelector("#bookingDialog"); dialog.querySelector('input[name="bookingDate"]').value ||= document.querySelector("#bookingDisplayDate").value || diaryClock().date; document.querySelector("#bookingFormMessage").textContent = ""; dialog.showModal(); dialog.querySelector('input[name="firstName"]').focus(); });
+document.querySelector("#newBookingButton").addEventListener("click", () => { const dialog = document.querySelector("#bookingDialog"); const date = dialog.querySelector('input[name="bookingDate"]'); date.min = diaryClock().date; if (!date.value || date.value < date.min) date.value = document.querySelector("#bookingDisplayDate").value >= date.min ? document.querySelector("#bookingDisplayDate").value : date.min; updateNewBookingTimeOptions(); document.querySelector("#bookingFormMessage").textContent = ""; dialog.showModal(); dialog.querySelector('input[name="firstName"]').focus(); });
+document.querySelector('#bookingForm input[name="bookingDate"]').addEventListener("change", updateNewBookingTimeOptions);
 document.querySelector("#closeBookingButton").addEventListener("click", () => { closeBookingServiceMenu(); document.querySelector("#bookingDialog").close(); });
 document.querySelector("#bookingDialog").addEventListener("click", (event) => { if (event.target.id === "bookingDialog") { closeBookingServiceMenu(); event.target.close(); } });
 document.querySelector("#bookingServiceSearch").addEventListener("input", () => { document.querySelector("#bookingServiceCategory").value = ""; document.querySelector("#bookingServiceSubCategory").value = ""; renderBookingServiceMenu(); });
@@ -40200,6 +40216,14 @@ function addBookingService(serviceId) {
 function renderBookingServiceTotal() {
   const total = [...document.querySelectorAll('#bookingSelectedServices input[name="serviceIds"]')].reduce((sum, input) => sum + Number(state.services.find((service) => service.id === input.value)?.price_cents || 0), 0);
   document.querySelector("#bookingServiceTotal").textContent = money(total);
+}
+function updateNewBookingTimeOptions() {
+  const form = document.querySelector("#bookingForm");
+  const date = form.elements.bookingDate.value;
+  const now = diaryClock();
+  const time = form.elements.bookingTime;
+  [...time.options].forEach((option) => { if (option.value) { const [hours, minutes] = option.value.split(":").map(Number); option.disabled = date < now.date || date === now.date && hours * 60 + minutes <= now.minutes; } });
+  if (time.selectedOptions[0]?.disabled) time.value = "";
 }
 async function submitCustomer(event) {
   event.preventDefault();
