@@ -36578,8 +36578,14 @@ async function createCustomer(request, env) {
 __name(createCustomer, "createCustomer");
 async function createBooking(request, env) {
   const body = await request.json();
+  const clientBookingId = clean(body.clientBookingId);
+  if (clientBookingId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientBookingId)) return jsonResponse({ error: "Invalid booking ID." }, 400);
+  if (clientBookingId) {
+    const existing = await env.DB.prepare("SELECT id,branch_id FROM bookings WHERE id=?").bind(clientBookingId).first();
+    if (existing) return existing.branch_id === clean(body.branchId) ? jsonResponse({ ok: true, bookingId: clientBookingId, alreadySynced: true }) : jsonResponse({ error: "Booking belongs to another branch." }, 403);
+  }
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const id = crypto.randomUUID();
+  const id = clientBookingId || crypto.randomUUID();
   const branchId = clean(body.branchId);
   let customerId = clean(body.customerId);
   const staffId = clean(body.staffId);
@@ -36634,6 +36640,7 @@ async function createBooking(request, env) {
     ["Online", "Manual", "Walk-in"].includes(clean(body.source)) ? clean(body.source) : "Online"
   ).run(); }
   catch (error) {
+    if (clientBookingId && await env.DB.prepare("SELECT id FROM bookings WHERE id=? AND branch_id=?").bind(clientBookingId, branchId).first()) return jsonResponse({ ok: true, bookingId: clientBookingId, alreadySynced: true });
     if (String(error.message).includes("BOOKING_CAPACITY")) return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
     throw error;
   }
@@ -36683,6 +36690,7 @@ async function createBranchBooking(request, env) {
     body: JSON.stringify({
       customerId,
       customer,
+      clientBookingId: clean(body.clientBookingId),
       branchId,
       staffId: clean(body.staffId),
       serviceIds: Array.isArray(body.serviceIds) ? body.serviceIds : [],
@@ -37572,8 +37580,14 @@ async function createSale(request, env) {
   const body = await request.clone().json();
   const auth = await verifyActor(request, env, clean(body.branchId), false, false, false, true);
   if (auth.response) return auth.response;
+  const clientSaleId = clean(body.clientSaleId);
+  if (clientSaleId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientSaleId)) return jsonResponse({ error: "Invalid sale ID." }, 400);
+  if (clientSaleId) {
+    const existing = await env.DB.prepare("SELECT id,branch_id FROM sales WHERE id=?").bind(clientSaleId).first();
+    if (existing) return existing.branch_id === clean(body.branchId) ? jsonResponse({ ok: true, saleId: clientSaleId, alreadySynced: true }) : jsonResponse({ error: "Sale belongs to another branch." }, 403);
+  }
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const id = crypto.randomUUID();
+  const id = clientSaleId || crypto.randomUUID();
   const branchId = clean(body.branchId);
   const bookingId = clean(body.bookingId);
   let booking = null;
@@ -37695,19 +37709,23 @@ async function createSale(request, env) {
       "UPDATE bookings SET updated_at = ?, status = 'Completed', payment_status = 'Paid', sale_id = ? WHERE id = ? AND sale_id IS NULL"
     ).bind(now, id, booking.id));
   }
-  await env.DB.batch(saleStatements);
   const productItems = saleItems.filter((item) => item.productId);
   if (productItems.length) {
-    await env.DB.batch(productItems.map(
+    saleStatements.push(...productItems.map(
       (item) => env.DB.prepare(
         `INSERT INTO inventory_stock (branch_id, product_id, quantity, low_stock_level)
          VALUES (?, ?, ?, 3)
          ON CONFLICT(branch_id, product_id) DO UPDATE SET quantity = quantity - 1`
       ).bind(branchId, item.productId, -1)
     ));
-    await env.DB.batch(productItems.map(
+    saleStatements.push(...productItems.map(
       (item) => env.DB.prepare("INSERT INTO stock_movements (id, created_at, branch_id, product_id, movement_type, quantity_delta, reason, reference) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(crypto.randomUUID(), now, branchId, item.productId, "Sale", -1, "POS sale", id)
     ));
+  }
+  try { await env.DB.batch(saleStatements); }
+  catch (error) {
+    if (clientSaleId && await env.DB.prepare("SELECT id FROM sales WHERE id=? AND branch_id=?").bind(clientSaleId, branchId).first()) return jsonResponse({ ok: true, saleId: clientSaleId, alreadySynced: true });
+    throw error;
   }
   const branch = (await all(env, "SELECT name, address, phone FROM branches WHERE id = ?", [branchId]))[0];
   return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, branchId, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod, payments } });
@@ -37955,6 +37973,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 
     <section class="tab staff-only ${initialTab === "pos" ? "active" : ""}" id="pos">
       <div class="pos-workspace hidden" id="posWorkspace">
+      <div class="offline-pos-status" id="offlinePosStatus" role="status" aria-live="polite" hidden><span id="offlinePosStatusText"></span><button class="secondary" id="retryOfflineSync" type="button" hidden>Sync now</button></div>
       <div class="split">
         <form class="panel" id="saleForm" novalidate>
           <div class="pos-sale-heading"><span class="pos-step-number">1</span><div><p class="eyebrow">New sale</p><h2>Choose customer type</h2></div><button class="secondary print-last-receipt" id="printLastReceiptButton" type="button" disabled>Print last receipt</button></div>
@@ -38045,7 +38064,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 
     <section class="tab staff-only ${initialTab === "bookings" ? "active" : ""}" id="bookings">
       <div class="split">
-        <div class="panel diary-panel"><div class="booking-date-heading"><h2>Booking diary</h2><div class="booking-header-actions"><button class="primary" id="newBookingButton" type="button">+ New booking</button><div class="diary-date-controls"><button class="secondary" id="bookingToday" type="button">Today</button><button class="secondary" id="bookingPreviousDay" type="button" aria-label="Previous day">Previous</button><button class="secondary" id="bookingNextDay" type="button" aria-label="Next day">Next</button><label>Date<input id="bookingDisplayDate" type="date"></label></div></div></div><div class="booking-legend"><span><i class="online"></i>Online</span><span><i class="manual"></i>Manual</span></div><div class="booking-diary" id="bookingsTable"></div><div class="booking-detail hidden" id="bookingDetail"></div></div>
+        <div class="panel diary-panel"><div class="booking-date-heading"><h2>Booking diary</h2><div class="booking-header-actions"><button class="primary" id="newBookingButton" type="button">+ New booking</button><div class="diary-date-controls"><button class="secondary" id="bookingToday" type="button">Today</button><button class="secondary" id="bookingPreviousDay" type="button" aria-label="Previous day">Previous</button><button class="secondary" id="bookingNextDay" type="button" aria-label="Next day">Next</button><label>Date<input id="bookingDisplayDate" type="date"></label></div></div></div><div class="pending-bookings" id="pendingBookingList" hidden></div><div class="booking-legend"><span><i class="online"></i>Online</span><span><i class="manual"></i>Manual</span></div><div class="booking-diary" id="bookingsTable"></div><div class="booking-detail hidden" id="bookingDetail"></div></div>
       </div>
       <dialog class="booking-dialog" id="bookingDialog" aria-labelledby="bookingDialogTitle">
         <form id="bookingForm">
@@ -38202,6 +38221,184 @@ let recentSalesRequest = 0;
 let recentSalesLoading = false;
 let selectedPosBranchId = "";
 let selectedPosPin = "";
+let offlineSyncing = false;
+let offlineBookingSyncing = false;
+let usingOfflineSnapshot = false;
+let pendingOfflineBookingIds = new Set();
+const OFFLINE_BRANCH_KEY = "kunchasOfflineBranch";
+function offlineDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("kunchas-pos-offline", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("records");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function offlineRaw(key, value) {
+  const db = await offlineDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("records", value === undefined ? "readonly" : "readwrite");
+    const request = value === undefined ? tx.objectStore("records").get(key) : tx.objectStore("records").put(value, key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+  });
+}
+async function offlineCryptoKey() {
+  let key = await offlineRaw("device-key");
+  if (!key) {
+    key = await crypto.subtle.generateKey({ name:"AES-GCM", length:256 }, false, ["encrypt", "decrypt"]);
+    await offlineRaw("device-key", key);
+  }
+  return key;
+}
+async function offlineSave(key, value) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, await offlineCryptoKey(), new TextEncoder().encode(JSON.stringify(value)));
+  await offlineRaw(key, { iv, encrypted });
+}
+async function offlineLoad(key) {
+  const record = await offlineRaw(key);
+  if (!record) return null;
+  const bytes = await crypto.subtle.decrypt({ name:"AES-GCM", iv:record.iv }, await offlineCryptoKey(), record.encrypted);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+function offlineNetworkError(error) { return error instanceof TypeError || error instanceof SyntaxError || Number(error.status) >= 500 || !navigator.onLine; }
+async function offlineQueue() { return await offlineLoad("pending-sales") || []; }
+async function offlineBookings() { return await offlineLoad("pending-bookings") || []; }
+async function renderPendingBookings() {
+  const box = document.querySelector("#pendingBookingList");
+  if (!box || !selectedPosBranchId) return;
+  const drafts = (await offlineBookings()).filter(item => item.branchId === selectedPosBranchId);
+  box.hidden = !drafts.length;
+  box.innerHTML = drafts.length ? '<h3>Bookings awaiting confirmation (' + drafts.length + ')</h3>' + drafts.map(item => {
+    const payload = item.payload;
+    const services = payload.serviceIds.map(id => state.services.find(service => service.id === id)?.name || "Service").join(", ");
+    return '<div class="pending-booking-row"><div><strong>' + esc(payload.customer.firstName + ' ' + payload.customer.lastName) + '</strong><span>' + esc(payload.bookingDate + ' · ' + payload.bookingTime + ' · ' + services) + '</span><span>' + esc(item.status === "attention" ? 'Needs attention: ' + item.error : 'Pending cloud confirmation') + '</span></div><div class="pending-booking-actions"><button class="secondary" type="button" data-edit-draft="' + esc(item.id) + '">Edit</button><button class="secondary" type="button" data-discard-draft="' + esc(item.id) + '">Discard</button></div></div>';
+  }).join("") : "";
+  box.querySelectorAll("[data-edit-draft]").forEach(button => button.addEventListener("click", () => openPendingBookingDraft(button.dataset.editDraft)));
+  box.querySelectorAll("[data-discard-draft]").forEach(button => button.addEventListener("click", async () => {
+    if (!confirm("Discard this unconfirmed booking draft?")) return;
+    const queue = await offlineBookings();
+    await offlineSave("pending-bookings", queue.filter(item => item.id !== button.dataset.discardDraft));
+    await updateOfflineStatus();
+  }));
+}
+async function openPendingBookingDraft(id) {
+  const item = (await offlineBookings()).find(entry => entry.id === id);
+  if (!item) return;
+  const form = document.querySelector("#bookingForm"), payload = item.payload;
+  form.reset();
+  form.dataset.pendingBookingId = id;
+  form.elements.branchId.value = payload.branchId;
+  for (const field of ["firstName", "lastName", "phone", "email"]) form.elements[field].value = payload.customer[field] || "";
+  for (const field of ["staffId", "bookingDate", "bookingTime", "notes"]) form.elements[field].value = payload[field] || "";
+  updateNewBookingTimeOptions();
+  document.querySelector("#bookingSelectedServices").innerHTML = "";
+  payload.serviceIds.forEach(addBookingService);
+  renderBookingServiceTotal();
+  document.querySelector("#bookingFormMessage").textContent = item.status === "attention" ? item.error : "Unconfirmed draft. Save changes to retry.";
+  const date = form.elements.bookingDate; date.min = diaryClock().date;
+  document.querySelector("#bookingDialog").showModal();
+  form.elements.firstName.focus();
+}
+async function queueOfflineBooking(payload) {
+  const queue = await offlineBookings();
+  const existing = queue.find(item => item.id === payload.clientBookingId);
+  if (existing) { existing.payload = payload; existing.status = "pending"; existing.error = ""; }
+  else queue.push({ id:payload.clientBookingId, branchId:payload.branchId, payload, createdAt:new Date().toISOString(), status:"pending" });
+  await offlineSave("pending-bookings", queue);
+  navigator.serviceWorker?.ready.then(registration => registration.sync?.register("kunchas-offline-bookings").catch(() => {})).catch(() => {});
+  await updateOfflineStatus();
+}
+async function syncOfflineBookings() {
+  if (offlineBookingSyncing || !navigator.onLine || !selectedPosBranchId) return;
+  offlineBookingSyncing = true;
+  let synced = 0;
+  try {
+    const run = async () => {
+      const queue = await offlineBookings();
+      for (const item of queue.filter(entry => entry.branchId === selectedPosBranchId && entry.status !== "attention")) {
+        try {
+          await api("/api/branch-bookings", { method:"POST", body:JSON.stringify(item.payload) });
+          queue.splice(queue.indexOf(item), 1);
+          await offlineSave("pending-bookings", queue);
+          synced++;
+        } catch (error) {
+          if (offlineNetworkError(error)) break;
+          item.status = "attention";
+          item.error = error.message;
+          await offlineSave("pending-bookings", queue);
+        }
+      }
+    };
+    if (navigator.locks) await navigator.locks.request("kunchas-pos-booking-sync", run); else await run();
+    await updateOfflineStatus();
+    if (synced) { message.textContent = synced + " booking(s) confirmed in the cloud."; await refreshPosData(); }
+  } catch (error) { message.textContent = "Booking sync paused: " + error.message; }
+  finally { offlineBookingSyncing = false; }
+}
+async function updateOfflineStatus() {
+  if (appMode !== "staff") return;
+  const box = document.querySelector("#offlinePosStatus"), button = document.querySelector("#retryOfflineSync");
+  if (!box) return;
+  try {
+    const entries = (await offlineQueue()).filter(item => item.branchId === selectedPosBranchId);
+    const drafts = (await offlineBookings()).filter(item => item.branchId === selectedPosBranchId);
+    pendingOfflineBookingIds = new Set(entries.map(item => item.payload.bookingId).filter(Boolean));
+    const attention = [...entries, ...drafts].filter(item => item.status === "attention");
+    const offline = !navigator.onLine || usingOfflineSnapshot;
+    box.hidden = !offline && !entries.length && !drafts.length;
+    document.querySelector("#offlinePosStatusText").textContent = attention.length ? attention.length + " item(s) need attention: " + attention[0].error : entries.length || drafts.length ? entries.length + " sale(s) and " + drafts.length + " booking draft(s) waiting to sync." : "Offline mode. Sales and booking drafts will be saved on this browser.";
+    button.hidden = !(entries.length || drafts.length) || offline;
+    await renderPendingBookings();
+  } catch { box.hidden = false; document.querySelector("#offlinePosStatusText").textContent = "Offline storage is unavailable. Keep this page open and reconnect before completing a sale."; button.hidden = true; }
+}
+async function queueOfflineSale(payload) {
+  const queue = await offlineQueue();
+  if (!queue.some(item => item.id === payload.clientSaleId)) queue.push({ id:payload.clientSaleId, branchId:payload.branchId, payload, createdAt:new Date().toISOString(), status:"pending" });
+  await offlineSave("pending-sales", queue);
+  navigator.serviceWorker?.ready.then(registration => registration.sync?.register("kunchas-offline-sales").catch(() => {})).catch(() => {});
+  await updateOfflineStatus();
+  renderBookings();
+}
+async function syncOfflineSales(repair = false) {
+  if (offlineSyncing || !navigator.onLine || !selectedPosBranchId) return;
+  offlineSyncing = true;
+  let synced = 0;
+  try {
+    const run = async () => {
+      const queue = await offlineQueue();
+      for (const item of queue.filter(entry => entry.branchId === selectedPosBranchId)) {
+        if (item.status === "attention") {
+          if (!repair) continue;
+          const actor = await askActor(item.branchId, false, "Retry pending sale with staff PIN", false, false, true);
+          if (!actor) break;
+          item.payload.actorPin = actor.actorPin;
+          item.status = "pending";
+          await offlineSave("pending-sales", queue);
+        }
+        try {
+          await api("/api/sales", { method:"POST", body:JSON.stringify(item.payload) });
+          queue.splice(queue.indexOf(item), 1);
+          await offlineSave("pending-sales", queue);
+          synced++;
+        } catch (error) {
+          if (offlineNetworkError(error)) break;
+          item.status = "attention";
+          item.error = error.message;
+          await offlineSave("pending-sales", queue);
+        }
+      }
+    };
+    if (navigator.locks) await navigator.locks.request("kunchas-pos-sale-sync", run);
+    else await run();
+    await updateOfflineStatus();
+    renderBookings();
+    if (synced) { message.textContent = synced + " offline sale(s) synced to the cloud."; await refreshPosData(); }
+  } catch (error) { message.textContent = "Offline sync paused: " + error.message; }
+  finally { offlineSyncing = false; }
+}
 let draggedStaffId = "";
 let selectedDashboardPeriod = "today";
 let selectedGlobalBranchId = window.currentUser.managerBranchId || "";
@@ -38268,7 +38465,7 @@ document.querySelector("#customerExportForm")?.addEventListener("submit", export
 document.querySelector("#importCustomersButton")?.addEventListener("click", () => document.querySelector("#customerImportFile").click());
 document.querySelector("#customerImportFile")?.addEventListener("change", importCustomersWorkbook);
 document.querySelector("#bookingForm").addEventListener("submit", submitBooking);
-document.querySelector("#newBookingButton").addEventListener("click", () => { const dialog = document.querySelector("#bookingDialog"); const date = dialog.querySelector('input[name="bookingDate"]'); date.min = diaryClock().date; if (!date.value || date.value < date.min) date.value = document.querySelector("#bookingDisplayDate").value >= date.min ? document.querySelector("#bookingDisplayDate").value : date.min; updateNewBookingTimeOptions(); document.querySelector("#bookingFormMessage").textContent = ""; dialog.showModal(); dialog.querySelector('input[name="firstName"]').focus(); });
+document.querySelector("#newBookingButton").addEventListener("click", () => { const dialog = document.querySelector("#bookingDialog"); delete document.querySelector("#bookingForm").dataset.pendingBookingId; const date = dialog.querySelector('input[name="bookingDate"]'); date.min = diaryClock().date; if (!date.value || date.value < date.min) date.value = document.querySelector("#bookingDisplayDate").value >= date.min ? document.querySelector("#bookingDisplayDate").value : date.min; updateNewBookingTimeOptions(); document.querySelector("#bookingFormMessage").textContent = ""; dialog.showModal(); dialog.querySelector('input[name="firstName"]').focus(); });
 document.querySelector('#bookingForm input[name="bookingDate"]').addEventListener("change", updateNewBookingTimeOptions);
 document.querySelector("#closeBookingButton").addEventListener("click", () => { closeBookingServiceMenu(); document.querySelector("#bookingDialog").close(); });
 document.querySelector("#bookingDialog").addEventListener("click", (event) => { if (event.target.id === "bookingDialog") { closeBookingServiceMenu(); event.target.close(); } });
@@ -38401,11 +38598,19 @@ document.querySelector("#reportBranch").addEventListener("change", loadReports);
 updateCheckoutMode();
 updateCustomerMode();
 setReceiveProductsDate();
-loadPublicBranches();
+loadPublicBranches().then(restoreOfflinePos);
 setInitialRosterWeek();
 setInitialReportRange();
 applyAccessUi();
 if (appMode === "admin") loadData();
+if (appMode === "staff") {
+  navigator.serviceWorker?.register("/offline-pos-sw.js").catch(() => {});
+  if (location.pathname.startsWith("/bookings")) showTab("bookings");
+  window.addEventListener("online", () => { if (selectedPosBranchId) refreshPosData(); updateOfflineStatus(); syncOfflineSales(); syncOfflineBookings(); });
+  window.addEventListener("offline", updateOfflineStatus);
+  document.querySelector("#retryOfflineSync")?.addEventListener("click", () => { syncOfflineSales(true); syncOfflineBookings(); });
+  setInterval(() => { if (selectedPosBranchId && navigator.onLine) { syncOfflineSales(); syncOfflineBookings(); } }, 20000);
+}
 
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
@@ -38419,7 +38624,7 @@ async function api(path, options = {}) {
   const response = await fetch(path, { ...options, headers });
   const result = await response.json();
   if (response.status === 401) { if(appMode!=="admin") throw new Error("Open the branch with its PIN again."); location.href="/login"; throw new Error("Please sign in again."); }
-  if (!response.ok) throw new Error(result.error || "Request failed");
+  if (!response.ok) { const error = new Error(result.error || "Request failed"); error.status = response.status; throw error; }
   return result;
 }
 async function loadData() {
@@ -38440,8 +38645,38 @@ async function loadPublicBranches() {
     document.querySelector("#posBranch").innerHTML = options;
     if (window.initialBranchId) document.querySelector("#posBranch").value = window.initialBranchId;
   } catch (error) {
-    message.textContent = "Could not load branches.";
+    try {
+      const branchId = sessionStorage.getItem(OFFLINE_BRANCH_KEY);
+      const cached = branchId && await offlineLoad("snapshot:" + branchId);
+      if (cached?.branches?.[0]) document.querySelector("#posBranch").innerHTML = '<option value="' + esc(branchId) + '">' + esc(cached.branches[0].name) + '</option>';
+      else message.textContent = "Could not load branches.";
+    } catch { message.textContent = "Could not load branches."; }
   }
+}
+function unlockPosWorkspace() {
+  const branch = state.branches[0];
+  document.querySelector("#appTitle").textContent = posBranchTitle(branch);
+  document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
+  document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
+  document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
+  document.querySelector('#receiveProductsForm input[name="branchId"]').value = selectedPosBranchId;
+  setReceiveProductsDate();
+  document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
+  renderClosingPreview();
+  document.querySelector("#posLogin").classList.add("hidden");
+  document.querySelector("#posWorkspace").classList.remove("hidden");
+  document.querySelector("#receiveWorkspace").classList.remove("hidden");
+  document.querySelector("#staffWorkspace").classList.remove("hidden");
+  document.body.classList.remove("pos-locked");
+  updateOfflineStatus();
+}
+async function restoreOfflinePos() {
+  if (appMode !== "staff") return;
+  const branchId = sessionStorage.getItem(OFFLINE_BRANCH_KEY);
+  if (!branchId) return;
+  selectedPosBranchId = branchId;
+  document.querySelector("#posBranch").value = branchId;
+  if (await refreshPosData()) { unlockPosWorkspace(); syncOfflineSales(); syncOfflineBookings(); }
 }
 function openManagerDashboard() {
   if (!selectedPosBranchId) { message.textContent = "Open a branch workspace before opening its manager dashboard."; return; }
@@ -38480,31 +38715,26 @@ async function openPos() {
     message.textContent = "Select a branch.";
     return;
   }
-  if (!selectedPosPin.trim()) { message.textContent = "Enter your branch login PIN."; return; }
+  if (!selectedPosPin.trim() && (navigator.onLine || sessionStorage.getItem(OFFLINE_BRANCH_KEY) !== selectedPosBranchId)) { message.textContent = "Enter your branch login PIN."; return; }
   button.disabled = true;
   try {
-  await api("/api/pos-login",{method:"POST",body:JSON.stringify({branchId:selectedPosBranchId,pin:selectedPosPin})});
+  if (navigator.onLine) {
+    try { await api("/api/pos-login",{method:"POST",body:JSON.stringify({branchId:selectedPosBranchId,pin:selectedPosPin})}); }
+    catch (error) { if (!offlineNetworkError(error) || sessionStorage.getItem(OFFLINE_BRANCH_KEY) !== selectedPosBranchId) throw error; }
+  }
+  else if (sessionStorage.getItem(OFFLINE_BRANCH_KEY) !== selectedPosBranchId) throw Error("Open this branch online once before using it offline.");
   if(!await refreshPosData())return;
-  const branch = state.branches[0];
-  document.querySelector("#appTitle").textContent = posBranchTitle(branch);
-  document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
-  document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
-  document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
-  document.querySelector('#receiveProductsForm input[name="branchId"]').value = selectedPosBranchId;
-  setReceiveProductsDate();
-  document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
-  renderClosingPreview();
-  document.querySelector("#posLogin").classList.add("hidden");
-  document.querySelector("#posWorkspace").classList.remove("hidden");
-  document.querySelector("#receiveWorkspace").classList.remove("hidden");
-  document.querySelector("#staffWorkspace").classList.remove("hidden");
-  document.body.classList.remove("pos-locked");
+  try { sessionStorage.setItem(OFFLINE_BRANCH_KEY, selectedPosBranchId); } catch {}
+  unlockPosWorkspace();
+  syncOfflineSales();
+  syncOfflineBookings();
   } catch(error) { message.textContent = error.message; }
   finally { selectedPosPin = ""; document.querySelector("#posPin").value = ""; button.disabled = false; }
 }
 async function switchBranch() {
   try {
   await api("/api/pos-logout",{method:"POST"});
+  try { sessionStorage.removeItem(OFFLINE_BRANCH_KEY); } catch {}
   document.body.classList.add("pos-locked");
   location.assign("/pos");
   } catch(error) { message.textContent = error.message; }
@@ -38513,6 +38743,8 @@ async function refreshPosData() {
   try {
     message.textContent = "Opening POS...";
     state = normalizeState(await api("/api/pos-data"));
+    usingOfflineSnapshot = false;
+    if (appMode === "staff") try { await offlineSave("snapshot:" + selectedPosBranchId, state); } catch { message.textContent = "Offline storage is unavailable on this device."; }
     closingSalesKey = '';
     if (document.querySelector('#recent-sales').classList.contains('active')) loadRecentSales();
     renderAll();
@@ -38524,8 +38756,15 @@ async function refreshPosData() {
     document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
     renderClosingPreview();
     message.textContent = "";
+    if (appMode === "staff") await updateOfflineStatus();
     return true;
   } catch (error) {
+    if (appMode === "staff" && offlineNetworkError(error) && sessionStorage.getItem(OFFLINE_BRANCH_KEY) === selectedPosBranchId) {
+      try {
+        const cached = await offlineLoad("snapshot:" + selectedPosBranchId);
+        if (cached?.branches?.length) { state = normalizeState(cached); usingOfflineSnapshot = true; renderAll(); message.textContent = "Offline. Using the latest saved branch data."; await updateOfflineStatus(); return true; }
+      } catch {}
+    }
     message.textContent = error.message; return false;
   }
 }
@@ -39829,7 +40068,7 @@ function posBranchTitle(branch) {
   return name ? "Kunchas " + name : "Kunchas POS";
 }
 function canCheckoutBooking(booking) {
-  return !booking.sale_id && booking.payment_status !== "Paid" && !["Cancelled", "No show"].includes(booking.status);
+  return !booking.sale_id && !pendingOfflineBookingIds.has(booking.id) && booking.payment_status !== "Paid" && !["Cancelled", "No show"].includes(booking.status);
 }
 function closeBookingCheckoutResults() {
   document.querySelector("#bookingCheckoutResults").classList.add("hidden");
@@ -39856,10 +40095,21 @@ async function renderBookingCheckoutOptions() {
     if (requestId !== checkoutBookingRequest || branchId !== (selectedPosBranchId || currentUser.managerBranchId)) return;
     for (const booking of result.bookings) { const index = state.bookings.findIndex(b => b.id === booking.id); if (index < 0) state.bookings.push(booking); else state.bookings[index] = booking; }
     for (const customer of result.customers) { const index = state.customers.findIndex(c => c.id === customer.id); if (index < 0) state.customers.push(customer); else state.customers[index] = { ...state.customers[index], ...customer }; }
+    if (appMode === "staff") offlineSave("snapshot:" + branchId, state).catch(() => {});
     checkoutBookingResults = result.bookings.filter(canCheckoutBooking);
     if (document.activeElement === document.querySelector("#bookingCheckoutSearch") && !document.querySelector("#bookingCustomerFlow").classList.contains("hidden")) renderBookingCheckoutResults(checkoutBookingResults);
     status.textContent = result.hasMore ? "Showing 100 matches. Refine your search." : result.bookings.length ? (search ? result.bookings.length + " matching bookings across dates." : "Today\u2019s bookings. Search to find previous dates.") : (search ? "No matching unpaid bookings." : "No unpaid bookings today. Search to find previous dates.");
-  } catch (error) { if (requestId === checkoutBookingRequest) { status.textContent = error.message; status.classList.remove("visually-hidden"); status.classList.add("booking-form-message"); } }
+  } catch (error) { if (requestId === checkoutBookingRequest) {
+    if (offlineNetworkError(error) && appMode === "staff") {
+      const q = search.toLowerCase();
+      checkoutBookingResults = state.bookings.filter(canCheckoutBooking).filter(booking => {
+        const customer = state.customers.find(item => item.id === booking.customer_id);
+        return !q || [booking.customer_name, booking.booking_date, booking.id, customer?.phone, customer?.email].some(value => String(value || "").toLowerCase().includes(q));
+      }).slice(0, 100);
+      renderBookingCheckoutResults(checkoutBookingResults);
+      status.textContent = "Showing bookings saved on this device. Cloud changes may be newer.";
+    } else { status.textContent = error.message; status.classList.remove("visually-hidden"); status.classList.add("booking-form-message"); }
+  } }
 }
 function loadCheckoutBooking(bookingId) {
   const booking = state.bookings.find(b => b.id === bookingId);
@@ -39980,7 +40230,11 @@ async function loadRecentSales() {
     recentSales=result.sales;
     const ids=new Set(recentSales.map(sale=>sale.id));state.sales=state.sales.filter(sale=>!ids.has(sale.id)).concat(recentSales);
     recentSalesLoading=false;renderSales();
-  } catch(error) {if(requestId===recentSalesRequest){recentSalesLoading=false;renderSales();document.querySelector('#recentSalesStatus').textContent=error.message;}}
+  } catch(error) {if(requestId===recentSalesRequest){
+    if (offlineNetworkError(error)) recentSales = state.sales.filter(sale => sale.branch_id === selectedPosBranchId && diaryClock(new Date(sale.created_at)).date === dateInput.value);
+    recentSalesLoading=false;renderSales();
+    document.querySelector('#recentSalesStatus').textContent=offlineNetworkError(error)?'Showing sales saved on this device. Pending offline sales appear after sync.':error.message;
+  }}
 }
 function renderSales() {
   const query=document.querySelector('#recentSalesSearch').value.trim().toLowerCase();
@@ -40263,12 +40517,18 @@ async function submitBooking(event) {
   status.textContent = "";
   if (!form.reportValidity()) return;
   if (!data.getAll("serviceIds").length) { status.textContent = "Select at least one service."; document.querySelector("#bookingServiceSearch").focus(); return; }
-  const payload = { customer:{ firstName:data.get("firstName").trim(), lastName:data.get("lastName").trim(), email:data.get("email").trim(), phone:data.get("phone").trim() }, branchId:data.get("branchId"), staffId:data.get("staffId"), bookingDate:data.get("bookingDate"), bookingTime:data.get("bookingTime"), serviceIds:data.getAll("serviceIds"), notes:data.get("notes") };
+  const payload = { clientBookingId:form.dataset.pendingBookingId || (form.dataset.pendingBookingId = crypto.randomUUID()), customer:{ firstName:data.get("firstName").trim(), lastName:data.get("lastName").trim(), email:data.get("email").trim(), phone:data.get("phone").trim() }, branchId:data.get("branchId"), staffId:data.get("staffId"), bookingDate:data.get("bookingDate"), bookingTime:data.get("bookingTime"), serviceIds:data.getAll("serviceIds"), notes:data.get("notes") };
   if (!payload.customer.firstName || !payload.customer.lastName || !payload.customer.phone) { status.textContent = "Name and phone number are required."; return; }
   const button = form.querySelector('[type="submit"]');
   button.disabled = true;
   try {
     const result = await api("/api/branch-bookings", { method:"POST", body:JSON.stringify(payload) });
+    try {
+      const drafts = await offlineBookings();
+      if (drafts.some(item => item.id === payload.clientBookingId)) await offlineSave("pending-bookings", drafts.filter(item => item.id !== payload.clientBookingId));
+    } catch {}
+    delete form.dataset.pendingBookingId;
+    await updateOfflineStatus();
     const selectedServices = payload.serviceIds.map((id) => state.services.find((service) => service.id === id)).filter(Boolean);
     const total = selectedServices.reduce((sum, service) => sum + Number(service.price_cents || 0), 0);
     await refreshPosData();
@@ -40291,10 +40551,23 @@ async function submitBooking(event) {
     renderBookings();
     const success = document.querySelector("#bookingSuccessDialog");
     success.dataset.bookingId = result.bookingId;
-    document.querySelector("#bookingSuccessSummary").innerHTML = '<div><span>Customer</span><strong>' + esc(payload.customer.firstName + " " + payload.customer.lastName) + '</strong></div><div><span>Phone</span><strong>' + esc(payload.customer.phone) + '</strong></div><div><span>When</span><strong>' + esc(payload.bookingDate + " · " + payload.bookingTime) + '</strong></div><div><span>Services</span><strong>' + esc(selectedServices.map((service) => service.name).join(", ")) + '</strong></div><div><span>Staff</span><strong>' + esc(state.staff.find((staff) => staff.id === payload.staffId)?.name || "Unassigned") + '</strong></div><div><span>Total</span><strong>' + money(total) + '</strong></div>';
+    const confirmedCustomer = state.customers.find(customer => customer.id === booking?.customer_id);
+    document.querySelector("#bookingSuccessSummary").innerHTML = '<div><span>Customer</span><strong>' + esc(booking?.customer_name || payload.customer.firstName + " " + payload.customer.lastName) + '</strong></div><div><span>Phone</span><strong>' + esc(confirmedCustomer?.phone || payload.customer.phone) + '</strong></div><div><span>When</span><strong>' + esc((booking?.booking_date || payload.bookingDate) + " · " + (booking?.booking_time || payload.bookingTime)) + '</strong></div><div><span>Services</span><strong>' + esc(booking?.service_names || selectedServices.map((service) => service.name).join(", ")) + '</strong></div><div><span>Staff</span><strong>' + esc(booking?.staff_name || state.staff.find((staff) => staff.id === payload.staffId)?.name || "Unassigned") + '</strong></div><div><span>Total</span><strong>' + money(booking?.total_cents ?? total) + '</strong></div>';
     document.querySelector("#bookingSuccessEdit").disabled = !booking;
     success.showModal();
-  } catch (error) { status.textContent = error.message; }
+  } catch (error) {
+    if (offlineNetworkError(error)) {
+      try {
+        await queueOfflineBooking(payload);
+        form.reset(); delete form.dataset.pendingBookingId;
+        form.elements.branchId.value = payload.branchId;
+        document.querySelector("#bookingSelectedServices").innerHTML = "";
+        renderBookingServiceTotal(); closeBookingServiceMenu();
+        document.querySelector("#bookingDialog").close();
+        message.textContent = "Booking draft saved on this browser. It is not confirmed until cloud sync checks availability.";
+      } catch (storageError) { status.textContent = "Could not save the booking draft offline: " + storageError.message; }
+    } else status.textContent = error.message;
+  }
   finally { button.disabled = false; }
 }
 async function submitAdminForm(event, path) { event.preventDefault(); await submitJson(path, Object.fromEntries(new FormData(event.target)), event.target); }
@@ -40374,6 +40647,7 @@ async function submitSale(event) {
   submitButton.disabled = true;
   submitButton.textContent = "Processing payment...";
   await submitJson("/api/sales", {
+    clientSaleId:form.dataset.saleAttemptId || (form.dataset.saleAttemptId = crypto.randomUUID()),
     ...actor,
     branchId:data.get("branchId"),
     bookingId:data.get("bookingId"),
@@ -40404,11 +40678,28 @@ async function submitJson(path, payload, form) {
       syncLastReceiptButton();
     }
     form.reset();
+    if (form.id === "saleForm") delete form.dataset.saleAttemptId;
     if (form.id === "saleForm") { document.querySelector("#saleItems").innerHTML = ""; document.querySelector("#bookingCheckoutSearch").value = ""; closeBookingCheckoutResults(); document.querySelector("#bookingCustomerCard").classList.add("hidden"); document.querySelector("#bookingCustomerCard").innerHTML = ""; updateCheckoutMode(); updateCustomerMode(); resetPaymentUi(); setSaleMessage(result.receipt?.changeCents ? "Purchase complete. Return " + money(result.receipt.changeCents) + " change." : "Purchase completed successfully."); if (result.receipt) showCheckoutReceiptPrompt(result.receipt); }
     if (form.id === "bookingForm") { document.querySelector("#bookingSelectedServices").innerHTML = ""; renderBookingServiceTotal(); document.querySelector("#bookingDialog").close(); }
     if (path === "/api/sales" || path === "/api/branch-bookings" || path === "/api/daily-closing") await refreshPosData();
     else await loadData();
-  } catch (error) { message.textContent = error.message; if (form.id === "saleForm") setSaleMessage(error.message, true); }
+  } catch (error) {
+    if (path === "/api/sales" && offlineNetworkError(error)) {
+      try {
+        await queueOfflineSale(payload);
+        form.reset();
+        delete form.dataset.saleAttemptId;
+        document.querySelector("#saleItems").innerHTML = "";
+        document.querySelector("#bookingCheckoutSearch").value = "";
+        closeBookingCheckoutResults();
+        document.querySelector("#bookingCustomerCard").classList.add("hidden");
+        document.querySelector("#bookingCustomerCard").innerHTML = "";
+        updateCheckoutMode(); updateCustomerMode(); resetPaymentUi();
+        message.textContent = "Sale saved on this browser. It will sync when the connection returns.";
+        setSaleMessage("Sale saved offline. Staff PIN will be verified when it syncs; this sale is not yet in the cloud.");
+      } catch (storageError) { message.textContent = "Could not save the sale offline: " + storageError.message; setSaleMessage("Sale was not saved. Keep this page open and retry after reconnecting.", true); }
+    } else { message.textContent = error.message; if (form.id === "saleForm") { if (error.status >= 400 && error.status < 500) delete form.dataset.saleAttemptId; setSaleMessage(error.message, true); } }
+  }
 }
 function updateCheckoutMode() {
   const form = document.querySelector("#saleForm");
@@ -40471,10 +40762,18 @@ async function searchPosCustomers() {
       const index = state.customers.findIndex((item) => item.id === customer.id);
       if (index < 0) state.customers.push(customer); else state.customers[index] = { ...state.customers[index], ...customer };
     }
+    if (appMode === "staff") offlineSave("snapshot:" + selectedPosBranchId, state).catch(() => {});
     renderPosCustomerResults(posCustomerSearchResults);
     status.textContent = result.hasMore ? "Showing the first 50 matches. Type more details to narrow the search." : posCustomerSearchResults.length === 1 ? "1 customer found." : posCustomerSearchResults.length + " customers found.";
   } catch (error) {
-    if (requestId === posCustomerSearchRequest) { renderPosCustomerResults([]); status.textContent = error.message; status.classList.remove("visually-hidden"); status.classList.add("pos-customer-error"); }
+    if (requestId === posCustomerSearchRequest) {
+      if (offlineNetworkError(error) && appMode === "staff") {
+        const q = query.toLowerCase();
+        posCustomerSearchResults = state.customers.filter(customer => [customer.first_name, customer.last_name, customer.phone, customer.email, customer.external_ref].some(value => String(value || "").toLowerCase().includes(q))).slice(0, 50);
+        renderPosCustomerResults(posCustomerSearchResults);
+        status.textContent = "Showing customers saved on this device.";
+      } else { renderPosCustomerResults([]); status.textContent = error.message; status.classList.remove("visually-hidden"); status.classList.add("pos-customer-error"); }
+    }
   }
 }
 function renderPosCustomerResults(customers) {
@@ -41545,6 +41844,18 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .source-badge { display:inline-flex; width:max-content; padding:3px 7px; border-radius:999px; font-size:10px; font-weight:900; text-transform:uppercase; }.source-badge.online{color:#17634f;background:#d8f1e9}.source-badge.manual{color:#913847;background:#f7dfe1}
 .booking-empty{position:sticky;left:100px;margin:28px}
 .booking-detail{margin-top:18px;padding:20px;background:#fff8f5;border:1px solid #eadbd6;border-radius:10px}
+.offline-pos-status{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;padding:12px 14px;color:#66440b;background:#fff4d8;border:1px solid #e8c77b;border-radius:10px;font-size:13px;font-weight:700}
+.offline-pos-status[hidden]{display:none}
+.offline-pos-status button{flex:0 0 auto;min-height:36px;padding:7px 12px}
+.pending-bookings{display:grid;gap:8px;margin:12px 0 18px;padding:14px;background:#fff8e8;border:1px solid #e8c77b;border-radius:10px}
+.pending-bookings[hidden]{display:none}
+.pending-bookings h3{margin:0 0 3px;font-size:15px}
+.pending-booking-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;background:#fff;border:1px solid #eadbb9;border-radius:8px}
+.pending-booking-row span{display:block;color:var(--muted);font-size:12px}
+.pending-booking-row strong{display:block;overflow-wrap:anywhere}
+.pending-booking-actions{display:flex;gap:7px;flex:0 0 auto}
+.pending-booking-actions button{min-height:34px;padding:6px 10px;font-size:12px}
+@media(max-width:700px){.pending-booking-row{align-items:stretch;flex-direction:column}.pending-booking-actions button{flex:1}}
 .booking-detail .profile-heading{align-items:flex-start;margin-bottom:18px}
 .booking-detail .profile-heading h3{margin:9px 0 5px;line-height:1.3}
 .booking-detail .profile-heading .hint{margin:0}
@@ -41595,9 +41906,21 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 `;
 }
 __name(styles, "styles");
+function offlinePosServiceWorker() {
+  return `const CACHE = 'kunchas-pos-shell-v1';
+self.addEventListener('install', event => { self.skipWaiting(); event.waitUntil((async () => { try { const response = await fetch('/pos', { credentials:'include' }); if (response.ok && !response.redirected && new URL(response.url).pathname === '/pos') await (await caches.open(CACHE)).put('/pos', response); } catch {} })()); });
+self.addEventListener('activate', event => { event.waitUntil((async () => { await self.clients.claim(); const names = await caches.keys(); await Promise.all(names.filter(name => name.startsWith('kunchas-pos-shell-') && name !== CACHE).map(name => caches.delete(name))); })()); });
+self.addEventListener('fetch', event => { const request = event.request, path = new URL(request.url).pathname; if (request.mode !== 'navigate' || !(/^\\/pos(?:\\/|$)/.test(path) || /^\\/bookings(?:\\/|$)/.test(path))) return; event.respondWith((async () => { try { const response = await fetch(request); if (response.ok && !response.redirected && new URL(response.url).pathname === path) await (await caches.open(CACHE)).put('/pos', response.clone()); return response; } catch { const cached = await (await caches.open(CACHE)).match('/pos'); return cached || new Response('Open this POS online once before using it offline.', { status:503, headers:{'content-type':'text/plain'} }); } })()); });
+function raw(key, value) { return new Promise((resolve, reject) => { const request = indexedDB.open('kunchas-pos-offline', 1); request.onupgradeneeded = () => request.result.createObjectStore('records'); request.onerror = () => reject(request.error); request.onsuccess = () => { const db = request.result, tx = db.transaction('records', value === undefined ? 'readonly' : 'readwrite'), operation = value === undefined ? tx.objectStore('records').get(key) : tx.objectStore('records').put(value, key); operation.onsuccess = () => resolve(operation.result); operation.onerror = () => reject(operation.error); tx.oncomplete = () => db.close(); }; }); }
+async function readQueue(name) { const record = await raw(name); if (!record) return []; const key = await raw('device-key'); const bytes = await crypto.subtle.decrypt({ name:'AES-GCM', iv:record.iv }, key, record.encrypted); return JSON.parse(new TextDecoder().decode(bytes)); }
+async function saveQueue(name, queue) { const key = await raw('device-key'), iv = crypto.getRandomValues(new Uint8Array(12)); const encrypted = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(queue))); await raw(name, { iv, encrypted }); }
+self.addEventListener('sync', event => { const target = event.tag === 'kunchas-offline-sales' ? { name:'pending-sales', path:'/api/sales' } : event.tag === 'kunchas-offline-bookings' ? { name:'pending-bookings', path:'/api/branch-bookings' } : null; if (!target) return; event.waitUntil((async () => { if ((await self.clients.matchAll({ type:'window' })).length) return; const queue = await readQueue(target.name); for (const item of queue.slice()) { if (item.status === 'attention') continue; const response = await fetch(target.path, { method:'POST', credentials:'include', headers:{ 'content-type':'application/json', 'x-pos-workspace':'1', 'x-branch-id':item.branchId }, body:JSON.stringify(item.payload) }); if (response.status >= 500) throw Error('Cloud service unavailable'); if (response.ok) queue.splice(queue.findIndex(entry => entry.id === item.id), 1); else { const result = await response.json().catch(() => ({})); item.status = 'attention'; item.error = result.error || 'The server rejected this item.'; } await saveQueue(target.name, queue); } })()); });`;
+}
+__name(offlinePosServiceWorker, "offlinePosServiceWorker");
 var index_default = {
   async fetch(request, env, ctx) {
     try {
+      if (request.method === "GET" && new URL(request.url).pathname === "/offline-pos-sw.js") return new Response(offlinePosServiceWorker(), { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "service-worker-allowed": "/" } });
       const publicResponse = await publicBookingRoute(request, env);
       if (publicResponse) return publicResponse;
       const access = await accessGate(request, env);
