@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { loyaltyClientScript } from '../live-worker/loyalty-ui.mjs';
+import { customerPhoneClientScript } from '../live-worker/customer-phone-ui.mjs';
 
 const source = readFileSync(new URL('../live-worker/index.js', import.meta.url), 'utf8');
 function extract(name, next) {
@@ -39,8 +41,8 @@ test('booking retries return the existing booking before checking its now-past d
 });
 
 test('offline page and service worker scripts parse', () => {
-  const client = new Function('accessClientScript', 'posPinScript', extract('function clientScript() {', '__name(clientScript') + 'return clientScript();')(
-    () => '', () => ''
+  const client = new Function('accessClientScript', 'posPinScript', 'loyaltyClientScript', 'customerPhoneClientScript', extract('function clientScript() {', '__name(clientScript') + 'return clientScript();')(
+    () => '', () => '', loyaltyClientScript, customerPhoneClientScript
   );
   new Function(client);
   const worker = new Function(extract('function offlinePosServiceWorker() {', '__name(offlinePosServiceWorker') + 'return offlinePosServiceWorker();')();

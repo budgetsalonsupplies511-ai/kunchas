@@ -109,7 +109,11 @@ CREATE TABLE IF NOT EXISTS customers (
   phone TEXT NOT NULL,
   branch_id TEXT NOT NULL,
   tags TEXT,
-  notes TEXT
+  notes TEXT,
+  membership_status TEXT CHECK (membership_status IS NULL OR membership_status IN ('Member', 'Non-member')),
+  membership_added_at TEXT,
+  membership_added_by_id TEXT,
+  membership_added_by_name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bookings (
@@ -154,6 +158,12 @@ CREATE TABLE IF NOT EXISTS sales (
   status TEXT NOT NULL,
   notes TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TRIGGER IF NOT EXISTS bookings_checkout_once BEFORE UPDATE OF sale_id ON bookings
+WHEN OLD.sale_id IS NOT NULL AND NEW.sale_id IS NOT OLD.sale_id
+BEGIN
+  SELECT RAISE(ABORT, 'BOOKING_ALREADY_PAID');
+END;
 
 CREATE TABLE IF NOT EXISTS held_sales (
   id TEXT PRIMARY KEY,

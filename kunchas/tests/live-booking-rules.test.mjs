@@ -6,12 +6,15 @@ import vm from 'node:vm';
 
 // Exercise the Worker entry point Wrangler deploys, rather than the older src/index.js.
 const source = readFileSync(new URL('../live-worker/index.js', import.meta.url), 'utf8')
+  .replaceAll('\r\n', '\n')
+  .replace(/from "(\.\/[^\"]+)"/g, (_, path) => 'from ' + JSON.stringify(new URL('../live-worker/' + path, import.meta.url).href))
   .replace('  searchCustomers\n};', '  searchCustomers,\n  createBranchBooking,\n  publicBookingRoute,\n  bookingStartIsPast,\n  salonNow\n};');
 const worker = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 
 function fixture() {
   const db = new DatabaseSync(':memory:');
   db.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../customer-phone-upgrade.sql', import.meta.url), 'utf8'));
   db.exec('CREATE TABLE IF NOT EXISTS access_login_limits(key TEXT PRIMARY KEY,attempts INTEGER,reset_at INTEGER)');
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_branch_email ON customers(branch_id,email) WHERE email != ''");
   db.exec(readFileSync(new URL('../public-booking-upgrade.sql', import.meta.url), 'utf8'));
@@ -37,7 +40,7 @@ function manualRequest(date, customerNumber, time = '10:00') {
     method: 'POST',
     headers: { 'x-branch-id': 'branch', 'content-type': 'application/json' },
     body: JSON.stringify({
-      customer: { firstName: 'Test', lastName: String(customerNumber), phone: '0400000000', email: `customer${customerNumber}@example.test` },
+      customer: { firstName: 'Test', lastName: String(customerNumber), phone: '04' + String(customerNumber).padStart(8,'0'), email: `customer${customerNumber}@example.test` },
       branchId: 'branch', bookingDate: date, bookingTime: time, serviceIds: ['service'], staffId: ''
     })
   });

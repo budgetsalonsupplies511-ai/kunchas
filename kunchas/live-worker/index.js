@@ -1,3 +1,10 @@
+import { assertUniqueCustomerPhone, findPhoneOwner, phoneCheckResponse, DuplicatePhoneError } from "./customer-phone.mjs";
+import { customerPhoneClientScript } from "./customer-phone-ui.mjs";
+import { loyaltyForSale, loyaltyError } from "./loyalty.mjs";
+import { loyaltyPaymentHtml, loyaltyClientScript } from "./loyalty-ui.mjs";
+import { fontLinks, typographyStyles } from "./typography.mjs";
+import { closeStaleTimeEntries } from "./time-clock.mjs";
+import { nextCalendarDate, sydneyDateKey, sydneyDayStartUtc, validCalendarDate } from "./timesheet.mjs";
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
 
@@ -201,7 +208,7 @@ async function accessSettings(request, env, user) {
 }
 __name(accessSettings, "accessSettings");
 function loginPage() {
-  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in \xB7 Kunchas</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fff8fb;color:#251c2c;font:16px system-ui}main{width:min(380px,calc(100vw - 64px));padding:32px;background:white;border:1px solid #e4ddea;border-radius:20px}h1{margin:0 0 8px;color:#b7447e}p{color:#74667d;line-height:1.5}label{display:block;margin:20px 0}input,button{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cdc3d4;border-radius:8px;font:inherit;margin-top:6px}button{background:#b7447e;color:white;cursor:pointer}#error{color:#a12a39}</style><main><img src="${brandLogo}" alt="Kuncha\u2019s Hair & Beauty Art" width="2551" height="1189" style="display:block;width:100%;max-width:280px;height:auto;margin:0 auto 24px"><h1>Sign in</h1><p>Sign in with your username and individual PIN.</p><p><a href="/pos">Open POS with branch PIN</a></p><form id="login"><label>Username or email<input name="username" autocomplete="username" required></label><label>PIN<input name="pin" type="password" inputmode="text" autocomplete="current-password" required></label><button>Sign in</button><p id="error" role="alert"></p></form></main><script>document.querySelector('#login').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('button');button.disabled=true;try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(form)))});const data=await r.json();if(!r.ok)throw Error(data.error);location.href=data.redirect||'/pos';}catch(error){document.querySelector('#error').textContent=error.message;form.elements.pin.value='';}finally{button.disabled=false;}};<\/script></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY" } });
+  return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in \xB7 Kunchas</title>${fontLinks}<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fff8fb;color:#251c2c;font:16px system-ui}main{width:min(380px,calc(100vw - 64px));padding:32px;background:white;border:1px solid #e4ddea;border-radius:20px}h1{margin:0 0 8px;color:#b7447e}p{color:#74667d;line-height:1.5}label{display:block;margin:20px 0}input,button{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cdc3d4;border-radius:8px;font:inherit;margin-top:6px}button{background:#b7447e;color:white;cursor:pointer}#error{color:#a12a39}${typographyStyles}</style><main><img src="${brandLogo}" alt="Kuncha\u2019s Hair & Beauty Art" width="2551" height="1189" style="display:block;width:100%;max-width:280px;height:auto;margin:0 auto 24px"><h1>Sign in</h1><p>Sign in with your username and individual PIN.</p><p><a href="/pos">Open POS with branch PIN</a></p><form id="login"><label>Username or email<input name="username" autocomplete="username" required></label><label>PIN<input name="pin" type="password" inputmode="text" autocomplete="current-password" required></label><button>Sign in</button><p id="error" role="alert"></p></form></main><script>document.querySelector('#login').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('button');button.disabled=true;try{const r=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(form)))});const data=await r.json();if(!r.ok)throw Error(data.error);location.href=data.redirect||'/pos';}catch(error){document.querySelector('#error').textContent=error.message;form.elements.pin.value='';}finally{button.disabled=false;}};<\/script></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-frame-options": "DENY" } });
 }
 __name(loginPage, "loginPage");
 async function accessGate(request, env) {
@@ -245,9 +252,10 @@ async function accessGate(request, env) {
   const write = !["GET", "HEAD"].includes(method);
   let section = "";
   if (p === "/api/pos-data") section = ["pos", "bookings", "closing", "time_clock"].find((key2) => can(user, key2)) || "pos";
+  else if (p === "/api/timesheet") section = "payroll";
   else if (p.startsWith("/api/reports")) section = ["payroll", "xero"].includes(url.searchParams.get("type")) ? "payroll" : "reports";
-  else if (p === "/api/sales" || p === "/api/checkout-bookings" || p === "/api/pos-customers") section = "pos";
-  else if (p === "/api/time-clock") section = "time_clock";
+  else if (p === "/api/sales" || p === "/api/checkout-bookings" || p === "/api/pos-customers" || p.startsWith("/api/pos-customers/")) section = "pos";
+  else if (p === "/api/time-clock" || p === "/api/time-clock/identify") section = "time_clock";
   else if (p.startsWith("/api/branch-bookings") || p.startsWith("/api/bookings")) section = "bookings";
   else if (p.startsWith("/api/customers")) section = "customers";
   else if (p.startsWith("/api/services")) section = "services";
@@ -267,7 +275,7 @@ async function accessGate(request, env) {
   const headerBranch = text(request.headers.get("x-branch-id"));
   if (headerBranch && !hasBranch(user, headerBranch)) return { response: denied() };
   if (headerBranch && body.branchId && headerBranch !== text(body.branchId)) return { response: denied() };
-  if (branchId && ["/api/pos-data", "/api/sales", "/api/time-clock", "/api/daily-closing"].includes(p)) {
+  if (branchId && ["/api/pos-data", "/api/sales", "/api/time-clock", "/api/time-clock/identify", "/api/daily-closing"].includes(p)) {
     const branch = await first(env, "SELECT status FROM branches WHERE id=?", [branchId]);
     if (!branch || branch.status !== "Open") return { response: reply({ error: "This branch is not open." }, 409) };
   }
@@ -442,7 +450,7 @@ async function branchGate(request, env, personal) {
   const saleAuthorization = method === "POST" && /^\/api\/sales\/[^/]+\/authorize$/.test(p);
   const special = p === "/api/pos-actors" || /^\/api\/sales\/[^/]+$/.test(p) || saleAuthorization;
   if (!shared && !special) return null;
-  const allowed = method === "GET" && ["/api/pos-data", "/api/pos-actors", "/api/checkout-bookings", "/api/pos-customers", "/api/held-sales"].includes(p) || method === "GET" && /^\/api\/pos-customers\/[^/]+\/history$/.test(p) || method === "POST" && ["/api/sales", "/api/daily-closing", "/api/cash-drawer-open", "/api/branch-bookings", "/api/time-clock", "/api/stock-movements", "/api/pos-customers", "/api/held-sales"].includes(p) || ["GET", "PATCH"].includes(method) && /^\/api\/sales\/[^/]+$/.test(p) || method === "PATCH" && /^\/api\/(bookings|daily-closing|pos-customers)\/[^/]+$/.test(p);
+  const allowed = method === "GET" && ["/api/pos-data", "/api/pos-actors", "/api/checkout-bookings", "/api/pos-customers", "/api/held-sales"].includes(p) || method === "GET" && /^\/api\/pos-customers\/[^/]+\/history$/.test(p) || method === "POST" && ["/api/sales", "/api/daily-closing", "/api/cash-drawer-open", "/api/branch-bookings", "/api/time-clock", "/api/time-clock/identify", "/api/stock-movements", "/api/pos-customers", "/api/held-sales"].includes(p) || method === "POST" && /^\/api\/pos-customers\/[^/]+\/membership$/.test(p) || ["GET", "PATCH"].includes(method) && /^\/api\/sales\/[^/]+$/.test(p) || method === "PATCH" && /^\/api\/(bookings|daily-closing|pos-customers)\/[^/]+$/.test(p);
   if (!allowed && !saleAuthorization && !(method === "GET" && ["/api/closing-sales", "/api/recent-sales"].includes(p))) return personal ? null : { response: json({ error: "Use an individual login to access the dashboard." }, 403) };
   if (!shared && special && personal && !can(personal, "pos") && !(p === "/api/pos-actors" && (can(personal, "branches", true) || can(personal, "closing", true)))) return { response: json({ error: "Your account does not have POS access." }, 403) };
   const user = personal && !request.headers.get("x-branch-id") && special ? personal : shared || personal;
@@ -452,7 +460,7 @@ async function branchGate(request, env, personal) {
   if (["POST", "PATCH"].includes(method) && (p === "/api/pos-customers" || /^\/api\/pos-customers\/[^/]+$/.test(p)) && !text2(body.phone)) return { response: json({ error: "Customer phone number is required in POS." }, 400) };
   if (branchId && body.branchId && branchId !== body.branchId) return { response: json({ error: "Branch mismatch." }, 403) };
   branchId = branchId || text2(body.branchId);
-  const resource = p.match(/^\/api\/(sales|bookings|daily-closing|pos-customers)\/([^/]+)(?:\/authorize|\/history)?$/);
+  const resource = p.match(/^\/api\/(sales|bookings|daily-closing|pos-customers)\/([^/]+)(?:\/authorize|\/history|\/membership)?$/);
   if (resource) {
     const table = resource[1] === "daily-closing" ? "daily_closings" : resource[1] === "pos-customers" ? "customers" : resource[1];
     const record = await first2(env, "SELECT branch_id FROM " + table + " WHERE id=?", [decodeURIComponent(resource[2])]);
@@ -529,7 +537,8 @@ async function closeWithCounts(request, env, expectedTotals, previousCash) {
   const body = await request.clone().json(), branchId = text2(body.branchId || request.headers.get("x-branch-id"));
   const auth = await verifyActor(request, env, branchId);
   if (auth.response) return auth.response;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(body.closingDate || "")) return json({ error: "Choose a closing date." }, 400);
+  if (!validCalendarDate(body.closingDate)) return json({ error: "Choose a closing date." }, 400);
+  if (body.closingDate > sydneyDateKey(new Date())) return json({ error: "A future day cannot be closed." }, 400);
   const counts = body.denominationCounts;
   if (!counts || denominations.some((d) => !Number.isSafeInteger(counts[d]) || counts[d] < 0 || counts[d] > 1e5)) return json({ error: "Enter a non-negative whole count for each cash denomination." }, 400);
   const actualCash = denominations.reduce((sum, d) => sum + d * 100 * counts[d], 0);
@@ -568,14 +577,34 @@ async function editSale(request, env, id, paymentLabel2) {
     items.push({ ...old, item_name: text2(item.name), price_cents: price });
   }
   const total = items.reduce((sum, i) => sum + i.price_cents * Number(i.quantity || 1), 0), cash = Math.round(Number(body.cashAmount || 0) * 100), card = Math.round(Number(body.cardAmount || 0) * 100);
-  const otherPayments = String(sale.payment_method || "").split(" / ").filter((part) => ["Bank Transfer", "Store Credit", "Gift Voucher", "Refund", "On Account"].includes(part.split("$")[0].trim()));
+  const otherPayments = String(sale.payment_method || "").split(" / ").filter((part) => ["Bank Transfer", "Store Credit", "Gift Voucher", "Refund", "On Account", "Loyalty Points"].includes(part.split("$")[0].trim()));
   const otherCents = otherPayments.reduce((sum, part) => sum + Math.round(Number((part.split("$")[1] || "0").replaceAll(",", "")) * 100), 0);
   if ([cash, card, otherCents].some((n) => !Number.isSafeInteger(n) || n < 0) || card + otherCents > total || cash + card + otherCents < total) return json({ error: "Payments must cover the total. Only cash can exceed the balance." }, 400);
   const change = cash + card + otherCents - total;
   const method = [...cash ? ["Cash $" + (cash / 100).toFixed(2)] : [], ...card ? ["Card $" + (card / 100).toFixed(2)] : [], ...otherPayments, ...change ? ["change $" + (change / 100).toFixed(2)] : []].join(" / ");
   const historyId = crypto.randomUUID(), version2 = sale.edit_version + 1;
   const statements = [env.DB.prepare("INSERT INTO sale_edit_history(id,sale_id,actor_id,actor_name,reason,before_json,after_json,created_at) SELECT ?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM sales WHERE id=? AND edit_version=?)").bind(historyId, id, auth.actor.id, auth.actor.name, auth.reason, JSON.stringify({ sale, items: before }), JSON.stringify({ items, total_cents: total, cash_cents: cash, card_cents: card, change_cents: change, payment_method: method }), (/* @__PURE__ */ new Date()).toISOString(), id, body.version), env.DB.prepare("UPDATE sales SET total_cents=?,payment_method=?,cash_cents=?,card_cents=?,change_cents=?,edit_version=? WHERE id=? AND EXISTS (SELECT 1 FROM sale_edit_history WHERE id=?)").bind(total, method, cash, card, change, version2, id, historyId), ...items.map((item) => env.DB.prepare("UPDATE sale_items SET item_name=?,price_cents=? WHERE id=? AND EXISTS (SELECT 1 FROM sale_edit_history WHERE id=?)").bind(item.item_name, item.price_cents, item.id, historyId))];
-  const results = await env.DB.batch(statements);
+  const oldMethod = String(sale.payment_method || "");
+  const oldCashAmount = oldMethod.match(/cash \$([0-9.]+)/i);
+  const oldCardAmount = oldMethod.match(/card \$([0-9.]+)/i);
+  const oldChangeAmount = oldMethod.match(/change \$([0-9.]+)/i);
+  const oldChange = sale.change_cents != null ? Number(sale.change_cents) : oldChangeAmount ? Math.round(Number(oldChangeAmount[1]) * 100) : 0;
+  const oldCash = sale.cash_cents != null ? Number(sale.cash_cents) - oldChange : oldCashAmount ? Math.max(0, Math.round(Number(oldCashAmount[1]) * 100) - oldChange) : /cash/i.test(oldMethod) ? Number(sale.total_cents || 0) : 0;
+  const oldCard = sale.card_cents != null ? Number(sale.card_cents) : oldCardAmount ? Math.round(Number(oldCardAmount[1]) * 100) : /card/i.test(oldMethod) ? Number(sale.total_cents || 0) : 0;
+  const cashDifference = cash - change - oldCash;
+  const cardDifference = card - oldCard;
+  if (cashDifference || cardDifference) statements.push(env.DB.prepare("UPDATE daily_closings SET expected_cash_cents=expected_cash_cents+?,cash_variance_cents=cash_variance_cents-?,expected_card_cents=expected_card_cents+?,card_variance_cents=card_variance_cents-?,status='Manager Review',approved_by=NULL,approved_at=NULL WHERE branch_id=? AND closing_date=? AND EXISTS (SELECT 1 FROM sale_edit_history WHERE id=?)").bind(cashDifference, cashDifference, cardDifference, cardDifference, sale.branch_id, sydneyDateKey(sale.created_at), historyId));
+  const previousLoyalty = await env.DB.prepare("SELECT * FROM customer_loyalty_sales WHERE sale_id=?").bind(id).first();
+  if (previousLoyalty) {
+    const retained = otherPayments.map(part => ({ method: part.split('$')[0].trim(), amountCents: Math.round(Number((part.split('$')[1] || '0').replaceAll(',', '')) * 100) }));
+    let revised;
+    try { revised = loyaltyForSale({ customerId: sale.customer_id, balance: previousLoyalty.redeemed, totalCents: total, payments: retained }); }
+    catch (error) { return json({ error: error.message }, 400); }
+    statements.push(env.DB.prepare("UPDATE customer_loyalty_sales SET earned=?,updated_at=? WHERE sale_id=? AND EXISTS (SELECT 1 FROM sale_edit_history WHERE id=?)").bind(revised.earned, new Date().toISOString(), id, historyId));
+  }
+  let results;
+  try { results = await env.DB.batch(statements); }
+  catch (error) { const pointsError = loyaltyError(error); if (pointsError) return json({ error: pointsError }, 409); throw error; }
   if (!results[0].meta?.changes) return json({ error: "This sale changed. Reopen it before editing." }, 409);
   return json({ ok: true, editedBy: auth.actor.name });
 }
@@ -619,7 +648,7 @@ async function openSaleEditor(id){
     form.elements.cashAmount.value=dollars(sale.cash_cents??(cash?Math.round(Number(cash[1])*100):/cash/i.test(method)?sale.total_cents:0));
     form.elements.cardAmount.value=dollars(sale.card_cents??(card?Math.round(Number(card[1])*100):/card/i.test(method)?sale.total_cents:0));
     document.querySelector('#saleEditHistory').textContent='Completed by: '+(sale.recorded_by_name||'Not recorded (older sale)')+editingSale.history.map(h=>' \xB7 Edited by '+h.actor_name+' at '+h.created_at+': '+h.reason).join('');
-    const otherPayments=String(sale.payment_method||'').split(' / ').filter(part=>['Bank Transfer','Store Credit','Gift Voucher','Refund','On Account'].includes(part.split('$')[0].trim()));
+    const otherPayments=String(sale.payment_method||'').split(' / ').filter(part=>['Bank Transfer','Store Credit','Gift Voucher','Refund','On Account','Loyalty Points'].includes(part.split('$')[0].trim()));
     document.querySelector('#saleEditMessage').textContent=otherPayments.length?'Other payments retained: '+otherPayments.join(' / '):'';document.querySelector('#saleEditDialog').showModal();
   }catch(error){message.textContent=error.message;}
 }
@@ -704,7 +733,7 @@ async function checkoutBookings(request, env) {
   if (!branchId) return Response.json({ error: "Choose a branch." }, { status: 400 });
   const search = (url.searchParams.get("search") || "").trim().slice(0, 120);
   const today = salonNow().date;
-  const result = await env.DB.prepare(`SELECT b.*, c.first_name, c.last_name, c.email, c.phone,
+  const result = await env.DB.prepare(`SELECT b.*, c.first_name, c.last_name, c.email, c.phone, c.loyalty_points,
     trim(coalesce(c.first_name,'') || ' ' || coalesce(c.last_name,'')) AS customer_name
     FROM bookings b LEFT JOIN customers c ON c.id=b.customer_id
     WHERE b.branch_id=? AND coalesce(b.sale_id,'')='' AND coalesce(b.payment_status,'')!='Paid'
@@ -715,7 +744,7 @@ async function checkoutBookings(request, env) {
       coalesce(b.service_names,'') || ' ' || b.booking_date || ' ' || b.id) LIKE ?))
     ORDER BY b.booking_date DESC,b.booking_time ASC LIMIT 101`).bind(branchId, search, today, search, "%" + search.toLowerCase() + "%").all();
   const bookings = (result.results || []).slice(0, 100);
-  const customers = bookings.filter((b) => b.customer_id).map((b) => ({ id: b.customer_id, first_name: b.first_name || "", last_name: b.last_name || "", email: b.email || "", phone: b.phone || "" }));
+  const customers = bookings.filter((b) => b.customer_id).map((b) => ({ id: b.customer_id, first_name: b.first_name || "", last_name: b.last_name || "", email: b.email || "", phone: b.phone || "", loyalty_points: b.loyalty_points || 0 }));
   return Response.json({ bookings, customers, hasMore: (result.results || []).length > 100 }, { headers: { "cache-control": "no-store" } });
 }
 __name(checkoutBookings, "checkoutBookings");
@@ -763,16 +792,16 @@ __name(recordCashDrawerOpen, "recordCashDrawerOpen");
 // src/public-booking-ui.mjs
 function publicBookingPage() {
   const bookingScript = bookingClient.toString().replace(/\b__name\d+\s*\(/g, "__name(");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Book an appointment | Kunchas Hair & Beauty</title><meta name="description" content="Book your Kunchas hair and beauty appointment. Choose your branch, combine services and find a time that suits you."><style>
-*{box-sizing:border-box}body{margin:0;background:#fff8fb;color:#241c2b;font:15px/1.5 system-ui,-apple-system,sans-serif}button,input,select,textarea{font:inherit}button,a,input,select,textarea{outline-offset:4px}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}[hidden]{display:none!important}header{background:#fff;color:white;padding:22px max(24px,calc((100% - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:20px}.brand{font-size:24px;font-weight:800;letter-spacing:-1px}.brand small{display:block;letter-spacing:2px;font-size:10px;font-weight:500;text-transform:uppercase}.secure{font-size:12px;color:#8c345f}main{max-width:1168px;margin:auto;padding:35px 24px 60px}.eyebrow{text-transform:uppercase;letter-spacing:2px;color:#9c3468;font-weight:750;font-size:11px}h1{font-size:clamp(27px,4vw,39px);letter-spacing:-1.3px;line-height:1.15;margin:8px 0 12px}h2{font-size:22px;margin:0 0 8px;letter-spacing:-.5px}h3{font-size:16px;margin:20px 0 10px}p{margin:8px 0 18px}.muted{color:#776d7d;font-size:13px}.steps{display:flex;list-style:none;padding:0;gap:8px;margin:28px 0}.steps li{flex:1;color:#82748b;font-size:12px;border-top:3px solid #f0dce6;padding-top:9px}.steps li.active{border-color:#b7447e;color:#b7447e;font-weight:750}.layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;align-items:start;gap:24px}.panel{background:#fff;border:1px solid #efdae4;border-radius:16px;padding:26px;box-shadow:0 6px 24px #40234704}.summary{position:sticky;top:20px}.summary h2{font-size:18px}.summary ul{list-style:none;padding:0;margin:20px 0}.summary li{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #f6e8ef;padding:10px 0;font-size:13px}.summary li small{display:block;color:#85748c}.summary-line{display:flex;justify-content:space-between;padding:12px 0;border-top:1px solid #efdae4}.summary-line strong{font-size:22px}.summary-when{background:#fff0f6;border-radius:9px;padding:12px;margin-top:16px;font-size:13px;white-space:pre-line}.branch-list{display:grid;gap:12px;margin-top:24px}.branch-card{display:block;width:100%;border:1px solid #efdae4;border-radius:12px;background:white;text-align:left;padding:18px}.branch-card strong{display:block;font-size:16px}.branch-card span{display:block;color:#7b6d80;font-size:13px;margin-top:4px}.branch-card.selected,.branch-card:hover{border-color:#b7447e;background:#fff2f7}.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:block;font-size:13px;font-weight:650}input,select,textarea{width:100%;padding:12px;border:1px solid #dcc2cf;border-radius:8px;margin-top:6px;min-height:46px;background:white;color:inherit}textarea{min-height:90px;resize:vertical}.filters{display:grid;grid-template-columns:1fr 180px;gap:12px;margin:20px 0}.service{display:flex;align-items:center;gap:14px;border:1px solid #f1dfe8;border-radius:10px;padding:14px;margin:9px 0;cursor:pointer}.service:has(input:checked){border-color:#b7447e;background:#fff2f7}.service input{width:20px;height:20px;min-height:20px;margin:0;accent-color:#b7447e}.service span{flex:1}.service small{display:block;color:#83718a;font-weight:400}.service b{font-size:14px;white-space:nowrap}.services{max-height:550px;overflow:auto;padding:2px}.actions{display:flex;justify-content:space-between;gap:12px;margin-top:24px;padding-top:20px;border-top:1px solid #f1e1e9}.primary,.secondary{border:0;border-radius:9px;min-height:46px;padding:12px 22px;font-weight:700}.primary{background:#b7447e;color:white}.secondary{background:#fceaf2;color:#b7447e}.slots{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}.slot{border:1px solid #e9cad9;border-radius:8px;background:white;padding:11px 5px;color:#b7447e;font-weight:600}.slot.selected{background:#b7447e;color:white;border-color:#b7447e}.alert{padding:14px 18px;border-radius:9px;background:#fff2ef;color:#983a25;margin:0 0 18px}.notice{margin-top:18px;color:#74657b;font-size:12px}.review{background:#fff1f7;padding:16px;border-radius:10px;margin-bottom:22px;white-space:pre-line}.full-field{grid-column:1/-1}.honeypot{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}.success{max-width:680px;margin:30px auto;text-align:center}.success-mark{font-size:30px;color:#218157;background:#eaf7ef;width:64px;height:64px;border-radius:50%;display:grid;place-items:center;margin:0 auto 20px}.success .review{text-align:left;margin-top:25px}.success a{color:#b7447e}.confirmation-reference{font:12px ui-monospace,monospace;overflow-wrap:anywhere}footer{text-align:center;color:#8b7b93;font-size:12px;padding:24px}.loading{padding:30px 0;text-align:center;color:#776d7d}@media(max-width:850px){.layout{grid-template-columns:1fr}.summary{position:static;order:2}.slots{grid-template-columns:repeat(4,1fr)}}@media(max-width:500px){main{padding:24px 14px}.panel{padding:20px}.fields,.filters{grid-template-columns:1fr}.full-field{grid-column:auto}.slots{grid-template-columns:repeat(3,1fr)}header{padding:18px}.secure{max-width:110px;text-align:right}.steps li{font-size:11px}.actions .primary{flex:1}.service{padding:12px}}
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Book an appointment | Kunchas Hair & Beauty</title><meta name="description" content="Book your Kunchas hair and beauty appointment. Choose your branch, combine services and find a time that suits you.">${fontLinks}<style>
+*{box-sizing:border-box}body{margin:0;background:#fff8fb;color:#241c2b;font:15px/1.5 system-ui,-apple-system,sans-serif}button,input,select,textarea{font:inherit}button,a,input,select,textarea{outline-offset:4px}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}[hidden]{display:none!important}header{background:#fff;color:white;padding:22px max(24px,calc((100% - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:20px}.brand{font-size:24px;font-weight:600;letter-spacing:-1px}.brand small{display:block;letter-spacing:2px;font-size:10px;font-weight:500;text-transform:uppercase}.secure{font-size:12px;color:#8c345f}main{max-width:1168px;margin:auto;padding:35px 24px 60px}.eyebrow{text-transform:uppercase;letter-spacing:2px;color:#9c3468;font-weight:600;font-size:11px}h1{font-size:clamp(27px,4vw,39px);letter-spacing:-1.3px;line-height:1.15;margin:8px 0 12px}h2{font-size:22px;margin:0 0 8px;letter-spacing:-.5px}h3{font-size:16px;margin:20px 0 10px}p{margin:8px 0 18px}.muted{color:#776d7d;font-size:13px}.steps{display:flex;list-style:none;padding:0;gap:8px;margin:28px 0}.steps li{flex:1;color:#82748b;font-size:12px;border-top:3px solid #f0dce6;padding-top:9px}.steps li.active{border-color:#b7447e;color:#b7447e;font-weight:600}.layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;align-items:start;gap:24px}.panel{background:#fff;border:1px solid #efdae4;border-radius:16px;padding:26px;box-shadow:0 6px 24px #40234704}.summary{position:sticky;top:20px}.summary h2{font-size:18px}.summary ul{list-style:none;padding:0;margin:20px 0}.summary li{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #f6e8ef;padding:10px 0;font-size:13px}.summary li small{display:block;color:#85748c}.summary-line{display:flex;justify-content:space-between;padding:12px 0;border-top:1px solid #efdae4}.summary-line strong{font-size:22px}.summary-when{background:#fff0f6;border-radius:9px;padding:12px;margin-top:16px;font-size:13px;white-space:pre-line}.branch-list{display:grid;gap:12px;margin-top:24px}.branch-card{display:block;width:100%;border:1px solid #efdae4;border-radius:12px;background:white;text-align:left;padding:18px}.branch-card strong{display:block;font-size:16px}.branch-card span{display:block;color:#7b6d80;font-size:13px;margin-top:4px}.branch-card.selected,.branch-card:hover{border-color:#b7447e;background:#fff2f7}.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:block;font-size:13px;font-weight:650}input,select,textarea{width:100%;padding:12px;border:1px solid #dcc2cf;border-radius:8px;margin-top:6px;min-height:46px;background:white;color:inherit}textarea{min-height:90px;resize:vertical}.filters{display:grid;grid-template-columns:1fr 180px;gap:12px;margin:20px 0}.service{display:flex;align-items:center;gap:14px;border:1px solid #f1dfe8;border-radius:10px;padding:14px;margin:9px 0;cursor:pointer}.service:has(input:checked){border-color:#b7447e;background:#fff2f7}.service input{width:20px;height:20px;min-height:20px;margin:0;accent-color:#b7447e}.service span{flex:1}.service small{display:block;color:#83718a;font-weight:400}.service b{font-size:14px;white-space:nowrap}.services{max-height:550px;overflow:auto;padding:2px}.actions{display:flex;justify-content:space-between;gap:12px;margin-top:24px;padding-top:20px;border-top:1px solid #f1e1e9}.primary,.secondary{border:0;border-radius:9px;min-height:46px;padding:12px 22px;font-weight:700}.primary{background:#b7447e;color:white}.secondary{background:#fceaf2;color:#b7447e}.slots{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}.slot{border:1px solid #e9cad9;border-radius:8px;background:white;padding:11px 5px;color:#b7447e;font-weight:600}.slot.selected{background:#b7447e;color:white;border-color:#b7447e}.alert{padding:14px 18px;border-radius:9px;background:#fff2ef;color:#983a25;margin:0 0 18px}.notice{margin-top:18px;color:#74657b;font-size:12px}.review{background:#fff1f7;padding:16px;border-radius:10px;margin-bottom:22px;white-space:pre-line}.full-field{grid-column:1/-1}.honeypot{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}.success{max-width:680px;margin:30px auto;text-align:center}.success-mark{font-size:30px;color:#218157;background:#eaf7ef;width:64px;height:64px;border-radius:50%;display:grid;place-items:center;margin:0 auto 20px}.success .review{text-align:left;margin-top:25px}.success a{color:#b7447e}.confirmation-reference{font:12px ui-monospace,monospace;overflow-wrap:anywhere}footer{text-align:center;color:#8b7b93;font-size:12px;padding:24px}.loading{padding:30px 0;text-align:center;color:#776d7d}@media(max-width:850px){.layout{grid-template-columns:1fr}.summary{position:static;order:2}.slots{grid-template-columns:repeat(4,1fr)}}@media(max-width:500px){main{padding:24px 14px}.panel{padding:20px}.fields,.filters{grid-template-columns:1fr}.full-field{grid-column:auto}.slots{grid-template-columns:repeat(3,1fr)}header{padding:18px}.secure{max-width:110px;text-align:right}.steps li{font-size:11px}.actions .primary{flex:1}.service{padding:12px}}
 .brand img{display:block;width:260px;max-width:100%;height:auto}.brand{flex:0 1 260px}header{border-bottom:1px solid #efdae4;padding-top:8px;padding-bottom:8px}.primary:hover,.slot.selected:hover{background:#9c3468}.primary:focus-visible,.slot:focus-visible,.branch-card:focus-visible{outline:3px solid #c4456b}.steps li.active{color:#9c3468}.secondary,.slot,.success a{color:#9c3468}@media(max-width:500px){.brand{flex-basis:210px}.brand img{width:210px}.secure{font-size:11px;max-width:100px}}
 
-.steps button{width:100%;min-height:44px;padding:6px 2px;border:0;background:transparent;color:inherit;font-weight:700;font-size:12px;border-radius:7px}.steps button:focus-visible{outline:2px solid #b7447e}.steps li{padding-top:2px}.steps button:disabled{opacity:.5}.summary>summary{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:750;min-height:44px;list-style:none}.summary>summary::-webkit-details-marker{display:none}.summary>summary:after{content:'+';color:#9c3468}.summary[open]>summary:after{content:'\u2212'}.summary-content{padding-top:12px}.summary li{align-items:center}.remove-service{border:0;background:#fceaf2;color:#9c3468;min-width:44px;min-height:44px;border-radius:8px;font-size:22px}.summary li>span{min-width:0;flex:1;overflow-wrap:anywhere}.mobile-total{display:none}.date-navigation{display:grid;grid-template-columns:48px minmax(0,1fr) 48px;align-items:end;gap:10px}.date-navigation button{padding:10px;min-height:48px;font-size:24px}.date-navigation input{margin-bottom:0}#categories{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#categories .branch-card{min-height:88px;padding:14px}#categories strong{font-size:14px}.service span{min-width:0;overflow-wrap:anywhere}button,label,input,summary{-webkit-tap-highlight-color:transparent}input,select,textarea{font-size:16px}.slot{min-height:48px}.slot.selected{color:white}.branch-card.selected{box-shadow:inset 4px 0 #b7447e}section[data-step]{scroll-margin-top:20px}.summary-content .notice{margin-bottom:0}
+.steps button{width:100%;min-height:44px;padding:6px 2px;border:0;background:transparent;color:inherit;font-weight:700;font-size:12px;border-radius:7px}.steps button:focus-visible{outline:2px solid #b7447e}.steps li{padding-top:2px}.steps button:disabled{opacity:.5}.summary>summary{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:600;min-height:44px;list-style:none}.summary>summary::-webkit-details-marker{display:none}.summary>summary:after{content:'+';color:#9c3468}.summary[open]>summary:after{content:'\u2212'}.summary-content{padding-top:12px}.summary li{align-items:center}.remove-service{border:0;background:#fceaf2;color:#9c3468;min-width:44px;min-height:44px;border-radius:8px;font-size:22px}.summary li>span{min-width:0;flex:1;overflow-wrap:anywhere}.mobile-total{display:none}.date-navigation{display:grid;grid-template-columns:48px minmax(0,1fr) 48px;align-items:end;gap:10px}.date-navigation button{padding:10px;min-height:48px;font-size:24px}.date-navigation input{margin-bottom:0}#categories{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#categories .branch-card{min-height:88px;padding:14px}#categories strong{font-size:14px}.service span{min-width:0;overflow-wrap:anywhere}button,label,input,summary{-webkit-tap-highlight-color:transparent}input,select,textarea{font-size:16px}.slot{min-height:48px}.slot.selected{color:white}.branch-card.selected{box-shadow:inset 4px 0 #b7447e}section[data-step]{scroll-margin-top:20px}.summary-content .notice{margin-bottom:0}
 @media(max-width:850px){header{padding:6px 18px}.brand{flex-basis:175px}.brand img{width:175px}.secure{max-width:130px;text-align:right}main{padding:20px 14px 160px}.steps{margin:18px 0;gap:5px}.steps button{font-size:12px}h1{font-size:28px}.layout{gap:14px;display:flex;flex-direction:column}.layout>.panel{width:100%}.summary{order:2;padding:10px 16px}.summary>summary{font-size:14px}.summary-content{border-top:1px solid #efdae4;margin-top:8px}.layout>.panel:not(.summary){padding:20px 16px}.services{max-height:none;overflow:visible}.actions{position:fixed;bottom:0;left:0;right:0;z-index:20;background:#fff;padding:10px 16px max(12px,env(safe-area-inset-bottom));margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 12px;box-shadow:0 -4px 24px #58203512}.mobile-total{display:block;grid-column:1/-1;border:0;background:transparent;color:#743052;text-align:left;font-size:13px;min-height:36px;padding:2px 0}.actions #next{grid-column:2;min-height:50px}.actions #back[hidden]+#next{grid-column:1/-1}.actions #back{min-height:50px;padding:10px 18px}.service{min-height:72px;padding:14px 10px;gap:10px}.service input{flex:0 0 22px;width:22px;height:22px}.fields{grid-template-columns:1fr}.full-field{grid-column:1}.slots{grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.slot{min-height:50px;font-size:14px}footer{padding-bottom:150px}#intro .muted{margin-bottom:8px}#categoryServices{margin-top:16px}#allCategories{width:100%;text-align:left}.review{font-size:14px}}
 @media(max-width:850px){#flow>nav{position:sticky;top:0;z-index:15;background:#fff8fb;padding:4px 0;border-bottom:1px solid #efdae4}#flow>nav .steps{margin:0}section[data-step],section[data-step] h2,#appointmentSummary,#search{scroll-margin-top:75px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 .add-more-services{width:100%;min-height:48px;margin:12px 0;text-align:center;border:1px dashed #b7447e}
-</style></head><body><header><div class="brand"><img src="${brandLogo}" alt="Kuncha\u2019s Hair & Beauty Art" width="2551" height="1189"></div><span class="secure">Your next feel-good moment</span></header><main><div id="intro"><span class="eyebrow">Make time for yourself</span><h1>Book your next visit.</h1><p class="muted">Your favourite services, your nearest salon, a time that works for you.</p></div><div id="error" class="alert" role="alert" hidden></div><p id="loading" class="loading">Loading branches and services\u2026</p><div id="flow" hidden><nav aria-label="Booking steps"><ol class="steps"><li><button type="button" data-go-step="0">1 \xB7 Salon</button></li><li><button type="button" data-go-step="1">2 \xB7 Services</button></li><li><button type="button" data-go-step="2">3 \xB7 Time</button></li><li><button type="button" data-go-step="3">4 \xB7 Details</button></li></ol></nav><div class="layout"><div class="panel">
+${typographyStyles}</style></head><body><header><div class="brand"><img src="${brandLogo}" alt="Kuncha\u2019s Hair & Beauty Art" width="2551" height="1189"></div><span class="secure">Your next feel-good moment</span></header><main><div id="intro"><span class="eyebrow">Make time for yourself</span><h1>Book your next visit.</h1><p class="muted">Your favourite services, your nearest salon, a time that works for you.</p></div><div id="error" class="alert" role="alert" hidden></div><p id="loading" class="loading">Loading branches and services\u2026</p><div id="flow" hidden><nav aria-label="Booking steps"><ol class="steps"><li><button type="button" data-go-step="0">1 \xB7 Salon</button></li><li><button type="button" data-go-step="1">2 \xB7 Services</button></li><li><button type="button" data-go-step="2">3 \xB7 Time</button></li><li><button type="button" data-go-step="3">4 \xB7 Details</button></li></ol></nav><div class="layout"><div class="panel">
 <section data-step="0"><h2>Choose your salon</h2><p class="muted">Select the branch you would like to visit.</p><div id="branches" class="branch-list"></div></section>
 <section data-step="1" hidden><h2>What would you like to book?</h2><p class="muted">Search all services or choose a category. You can add services from different categories.</p><label>Find a service<input id="search" type="search" placeholder="Search all services"></label><div id="categories" class="branch-list"></div><div id="categoryServices" hidden><button id="allCategories" class="secondary" type="button">\u2190 All categories</button><h3 id="categoryTitle"></h3><div id="services" class="services"></div></div></section>
 <section data-step="2" hidden><h2>Choose a date & time</h2><p class="muted">Start times are every 15 minutes. All times are Sydney local time (AEST/AEDT).</p><div class="date-navigation"><button id="previousDate" class="secondary" type="button" aria-label="Previous date">\u2039</button><label>Appointment date<input id="date" type="date" required></label><button id="nextDate" class="secondary" type="button" aria-label="Next date">\u203A</button></div><p id="slotStatus" class="muted" role="status"></p><div id="slots" class="slots" role="group" aria-label="Available appointment times"></div></section>
@@ -1127,11 +1156,14 @@ async function submit(request, env, url) {
   if (rate.attempts > 20) throw new BookingError("Too many booking attempts. Please try again in 15 minutes or call the branch.", 429);
   const chosen = await selection(env, body), time = text4(body.time);
   if (!chosen.slots.includes(time) || !Number.isFinite(minutesOf(time))) throw new BookingError("This time is no longer available. Please choose another time.", 409);
+  const phoneOwner = await findPhoneOwner(env, phone2);
+  if (phoneOwner && (String(phoneOwner.email || '').toLowerCase() !== email || phoneOwner.first_name.trim().toLowerCase() !== firstName.toLowerCase() || phoneOwner.last_name.trim().toLowerCase() !== lastName.toLowerCase() || phoneOwner.branch_id !== chosen.branchId)) throw new BookingError("Please check your contact details or call the salon to complete your booking.", 409);
+  const contactOwner = await env.DB.prepare("SELECT id FROM customers WHERE branch_id=? AND email=?").bind(chosen.branchId, email).first();
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const bookingNotes = ["Online contact: " + firstName + " " + lastName + " | " + email + " | " + phone2, notes].filter(Boolean).join("\n");
   try {
     await env.DB.batch([
-      env.DB.prepare("INSERT INTO customers(id,created_at,updated_at,first_name,last_name,email,phone,branch_id,tags,notes) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(branch_id,email) WHERE email!='' DO NOTHING").bind(crypto.randomUUID(), now, now, firstName, lastName, email, phone2, chosen.branchId, "Online booking", ""),
+      ...(!contactOwner ? [env.DB.prepare("INSERT INTO customers(id,created_at,updated_at,first_name,last_name,email,phone,branch_id,tags,notes) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(crypto.randomUUID(), now, now, firstName, lastName, email, phone2, chosen.branchId, "Online booking", "")] : []),
       env.DB.prepare(`INSERT INTO bookings(id,created_at,updated_at,customer_id,branch_id,staff_id,service_ids,service_names,booking_date,booking_time,duration_minutes,total_cents,status,payment_status,notes,source) VALUES (?,?,?,(SELECT id FROM customers WHERE branch_id=? AND email=?),?,NULL,?,?,?,?,?,?,'Booked','Pay at store',?,'Online')`).bind(id, now, now, chosen.branchId, email, chosen.branchId, JSON.stringify(chosen.ids), chosen.services.map((s) => s.name).join(", "), chosen.date, time, chosen.duration, chosen.total, bookingNotes),
       env.DB.prepare("INSERT INTO public_booking_requests(booking_id,fingerprint) VALUES (?,?)").bind(id, fingerprint)
     ]);
@@ -1165,6 +1197,7 @@ async function publicBookingRoute(request, env) {
     if (p.endsWith("/reserve") && request.method === "POST") return await submit(request, env, url);
     return json2({ error: "Method not allowed." }, 405);
   } catch (error) {
+    if (String(error).includes("CUSTOMER_DUPLICATE_PHONE") || error instanceof DuplicatePhoneError) return json2({ error: "Please check your contact details or call the salon to complete your booking." }, 409);
     if (error instanceof BookingError) return json2({ error: error.message }, error.status);
     console.error(JSON.stringify({ event: "public_booking_failed", message: error.message }));
     return json2({ error: "Unable to complete your request. Please try again or call the branch." }, 500);
@@ -35940,7 +35973,7 @@ var exportValue = /* @__PURE__ */ __name((field, customer, details) => ({
   productSpend: legacyValue(details, "Products"),
   visits: legacyValue(details, "Visits"),
   balance: legacyValue(details, "Balance"),
-  points: legacyValue(details, "Points"),
+  points: customer.loyalty_points || 0,
   productDiscount: legacyValue(details, "ProdDisc"),
   serviceDiscount: legacyValue(details, "ServDisc"),
   deactivated: legacyValue(details, "Deactivated")
@@ -36029,8 +36062,9 @@ async function importCustomers(request, env) {
   const phoneIndex = column("Phone1", "Phone", "Primary phone");
   if (clientIndex < 0 || firstIndex < 0 || lastIndex < 0) return json4({ error: "Missing ClientNum, FirstName, or LastName columns." }, 400);
   const branch = matches[0];
-  const current = (await env.DB.prepare("SELECT external_ref,email FROM customers WHERE branch_id=? AND external_ref IS NOT NULL").bind(branch.id).all()).results || [];
+  const current = (await env.DB.prepare("SELECT id,external_ref,email FROM customers WHERE branch_id=? AND external_ref IS NOT NULL").bind(branch.id).all()).results || [];
   const existing = new Set(current.map((row) => text6(row.external_ref)));
+  const existingIds = new Map(current.map(row => [text6(row.external_ref), row.id]));
   const existingEmailOwners = new Map(current.filter((row) => text6(row.email)).map((row) => [text6(row.email).toLowerCase(), text6(row.external_ref)]));
   const seen = /* @__PURE__ */ new Set();
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -36056,7 +36090,7 @@ async function importCustomers(request, env) {
     seen.add(externalRef);
     const details = detailsFromRow(headers3, row);
     customers.push({
-      id: crypto.randomUUID(),
+      id: existingIds.get(externalRef) || crypto.randomUUID(),
       createdAt: now,
       updatedAt: now,
       firstName: firstName || "Unknown",
@@ -36109,7 +36143,7 @@ document.querySelectorAll('select[name="accessRole"]').forEach((select)=>{
 });
 const productSaveButton=document.querySelector('#productSaveButton');
 if(productSaveButton){const button=document.createElement('button');button.className='danger hidden';button.id='deleteProductButton';button.type='button';button.textContent='Delete product';productSaveButton.insertAdjacentElement('afterend',button);}
-const tabPermissions = { overview:"dashboard",pos:"pos","receive-products":"inventory","staff-clock":"time_clock",bookings:"bookings",customers:"customers",services:"services",products:"products",inventory:"inventory",staff:"staff",roster:"roster",reports:"reports",closing:"closing",access:"access",branches:"branches","recent-sales":"pos" };
+const tabPermissions = { overview:"dashboard",pos:"pos","receive-products":"inventory","staff-clock":"time_clock",bookings:"bookings",customers:"customers",services:"services",products:"products",inventory:"inventory",staff:"staff",timesheet:"payroll",roster:"roster",reports:"reports",closing:"closing",access:"access",branches:"branches","recent-sales":"pos" };
 function userCan(section,write=false) { return currentUser?.role === "owner" || Number(currentUser?.permissions?.[section] || 0) >= (write ? 2 : 1); }
 function canManageAccess() { return ["owner","admin"].includes(currentUser?.role) && userCan("access",true); }
 function canViewTab(tab) { return tab === "access" ? canManageAccess() : tab === "reports" ? userCan("reports") || userCan("payroll") : userCan(tabPermissions[tab]); }
@@ -36137,12 +36171,12 @@ function applyAccessUi() {
   });
   document.querySelectorAll('[data-staff-login-fields]').forEach(panel=>{panel.hidden=!canManageAccess();panel.querySelectorAll('input').forEach(input=>input.disabled=!canManageAccess());});
   document.querySelector("#timeClockStatus").closest(".time-clock-panel").hidden = !userCan("time_clock");
-  document.querySelectorAll("#clockInButton,#clockOutButton,#breakStartButton,#breakEndButton").forEach((button)=>button.disabled=!userCan("time_clock",true));
+  document.querySelector("#timeClockPin").disabled = !userCan("time_clock", true);
+  renderTimeClockStatus();
   document.querySelector("#saleForm").hidden = !userCan("pos");
 
 
   document.querySelector(".staff-hours-section").hidden=!userCan("payroll");
-  if (!userCan("payroll",true) && currentUser.staffId) { const select=document.querySelector("#timeClockStaff"); select.innerHTML=state.staff.filter((person)=>person.id===currentUser.staffId).map((person)=>'<option value="'+esc(person.id)+'">'+esc(person.name)+'</option>').join(""); }
   document.querySelectorAll("#reports .report-section").forEach((panel) => { panel.hidden = panel.classList.contains("payroll-report") ? !userCan("payroll") : !userCan("reports"); });
   const reportPicker = document.querySelector("#mobileReportType");
   reportPicker.querySelectorAll('option:not([value="payroll"])').forEach((option) => { option.hidden = option.disabled = !userCan("reports"); });
@@ -36273,17 +36307,20 @@ var application = {
       if (request.method === "GET" && url.pathname === "/api/closing-sales") {
         const branchId = clean(request.headers.get("x-branch-id"));
         const date = clean(url.searchParams.get("date"));
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return jsonResponse({ error: "Choose a valid closing date." }, 400);
+        if (!validCalendarDate(date)) return jsonResponse({ error: "Choose a valid closing date." }, 400);
+        const from = sydneyDayStartUtc(date), to = sydneyDayStartUtc(nextCalendarDate(date));
         const [sales, drawerOpens] = await Promise.all([
-          all(env, "SELECT s.*,b.name AS branch_name FROM sales s JOIN branches b ON b.id=s.branch_id WHERE s.branch_id=? AND substr(s.created_at,1,10)=? ORDER BY s.created_at DESC", [branchId, date]),
-          all(env, "SELECT * FROM cash_drawer_opens WHERE branch_id=? AND substr(opened_at,1,10)=? ORDER BY opened_at DESC", [branchId, date])
+          all(env, "SELECT s.*,b.name AS branch_name FROM sales s JOIN branches b ON b.id=s.branch_id WHERE s.branch_id=? AND s.created_at>=? AND s.created_at<? ORDER BY s.created_at DESC", [branchId, from, to]),
+          all(env, "SELECT * FROM cash_drawer_opens WHERE branch_id=? AND opened_at>=? AND opened_at<? ORDER BY opened_at DESC", [branchId, from, to])
         ]);
         return jsonResponse({ sales, drawerOpens });
       }
       if (request.method === "GET" && url.pathname === "/api/recent-sales") {
         const branchId = clean(request.headers.get("x-branch-id"));
-        const from = new Date(url.searchParams.get("from"));
-        const to = new Date(url.searchParams.get("to"));
+        const date = url.searchParams.get("date");
+        if (date && !validCalendarDate(date)) return jsonResponse({ error: "Choose a valid sales date." }, 400);
+        const from = new Date(date ? sydneyDayStartUtc(date) : url.searchParams.get("from"));
+        const to = new Date(date ? sydneyDayStartUtc(nextCalendarDate(date)) : url.searchParams.get("to"));
         if (!Number.isFinite(+from) || !Number.isFinite(+to) || +to <= +from || +to - +from > 26 * 60 * 60 * 1e3) return jsonResponse({ error: "Choose a valid sales date." }, 400);
         const sales = await all(env, "SELECT s.*,b.name AS branch_name,trim(coalesce(c.first_name,'') || ' ' || coalesce(c.last_name,'')) AS customer_name,c.phone AS customer_phone,c.email AS customer_email FROM sales s JOIN branches b ON b.id=s.branch_id LEFT JOIN customers c ON c.id=s.customer_id WHERE s.branch_id=? AND s.created_at>=? AND s.created_at<? ORDER BY s.created_at DESC", [branchId, from.toISOString(), to.toISOString()]);
         return jsonResponse({ sales });
@@ -36326,13 +36363,20 @@ var application = {
         if (auth) return auth;
         return recordTimeClock(request, env);
       }
+      if (request.method === "POST" && url.pathname === "/api/time-clock/identify") {
+        const auth = await authorizeBranch(request, env);
+        if (auth) return auth;
+        return identifyTimeClockStaff(request, env);
+      }
       if (request.method === "GET" && url.pathname === "/api/app-data") return getAppData(env);
+      if (request.method === "GET" && url.pathname === "/api/timesheet") return getTimesheet(url, env, ctx.identity);
       if (request.method === "GET" && url.pathname === "/api/reports") return getReports(url, env, ctx.identity);
       if (request.method === "GET" && url.pathname === "/api/reports/export") return exportReport(url, env, ctx.identity);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/daily-closing/")) return updateDailyClosing(request, env, clean(url.pathname.replace("/api/daily-closing/", "")));
       if (request.method === "GET" && ["/api/customers/search", "/api/pos-customers"].includes(url.pathname)) return searchCustomers(url, env, ctx.identity);
       if (request.method === "GET" && /^\/api\/pos-customers\/[^/]+\/history$/.test(url.pathname)) return posCustomerHistory(env, decodeURIComponent(url.pathname.split("/")[3]), clean(request.headers.get("x-branch-id")) || ctx.identity.branchIds?.[0]);
       if (request.method === "POST" && url.pathname === "/api/pos-customers") return createCustomer(request, env);
+      if (request.method === "POST" && /^\/api\/pos-customers\/[^/]+\/membership$/.test(url.pathname)) return addCustomerMembership(request, env, decodeURIComponent(url.pathname.split("/")[3]));
       if (request.method === "PATCH" && /^\/api\/pos-customers\/[^/]+$/.test(url.pathname)) return updateCustomer(request, env, decodeURIComponent(url.pathname.split("/")[3]));
       if (request.method === "POST" && url.pathname === "/api/customers") return createCustomer(request, env);
       if (request.method === "GET" && url.pathname === "/api/customers/export") return exportCustomers(url, env);
@@ -36380,6 +36424,7 @@ var application = {
   }
 };
 async function getAppData(env) {
+  await closeStaleTimeEntries(env);
   const [branches, staff, services, serviceCategoryOrder, products, productCategoryOrder, bookings, sales, saleItems, branchHours, closedDates, discounts, inventoryStock, stockMovements, dailyClosings, staffRoster, staffRegularDaysOff, timeEntries] = await Promise.all([
     all(env, "SELECT * FROM branches ORDER BY name"),
     all(env, "SELECT * FROM staff WHERE status != 'Deleted' ORDER BY branch_id, name"),
@@ -36464,6 +36509,7 @@ async function getAppData(env) {
 }
 __name(getAppData, "getAppData");
 async function searchCustomers(url, env, identity2) {
+  if (url.searchParams.has("checkPhone")) return phoneCheckResponse(url, env);
   const query = clean(url.searchParams.get("q"));
   if (query.length < 2) return jsonResponse({ customers: [], hasMore: false });
   const requestedBranchId = clean(url.searchParams.get("branchId"));
@@ -36484,7 +36530,7 @@ async function searchCustomers(url, env, identity2) {
     conditions.push(`c.branch_id IN (${branchIds.map(() => "?").join(",")})`);
     params.push(...branchIds);
   }
-  const rows4 = await all(env, `SELECT c.id,c.created_at,c.updated_at,c.first_name,c.last_name,c.email,c.phone,c.branch_id,c.tags,c.notes,c.external_ref,b.name AS branch_name
+  const rows4 = await all(env, `SELECT c.id,c.created_at,c.updated_at,c.first_name,c.last_name,c.email,c.phone,c.branch_id,c.tags,c.notes,c.external_ref,c.loyalty_points,c.membership_status,c.membership_added_at,c.membership_added_by_name,b.name AS branch_name
     FROM customers c
     LEFT JOIN branches b ON b.id = c.branch_id
     WHERE ${conditions.join(" AND ")}
@@ -36510,6 +36556,7 @@ async function listPublicBranches(env) {
 }
 __name(listPublicBranches, "listPublicBranches");
 async function getPosData(request, env) {
+  await closeStaleTimeEntries(env);
   const branchId = request.headers.get("x-branch-id");
   const [branch, staff, services, serviceCategoryOrder, products, productCategoryOrder, customers, bookings, sales, branchHours, closedDates, dailyClosings, cashDrawerOpens, timeEntries, inventoryStock, stockMovements] = await Promise.all([
     all(env, "SELECT id, name, address, phone, post_code FROM branches WHERE id = ?", [branchId]),
@@ -36598,9 +36645,11 @@ async function createCustomer(request, env) {
     return jsonResponse({ error: "Customer name, branch, and an email or phone number are required." }, 400);
   }
   const existing = email ? await env.DB.prepare("SELECT id FROM customers WHERE branch_id=? AND email=?").bind(branchId, email).first() : null;
-  const customerId = existing?.id || id;
+  await assertUniqueCustomerPhone(env, phone2);
+  if (existing) return jsonResponse({ error: "A customer already uses this email. Select their existing account." }, 409);
+  const customerId = id;
   if (existing) await env.DB.prepare("UPDATE customers SET updated_at=?,first_name=?,last_name=?,phone=?,tags=?,notes=? WHERE id=?").bind(now, firstName, lastName, phone2, clean(body.tags), clean(body.notes), customerId).run();
-  else await env.DB.prepare("INSERT INTO customers (id,created_at,updated_at,first_name,last_name,email,phone,branch_id,tags,notes) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(customerId, now, now, firstName, lastName, email, phone2, branchId, clean(body.tags), clean(body.notes)).run();
+  else await env.DB.prepare("INSERT INTO customers (id,created_at,updated_at,first_name,last_name,email,phone,branch_id,tags,notes,membership_status,membership_added_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").bind(customerId, now, now, firstName, lastName, email, phone2, branchId, clean(body.tags), clean(body.notes), ["Member", "Non-member"].includes(clean(body.tags)) ? clean(body.tags) : null, clean(body.tags) === "Member" ? now : null).run();
   return jsonResponse({ ok: true, customerId });
 }
 __name(createCustomer, "createCustomer");
@@ -36682,10 +36731,12 @@ async function ensureBookingCustomer(env, customer, branchId, tag) {
   const email = clean(customer.email).toLowerCase();
   const phone2 = clean(customer.phone);
   if (!firstName || !lastName || !branchId || !email && !phone2) return "";
-  const lookup = email ? await all(env, "SELECT id FROM customers WHERE branch_id = ? AND email = ?", [branchId, email]) : await all(env, "SELECT id FROM customers WHERE branch_id = ? AND phone = ? LIMIT 1", [branchId, phone2]);
+  await assertUniqueCustomerPhone(env, phone2);
+  const lookup = email ? await all(env, "SELECT id FROM customers WHERE branch_id = ? AND email = ?", [branchId, email]) : [];
+  if (lookup.length) throw Object.assign(new Error("A customer already uses this email. Select their existing account."), { name: "CustomerContactError" });
   const id = lookup[0]?.id || crypto.randomUUID();
   if (lookup.length) await env.DB.prepare("UPDATE customers SET updated_at=?,first_name=?,last_name=?,email=?,phone=?,tags=? WHERE id=?").bind(now, firstName, lastName, email, phone2, tag, id).run();
-  else await env.DB.prepare("INSERT INTO customers (id,created_at,updated_at,first_name,last_name,email,phone,branch_id,tags,notes) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(id, now, now, firstName, lastName, email, phone2, branchId, tag, clean(customer.notes)).run();
+  else await env.DB.prepare("INSERT INTO customers (id,created_at,updated_at,first_name,last_name,email,phone,branch_id,tags,notes,membership_status,membership_added_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").bind(id, now, now, firstName, lastName, email, phone2, branchId, tag, clean(customer.notes), ["Member", "Non-member"].includes(tag) ? tag : null, tag === "Member" ? now : null).run();
   return id;
 }
 __name(ensureBookingCustomer, "ensureBookingCustomer");
@@ -36746,6 +36797,7 @@ async function updateBooking(request, env, bookingId) {
   const serviceRows = serviceIds.length ? await all(env, `SELECT id, name, duration_minutes, price_cents FROM services WHERE id IN (${placeholders})`, serviceIds) : [];
   const totalMinutes = Array.isArray(body.serviceIds) ? serviceRows.reduce((total, service) => total + Number(service.duration_minutes || 0), 0) : existing.duration_minutes;
   const totalCents = Array.isArray(body.serviceIds) ? serviceRows.reduce((total, service) => total + Number(service.price_cents || 0), 0) : existing.total_cents;
+  if (Array.isArray(body.serviceIds) && (!serviceIds.length || serviceRows.length !== serviceIds.length || !Number.isSafeInteger(totalMinutes) || totalMinutes <= 0 || !Number.isSafeInteger(totalCents) || totalCents < 0)) return jsonResponse({ error: "Choose valid services with a duration and price." }, 400);
   const bookingDate = clean(body.bookingDate) || existing.booking_date;
   const bookingTime = clean(body.bookingTime) || existing.booking_time;
   const reactivating = ["Cancelled", "No show"].includes(existing.status) && !["Cancelled", "No show"].includes(clean(body.status) || existing.status);
@@ -36877,11 +36929,32 @@ async function updateCustomer(request, env, customerId) {
     const duplicate = await env.DB.prepare("SELECT id FROM customers WHERE branch_id=? AND email=? AND id!=?").bind(branchId, email, customerId).first();
     if (duplicate) return jsonResponse({ error: "Another customer at this branch already uses that email." }, 409);
   }
+  await assertUniqueCustomerPhone(env, phone2, customerId);
   const result = await env.DB.prepare(`UPDATE customers SET updated_at = ?, first_name = ?, last_name = ?, email = ?, phone = ?, branch_id = ?, tags = ?, notes = ? WHERE id = ?`).bind((/* @__PURE__ */ new Date()).toISOString(), firstName, lastName, email, phone2, branchId, clean(body.tags), clean(body.notes), customerId).run();
   if (!result.meta.changes) return jsonResponse({ error: "Customer not found." }, 404);
   return jsonResponse({ ok: true });
 }
 __name(updateCustomer, "updateCustomer");
+async function addCustomerMembership(request, env, customerId) {
+  const body = await request.clone().json();
+  const branchId = clean(body.branchId);
+  if (!branchId) return jsonResponse({ error: "Select a branch." }, 400);
+  const customer = await env.DB.prepare("SELECT id,branch_id,tags,membership_status,updated_at FROM customers WHERE id=?").bind(customerId).first();
+  if (!customer || customer.branch_id !== branchId) return jsonResponse({ error: "Customer not found for this branch." }, 404);
+  const verification = await verifyActor(request, env, branchId);
+  if (verification.response) return verification.response;
+  const tags = String(customer.tags || "").toLowerCase().split(/[;,|]/).map((tag) => tag.trim());
+  const taggedMember = tags.includes("member"), taggedNonMember = tags.includes("non-member") || tags.includes("non member");
+  if (customer.membership_status || taggedMember !== taggedNonMember) {
+    return jsonResponse({ error: "Membership is already set. Refresh the customer to see its current status." }, 409);
+  }
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(`UPDATE customers SET membership_status='Member',membership_added_at=?,membership_added_by_id=?,membership_added_by_name=?,updated_at=?
+    WHERE id=? AND branch_id=? AND membership_status IS NULL AND updated_at=?`).bind(now, verification.actor.id, verification.actor.name, now, customerId, branchId, customer.updated_at).run();
+  if (!result.meta.changes) return jsonResponse({ error: "Customer changed. Refresh and try again." }, 409);
+  return jsonResponse({ ok: true, membershipStatus: "Member", membershipAddedAt: now, membershipAddedBy: verification.actor.name });
+}
+__name(addCustomerMembership, "addCustomerMembership");
 async function updateService(request, env, serviceId) {
   if (!serviceId) return jsonResponse({ error: "Service is required." }, 400);
   const body = await request.json();
@@ -37085,7 +37158,19 @@ async function importProducts(request, env) {
   return jsonResponse({ ok: true, created, updated, skipped, errors: errors.slice(0, 10) });
 }
 __name(importProducts, "importProducts");
+async function identifyTimeClockStaff(request, env) {
+  await closeStaleTimeEntries(env);
+  const branchId = clean(request.headers.get("x-branch-id"));
+  const who = await verifyActor(request, env, branchId, false, false, false, false, true);
+  if (who.response) return who.response;
+  if (!who.actor.staffId) return jsonResponse({ error:"Use an individual staff PIN." }, 403);
+  const staff = await env.DB.prepare("SELECT id, name FROM staff WHERE id = ? AND status = 'Active'").bind(who.actor.staffId).first();
+  if (!staff) return jsonResponse({ error:"This staff account is inactive." }, 403);
+  const entry = await env.DB.prepare("SELECT branch_id, clock_in, break_started_at FROM time_entries WHERE staff_id = ? AND clock_out IS NULL ORDER BY clock_in DESC LIMIT 1").bind(staff.id).first();
+  return jsonResponse({ staffId:staff.id, name:staff.name, clockIn:entry?.clock_in || null, breakStartedAt:entry?.break_started_at || null, otherBranch:Boolean(entry && entry.branch_id !== branchId) });
+}
 async function recordTimeClock(request, env) {
+  await closeStaleTimeEntries(env);
   const who = await verifyActor(request, env, request.headers.get("x-branch-id"), false, false, false, false, true);
   if (who.response) return who.response;
   if (who.actor.staffId !== (await request.clone().json()).staffId) return jsonResponse({ error: "Use the PIN of the selected staff member." }, 403);
@@ -37121,6 +37206,23 @@ async function recordTimeClock(request, env) {
   return jsonResponse({ ok: true, status: "Clocked out" });
 }
 __name(recordTimeClock, "recordTimeClock");
+async function getTimesheet(url, env, accessUser) {
+  await closeStaleTimeEntries(env);
+  const today = sydneyDateKey(new Date());
+  const start = new Date(today + "T00:00:00Z");
+  start.setUTCDate(start.getUTCDate() - 13);
+  const from = url.searchParams.get("from") || start.toISOString().slice(0, 10);
+  const to = url.searchParams.get("to") || today;
+  if (!validCalendarDate(from) || !validCalendarDate(to) || from > to) return jsonResponse({ error:"Choose a valid From and To date range." }, 400);
+  const query = "SELECT te.staff_id, st.name AS staff_name, te.branch_id, br.name AS branch_name, " +
+    "te.clock_in, te.clock_out, te.break_minutes, te.break_started_at " +
+    "FROM time_entries te LEFT JOIN staff st ON st.id = te.staff_id " +
+    "LEFT JOIN branches br ON br.id = te.branch_id " +
+    "WHERE te.clock_in >= ? AND te.clock_in < ?" + scopeReportSql(accessUser, "te.branch_id") +
+    " ORDER BY te.clock_in DESC";
+  const entries = await all(env, query, [sydneyDayStartUtc(from), sydneyDayStartUtc(nextCalendarDate(to)), ...scopeReportParams(accessUser)]);
+  return jsonResponse({ from, to, entries });
+}
 function reportDateRange(url) {
   const today = sydneyReportDate(new Date());
   const monthStart = today.slice(0, 8) + "01";
@@ -37141,6 +37243,7 @@ function sydneyReportDate(value) {
 }
 
 async function buildReportData(url, env, accessUser) {
+  await closeStaleTimeEntries(env);
   const { from, to, branchId } = reportDateRange(url);
   const scopeParams = scopeReportParams(accessUser);
   const scope = (column) => scopeReportSql(accessUser, column);
@@ -37673,7 +37776,7 @@ async function createSale(request, env) {
     }
     customerId = booking.customer_id;
   }
-  const saleCustomer = customerId ? await env.DB.prepare("SELECT first_name,last_name,phone FROM customers WHERE id=? AND branch_id=?").bind(customerId, branchId).first() : null;
+  const saleCustomer = customerId ? await env.DB.prepare("SELECT first_name,last_name,phone,loyalty_points FROM customers WHERE id=? AND branch_id=?").bind(customerId, branchId).first() : null;
   const guestCheckout = !bookingId && clean(body.customerMode) === "guest" && !customerId;
   if (!guestCheckout && (!saleCustomer || !clean(saleCustomer.first_name) || !clean(saleCustomer.last_name) || !clean(saleCustomer.phone))) return jsonResponse({ error: "Customer name and phone number are required for checkout." }, 400);
   const serviceIds = items.filter((item) => clean(item.itemType || "service") === "service").map((item) => clean(item.itemId || item.serviceId)).filter(Boolean);
@@ -37690,12 +37793,21 @@ async function createSale(request, env) {
   const productRows = productIds.length ? await all(env, `SELECT id, name, price_cents, special_price_cents FROM products WHERE id IN (${productIds.map(() => "?").join(",")})`, productIds) : [];
   const serviceMap = new Map(serviceRows.map((service) => [service.id, service]));
   const productMap = new Map(productRows.map((product) => [product.id, product]));
+  const moneyCents = (value) => {
+    const amount = String(value ?? "").trim();
+    if (!/^\d+(?:\.\d{1,2})?$/.test(amount)) return NaN;
+    const [whole, fraction = ""] = amount.split(".");
+    const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+    return Number.isSafeInteger(cents) ? cents : NaN;
+  };
   const saleItems = items.map((item) => {
     const itemType = clean(item.itemType || "service");
+    if (!["service", "product"].includes(itemType)) return null;
     const isProduct = itemType === "product";
     const record = isProduct ? productMap.get(clean(item.itemId)) : serviceMap.get(clean(item.itemId || item.serviceId));
     if (!record) return null;
-    const instancePriceCents = Math.round(Number(item.instancePrice || 0) * 100);
+    const instancePriceCents = item.instancePrice == null || String(item.instancePrice).trim() === "" ? 0 : moneyCents(item.instancePrice);
+    if (!isProduct && String(item.instancePrice ?? "").trim() && !(instancePriceCents > 0)) return null;
     return {
       itemType: isProduct ? "product" : "service",
       serviceId: isProduct ? null : record.id,
@@ -37706,9 +37818,12 @@ async function createSale(request, env) {
       staffIds: isProduct ? [] : Array.isArray(item.staffIds) ? item.staffIds.map(clean).filter(Boolean) : [],
       staffAllocations: isProduct ? [] : normalizeStaffAllocations(item.staffAllocations)
     };
-  }).filter(Boolean);
-  if (!saleItems.length) {
+  });
+  if (saleItems.some((item) => !item)) {
     return jsonResponse({ error: "Select valid services or products for the sale." }, 400);
+  }
+  if (saleItems.some((item) => !Number.isSafeInteger(item.priceCents) || item.priceCents <= 0)) {
+    return jsonResponse({ error: "Every sale item needs a valid positive price." }, 400);
   }
   for (const item of saleItems) {
     if (item.itemType !== "service") continue;
@@ -37728,11 +37843,12 @@ async function createSale(request, env) {
     }
   }
   const totalCents = saleItems.reduce((total, item) => total + item.priceCents, 0);
-  const supportedPaymentMethods = ["Cash", "Card", "Bank Transfer", "Store Credit", "Gift Voucher", "Refund", "On Account"];
+  if (!Number.isSafeInteger(totalCents) || totalCents <= 0) return jsonResponse({ error: "Sale total is invalid." }, 400);
+  const supportedPaymentMethods = ["Cash", "Card", "Bank Transfer", "Store Credit", "Gift Voucher", "Refund", "On Account", "Loyalty Points"];
   let submittedPayments = Array.isArray(body.payments) ? body.payments : [];
   if (!submittedPayments.length && clean(body.paymentMethod)) submittedPayments = [{ method: clean(body.paymentMethod), amount: body.tenderAmount }];
   if (!submittedPayments.length || submittedPayments.length > 20) return jsonResponse({ error: "Add at least one valid payment." }, 400);
-  const normalizedPayments = submittedPayments.map((payment) => ({ method: clean(payment?.method), amountCents: Math.round(Number(payment?.amount || 0) * 100) }));
+  const normalizedPayments = submittedPayments.map((payment) => ({ method: clean(payment?.method), amountCents: moneyCents(payment?.amount) }));
   if (normalizedPayments.some((payment) => !supportedPaymentMethods.includes(payment.method) || !Number.isSafeInteger(payment.amountCents) || payment.amountCents <= 0)) {
     return jsonResponse({ error: "Every payment needs a valid method and positive amount." }, 400);
   }
@@ -37746,6 +37862,9 @@ async function createSale(request, env) {
   const changeCents = Math.max(0, tenderedCents - totalCents);
   if (!Number.isSafeInteger(tenderedCents) || tenderedCents < totalCents) return jsonResponse({ error: `Payment is short by ${formatDollars(totalCents - tenderedCents)}.` }, 400);
   if (changeCents > cashCents) return jsonResponse({ error: "Only cash can exceed the remaining balance and produce change." }, 400);
+  let loyalty;
+  try { loyalty = loyaltyForSale({ customerId, balance: saleCustomer?.loyalty_points || 0, totalCents, payments }); }
+  catch (error) { return jsonResponse({ error: error.message }, 400); }
   const paymentMethod = payments.map((payment) => `${payment.method} ${formatDollars(payment.amountCents)}`).join(" / ") + (changeCents ? ` / change ${formatDollars(changeCents)}` : "");
   const saleStatements = [
     env.DB.prepare(
@@ -37773,9 +37892,12 @@ async function createSale(request, env) {
       ).bind(crypto.randomUUID(), id, item.name, 1, item.priceCents, item.serviceId, JSON.stringify(item.staffIds), JSON.stringify(item.staffAllocations), item.serviceNote)
     )
   ];
+  const netCashCents = cashCents - changeCents;
+  saleStatements.push(env.DB.prepare("UPDATE daily_closings SET expected_cash_cents=expected_cash_cents+?,cash_variance_cents=cash_variance_cents-?,expected_card_cents=expected_card_cents+?,card_variance_cents=card_variance_cents-?,status='Manager Review',approved_by=NULL,approved_at=NULL WHERE branch_id=? AND closing_date=?").bind(netCashCents, netCashCents, cardCents, cardCents, branchId, sydneyDateKey(now)));
+  if (customerId) saleStatements.push(env.DB.prepare("INSERT INTO customer_loyalty_sales(sale_id,customer_id,earned,redeemed,updated_at) VALUES (?,?,?,?,?)").bind(id, customerId, loyalty.earned, loyalty.redeemed, now));
   if (booking) {
     saleStatements.push(env.DB.prepare(
-      "UPDATE bookings SET updated_at = ?, status = 'Completed', payment_status = 'Paid', sale_id = ? WHERE id = ? AND sale_id IS NULL"
+      "UPDATE bookings SET updated_at = ?, status = 'Completed', payment_status = 'Paid', sale_id = ? WHERE id = ?"
     ).bind(now, id, booking.id));
     saleStatements.push(env.DB.prepare("DELETE FROM held_sales WHERE booking_id=? AND branch_id=?").bind(booking.id, branchId));
   }
@@ -37796,10 +37918,14 @@ async function createSale(request, env) {
   try { await env.DB.batch(saleStatements); }
   catch (error) {
     if (clientSaleId && await env.DB.prepare("SELECT id FROM sales WHERE id=? AND branch_id=?").bind(clientSaleId, branchId).first()) return jsonResponse({ ok: true, saleId: clientSaleId, alreadySynced: true });
+    const pointsError = loyaltyError(error);
+    if (pointsError) return jsonResponse({ error: pointsError }, 409);
+    if (String(error).includes("BOOKING_ALREADY_PAID")) return jsonResponse({ error: "This booking has already been checked out." }, 409);
     throw error;
   }
+  const loyaltyBalance = customerId ? Number((await env.DB.prepare("SELECT loyalty_points FROM customers WHERE id=?").bind(customerId).first())?.loyalty_points || 0) : 0;
   const branch = (await all(env, "SELECT name, address, phone FROM branches WHERE id = ?", [branchId]))[0];
-  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, branchId, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod, payments } });
+  return jsonResponse({ ok: true, saleId: id, bookingId: booking?.id || null, totalCents, receipt: { saleId: id, bookingId: booking?.id || null, branchId, createdAt: now, branch, items: saleItems, totalCents, cashCents, cardCents, changeCents, paymentMethod, payments, loyalty: customerId ? { ...loyalty, balance: loyaltyBalance } : null } });
 }
 __name(createSale, "createSale");
 function parseIdList(value) {
@@ -37850,7 +37976,8 @@ async function applyStockMovement(env, branchId, productId, delta, movementType,
 }
 __name(applyStockMovement, "applyStockMovement");
 async function expectedClosingTotals(env, branchId, closingDate) {
-  const rows4 = await all(env, "SELECT total_cents, payment_method, cash_cents, card_cents, change_cents FROM sales WHERE branch_id = ? AND substr(created_at, 1, 10) = ? AND status = 'Paid'", [branchId, closingDate]);
+  const from = sydneyDayStartUtc(closingDate), to = sydneyDayStartUtc(nextCalendarDate(closingDate));
+  const rows4 = await all(env, "SELECT total_cents, payment_method, cash_cents, card_cents, change_cents FROM sales WHERE branch_id = ? AND created_at >= ? AND created_at < ? AND status = 'Paid'", [branchId, from, to]);
   return rows4.reduce((totals, sale) => {
     if (sale.cash_cents != null && sale.card_cents != null) {
       totals.cashCents += Number(sale.cash_cents) - Number(sale.change_cents || 0);
@@ -37955,17 +38082,15 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
   const isAdmin = mode === "admin";
   const dashboardTitle = accessUser.role === "owner" ? "SuperAdmin Dashboard (Owner)" : accessUser.role === "manager" ? "Manager Dashboard" : "Admin Dashboard";
   const customerExportGroups = [...new Set(CUSTOMER_EXPORT_FIELDS.map((field) => field.group))].map((group) => `<fieldset><legend>${escapeAccessHtml(group)}</legend><div class="customer-export-fields">${CUSTOMER_EXPORT_FIELDS.filter((field) => field.group === group).map((field) => `<label class="check"><input type="checkbox" name="customerExportField" value="${escapeAccessHtml(field.key)}"${field.selected ? " checked" : ""}>${escapeAccessHtml(field.label)}</label>`).join("")}</div></fieldset>`).join("");
-  const teamNavigation = `<div class="team-tabs" role="tablist" aria-label="Team management"><button type="button" data-team-tab="staff">Team members</button><button type="button" data-team-tab="roster">Roster</button>${["owner", "admin"].includes(accessUser.role) && can(accessUser, "access", true) ? '<button type="button" data-team-tab="access">Roles &amp; access</button>' : ""}</div>`;
+  const teamNavigation = `<div class="team-tabs" role="tablist" aria-label="Team management"><button type="button" data-team-tab="staff">Team members</button>${can(accessUser, "payroll") ? '<button type="button" data-team-tab="timesheet">Timesheet</button>' : ""}<button type="button" data-team-tab="roster">Roster</button>${["owner", "admin"].includes(accessUser.role) && can(accessUser, "access", true) ? '<button type="button" data-team-tab="access">Roles &amp; access</button>' : ""}</div>`;
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${isAdmin ? dashboardTitle : "Branch POS"} \xB7 Kuncha\u2019s</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>${styles()}</style>
+  ${fontLinks}
+  <style>${styles()}${typographyStyles}</style>
 </head>
 <body class="${isAdmin ? "admin-mode" : "staff-mode pos-locked"}">
   <aside class="sidebar" id="appSidebar" aria-label="Main navigation">
@@ -37976,7 +38101,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       ${isAdmin ? `
       <button ${can(accessUser, "dashboard") ? "" : "hidden"} class="nav ${initialTab === "overview" ? "active" : ""}" data-tab="overview">${appIcon("dashboard")}<span>Dashboard</span></button>
       <button ${can(accessUser, "customers") ? "" : "hidden"} class="nav" data-tab="customers">${appIcon("customers")}<span>Customers</span></button>
-      <button ${can(accessUser, "staff") ? "" : "hidden"} class="nav" data-tab="staff">${appIcon("staff")}<span>Team members</span></button>
+      <button ${can(accessUser, "staff") || can(accessUser, "payroll") ? "" : "hidden"} class="nav" data-tab="${can(accessUser, "staff") ? "staff" : "timesheet"}">${appIcon("staff")}<span>Team members</span></button>
       <button ${can(accessUser, "services") ? "" : "hidden"} class="nav" data-tab="services">${appIcon("services")}<span>Services</span></button>
       <button ${can(accessUser, "products") ? "" : "hidden"} class="nav" data-tab="products">${appIcon("products")}<span>Products</span></button>
       <button ${can(accessUser, "inventory") ? "" : "hidden"} class="nav" data-tab="inventory">${appIcon("inventory")}<span>Inventory</span></button>
@@ -38064,6 +38189,8 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
             <div class="customer-existing hidden">
               <label for="posCustomerSearch">Find customer</label>
               <div class="pos-customer-picker"><input id="posCustomerSearch" name="customerSearch" type="search" placeholder="Name, phone, email or customer number" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="posCustomerResults" aria-autocomplete="list"><div class="pos-customer-results hidden" id="posCustomerResults" role="listbox" aria-label="Matching customers"></div></div>
+              <button type="button" class="pos-customer-membership hidden" id="posCustomerMembership" aria-label="Add membership to selected customer"></button>
+              <p id="posCustomerMembershipMessage" role="status"></p>
               <p class="visually-hidden" id="posCustomerSearchStatus" role="status">Enter at least 2 characters to search.</p>
             </div>
             <div class="customer-new hidden">
@@ -38087,6 +38214,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           <div class="checkout-total"><span>Total amount</span><strong id="checkoutTotal">$0.00</strong></div>
           <div class="sale-action-row"><button class="secondary" id="holdSaleButton" type="button">Hold payment</button><button class="primary pay-button" id="showPaymentMethods" type="button">Click to pay</button></div>
           <div class="payment-panel hidden" id="paymentPanel">
+            ${loyaltyPaymentHtml()}
             <div class="payment-heading"><div><p class="eyebrow">Make a payment</p><h3>Select payment method</h3></div><label>Amount to pay $<input name="paymentAmount" type="number" min="0.01" step="0.01" placeholder="0.00"></label></div>
             <div class="payment-methods" role="group" aria-label="Payment method">
               <button type="button" data-payment-method="Cash">Cash</button>
@@ -38130,7 +38258,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 
     <section class="tab staff-only" id="staff-clock">
       <div class="pos-workspace hidden" id="staffWorkspace">
-        <div class="panel time-clock-panel"><div><p class="eyebrow">Staff time clock</p><h2>Clock in, take a break, or clock out</h2><p class="hint" id="timeClockStatus">Actual hours feed the payroll report.</p></div><label>Staff<select id="timeClockStaff" data-staff-select></select></label><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button">Clock in</button><button class="secondary" id="breakStartButton" type="button">Start break</button><button class="secondary" id="breakEndButton" type="button">End break</button><button class="secondary" id="clockOutButton" type="button">Clock out</button></div></div>
+        <div class="panel time-clock-panel"><div><p class="eyebrow">Staff time clock</p><h2>Clock in, take a break, or clock out</h2></div><div class="time-clock-pin"><label>Individual staff PIN<input id="timeClockPin" type="password" inputmode="text" autocomplete="off" pattern="[A-Za-z0-9]{4,12}" aria-describedby="timeClockStatus"></label><p class="hint time-clock-identification" id="timeClockStatus" role="status" aria-live="polite">Enter your PIN to identify yourself.</p></div><div class="time-clock-actions"><button class="primary" id="clockInButton" type="button" disabled>Clock in</button><button class="secondary" id="breakStartButton" type="button" disabled>Start break</button><button class="secondary" id="breakEndButton" type="button" disabled>End break</button><button class="secondary" id="clockOutButton" type="button" disabled>Clock out</button></div></div>
         <div class="panel"><div class="section-heading"><div><h2>Clocked-in staff</h2><p class="hint">Everyone currently working at this branch remains visible here.</p></div><span class="pill" id="clockedInCount">0 clocked in</span></div><div class="table-wrap"><table><thead><tr><th>Staff</th><th>Clocked in</th><th>Status</th><th>Break minutes</th></tr></thead><tbody id="clockedInStaffTable"></tbody></table></div></div>
       </div>
     </section>
@@ -38162,7 +38290,7 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
     <section class="tab" id="customers">
       <div class="section-heading page-heading"><div><p class="eyebrow">Customer records</p><h2>Customers</h2><p class="hint">Find a customer or add a new record.</p></div><div class="excel-actions"><button class="primary" id="addCustomerButton" type="button">+ Add customer</button>${accessUser.role === "owner" ? `<button class="secondary" id="exportCustomersButton" type="button">Export customers</button><button class="secondary" id="importCustomersButton" type="button">Import customers</button><input class="hidden" id="customerImportFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">` : ""}</div></div>
       ${accessUser.role === "owner" ? `<p class="hint">Import files must be named for their branch, for example <strong>ashfield.XLS</strong>. Existing rows are updated by branch and customer number.</p><p id="customerImportResult" role="status"></p>` : ""}
-      <div class="panel customer-directory"><h2>Find a customer</h2><p class="hint">The customer list stays closed. Search by name, email, phone number, or customer number.</p><label class="customer-directory-search"><span>Search customers</span><input id="customerDirectorySearch" type="search" placeholder="Name, email, phone or customer number" autocomplete="off"></label><p class="hint" id="customerSearchStatus" role="status">Enter at least 2 characters to search.</p><div class="table-wrap hidden" id="customerSearchResults"><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Customer no.</th><th>Branch</th></tr></thead><tbody id="customersTable"></tbody></table></div></div>
+      <div class="panel customer-directory"><h2>Find a customer</h2><p class="hint">The customer list stays closed. Search by name, email, phone number, or customer number.</p><label class="customer-directory-search"><span>Search customers</span><input id="customerDirectorySearch" type="search" placeholder="Name, email, phone or customer number" autocomplete="off"></label><p class="hint" id="customerSearchStatus" role="status">Enter at least 2 characters to search.</p><div class="table-wrap hidden" id="customerSearchResults"><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Customer no.</th><th>Branch</th><th class="customer-points">Points</th></tr></thead><tbody id="customersTable"></tbody></table></div></div>
       <dialog id="customerEditorDialog" class="branch-dialog customer-dialog"><form id="customerForm"><div class="branch-dialog-header"><div><p class="eyebrow">Customer record</p><h2>Add customer</h2></div><button class="secondary branch-icon-button" id="cancelAddCustomer" type="button" aria-label="Close add customer">\u2715</button></div><div class="branch-dialog-body"><div class="grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><p class="hint">Enter at least one contact method: email or phone.</p><label>Home branch<select name="branchId" required></select></label><label>Tags<input name="tags" placeholder="VIP, colour client"></label><label>Notes<textarea name="notes" rows="3"></textarea></label></div><div class="branch-dialog-footer"><button class="secondary" id="cancelAddCustomerFooter" type="button">Cancel</button><button class="primary" type="submit">Save customer</button></div></form></dialog>
       <dialog class="branch-dialog customer-profile-dialog" id="customerProfile"><div class="branch-dialog-header profile-heading"><div><p class="eyebrow">Customer record</p><h2 id="customerProfileTitle">Customer details</h2><p class="hint" id="customerProfileSummary"></p></div><button class="secondary branch-icon-button" id="closeCustomerProfile" type="button" aria-label="Close customer details">\u2715</button></div><div class="branch-dialog-body"><form id="customerProfileForm"><input name="customerId" type="hidden"><div class="grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><p class="hint">Enter at least one contact method: email or phone.</p><label>Home branch<select name="branchId" required></select></label><label>Tags<input name="tags"></label><label>Notes<textarea name="notes" rows="4" placeholder="Customer preferences, colour formulas, allergies, or other notes"></textarea></label><button class="primary" type="submit">Save customer details</button></form><div class="dialog-history"><h3>Service and sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Location</th><th>Service / item</th><th>Staff</th><th>Amount</th><th>Payment</th></tr></thead><tbody id="customerHistoryTable"></tbody></table></div></div></div></dialog>
     </section>
@@ -38175,6 +38303,16 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       </div>
       <dialog id="staffEditorDialog" class="branch-dialog staff-dialog"><form id="staffForm" hidden><div class="branch-dialog-header"><div><p class="eyebrow">Team member</p><h2>Add staff</h2></div><button class="secondary branch-icon-button" id="cancelStaffAdd" type="button" aria-label="Close add staff">\u2715</button></div><div class="branch-dialog-body"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role" placeholder="Senior stylist"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><p class="hint">Choose their usual weekly day or days off.</p><div class="day-checks" data-day-off-checks></div></fieldset></div><div class="branch-dialog-footer"><p class="form-message" id="staffFormMessage" role="status"></p><button class="secondary" id="cancelStaffAddFooter" type="button">Cancel</button><button class="primary" type="submit">Save staff</button></div></form></dialog>
       <dialog class="branch-dialog staff-profile-dialog" id="staffProfile"><div class="branch-dialog-header profile-heading"><div><p class="eyebrow">Team member</p><h2 id="staffProfileTitle">Staff details</h2><p class="hint" id="staffProfileSummary"></p></div><button class="secondary branch-icon-button" id="closeStaffProfile" type="button" aria-label="Close staff details">\u2715</button></div><div class="branch-dialog-body"><form id="staffProfileForm"><input name="staffId" type="hidden"><div class="grid"><label>Name<input name="name" required></label><label>Job title<input name="role"></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><div class="grid"><label>Status<select name="status"><option>Active</option><option>Inactive</option></select></label></div><details class="xero-fields"><summary>Xero payroll IDs</summary><div class="grid"><label>Employee ID<input name="xeroEmployeeId"></label><label>Earnings rate ID<input name="xeroEarningsRateId"></label></div></details><label data-access-role-control>Access role<select name="accessRole"><option value="none">No access</option><option value="staff">Staff</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>${staffLoginPanelHtml()}<fieldset class="day-off-fieldset"><legend>Regular day off</legend><div class="day-checks" data-day-off-checks></div></fieldset><p class="form-message" id="staffProfileMessage" role="status"></p><div class="form-actions"><button class="primary" type="submit">Save staff details</button><button class="danger" id="deleteStaffButton" type="button">Delete staff</button></div></form><div class="dialog-history"><h3>Credited sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Service</th><th>Sale value</th><th>Staff credit</th></tr></thead><tbody id="staffSalesTable"></tbody></table></div><div class="staff-hours-section"><div class="section-heading"><div><h3>Daily hours</h3><p class="hint">Last 14 days \xB7 Net hours exclude recorded breaks.</p></div><strong id="staffHoursSummary"></strong></div><div class="table-wrap"><table class="staff-hours-table"><thead><tr><th>Date</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Total hours</th></tr></thead><tbody id="staffHoursTable"></tbody></table></div></div></div></div></dialog>
+    </section>
+    <section class="tab admin-only" id="timesheet">
+      ${teamNavigation}
+      <div class="section-heading page-heading"><div><p class="eyebrow">Your team</p><h2>Timesheet</h2><p class="hint">Hours worked across your branches. Select dates or search for a staff member.</p></div></div>
+      <div class="panel timesheet-panel">
+        <div class="timesheet-filters"><label>From<input id="timesheetFrom" type="date"></label><label>To<input id="timesheetTo" type="date"></label><label class="timesheet-search">Search staff<input id="timesheetSearch" type="search" placeholder="Staff name"></label></div>
+        <p class="hint" id="timesheetSummary" role="status"></p>
+        <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Role</th><th>Shifts</th><th>Total hours</th></tr></thead><tbody id="timesheetTable"></tbody></table></div>
+      </div>
+      <dialog class="branch-dialog timesheet-dialog" id="timesheetDetails"><div class="branch-dialog-header"><div><p class="eyebrow">Timesheet detail</p><h2 id="timesheetDetailsTitle">Staff hours</h2><p class="hint" id="timesheetDetailsSummary"></p></div><button class="secondary branch-icon-button" id="closeTimesheetDetails" type="button" aria-label="Close timesheet details">\u2715</button></div><div class="branch-dialog-body"><div class="table-wrap"><table><thead><tr><th>Date</th><th>Branch</th><th>Clock in</th><th>Break</th><th>Clock out</th><th>Net hours</th><th>Status</th></tr></thead><tbody id="timesheetDetailsTable"></tbody></table></div></div></dialog>
     </section>
     <section class="tab admin-only" id="roster">
       ${teamNavigation}
@@ -38280,11 +38418,16 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 __name(renderApp, "renderApp");
 function clientScript() {
   return `
+${loyaltyClientScript()}
+${customerPhoneClientScript()}
 let state = { branches: [], staff: [], services: [], serviceCategoryOrder: [], products: [], productCategoryOrder: [], customers: [], bookings: [], sales: [], saleItems: [], branchHours: [], closedDates: [], discounts: [], inventoryStock: [], stockMovements: [], dailyClosings: [], cashDrawerOpens: [], staffRoster: [], staffRegularDaysOff: [], timeEntries: [] };
+let timeClockIdentity = null;
+let timeClockIdentifyTimer = null, timeClockLookupVersion = 0;
+let timesheetData = null;
+let timesheetRequestId = 0;
 let reportData = null;
 let reportRequestId = 0;
 let lastReceipt = null;
-try { lastReceipt = JSON.parse(sessionStorage.getItem("kunchasLastReceipt") || "null"); } catch {}
 let salePayments = [];
 let heldSales = [];
 let heldSalesSyncing = false;
@@ -38434,6 +38577,7 @@ async function updateOfflineStatus() {
   } catch { box.hidden = false; document.querySelector("#offlinePosStatusText").textContent = "Offline storage is unavailable. Keep this page open and reconnect before completing a sale."; button.hidden = true; }
 }
 async function queueOfflineSale(payload) {
+  if (payload.payments?.some(payment => payment.method === "Loyalty Points")) throw Error("Points payments must be completed online. Reconnect and retry this sale.");
   const queue = await offlineQueue();
   if (!queue.some(item => item.id === payload.clientSaleId)) queue.push({ id:payload.clientSaleId, branchId:payload.branchId, payload, createdAt:new Date().toISOString(), status:"pending" });
   await offlineSave("pending-sales", queue);
@@ -38504,6 +38648,14 @@ document.querySelectorAll(".nav[data-tab]").forEach((button) => button.addEventL
   showTab(button.dataset.tab);
 }));
 document.querySelectorAll("[data-team-tab]").forEach((button) => button.addEventListener("click", () => showTab(button.dataset.teamTab)));
+document.querySelector("#timesheetFrom").addEventListener("change", loadTimesheet);
+document.querySelector("#timesheetTo").addEventListener("change", loadTimesheet);
+document.querySelector("#timesheetSearch").addEventListener("input", renderTimesheet);
+document.querySelector("#timesheetTable").addEventListener("click", event => {
+  const button = event.target.closest("[data-timesheet-staff]");
+  if (button) openTimesheetDetails(button.dataset.timesheetStaff);
+});
+document.querySelector("#closeTimesheetDetails").addEventListener("click", () => document.querySelector("#timesheetDetails").close());
 document.querySelector("#sidebarToggle")?.addEventListener("click", toggleSidebar);
 document.querySelector("#mobileMenuButton")?.addEventListener("click", () => setMobileNavOpen(true));
 document.querySelector("#mobileMenuClose")?.addEventListener("click", () => setMobileNavOpen(false, true));
@@ -38526,7 +38678,8 @@ document.querySelector("#clockInButton").addEventListener("click", () => submitT
 document.querySelector("#breakStartButton").addEventListener("click", () => submitTimeClock("break-start"));
 document.querySelector("#breakEndButton").addEventListener("click", () => submitTimeClock("break-end"));
 document.querySelector("#clockOutButton").addEventListener("click", () => submitTimeClock("clock-out"));
-document.querySelector("#timeClockStaff").addEventListener("change", renderTimeClockStatus);
+document.querySelector("#timeClockPin").addEventListener("input", scheduleTimeClockIdentification);
+document.querySelector("#timeClockPin").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); identifyTimeClockStaff(); } });
 document.querySelector("#addSaleItem").addEventListener("click", () => addSaleItem());
 document.querySelector("#bookingCheckoutSearch").addEventListener("input", () => { clearTimeout(checkoutBookingTimer); checkoutBookingRequest++; closeBookingCheckoutResults(); if (document.querySelector('#saleForm input[name="bookingId"]').value) selectBookingForCheckout(""); checkoutBookingTimer = setTimeout(renderBookingCheckoutOptions, 250); });
 document.querySelector("#bookingCheckoutSearch").addEventListener("focus", () => { if (checkoutBookingResults.length) renderBookingCheckoutResults(checkoutBookingResults); else renderBookingCheckoutOptions(); });
@@ -38570,6 +38723,7 @@ document.querySelector("#bookingNextDay").addEventListener("click", () => moveBo
 document.querySelector("#saleForm").addEventListener("submit", submitSale);
 document.querySelector('select[name="customerMode"]').addEventListener("change", updateCustomerMode);
 document.querySelector('#saleForm input[name="customerSearch"]').addEventListener("input", schedulePosCustomerSearch);
+document.querySelector("#posCustomerMembership").addEventListener("click", addMembershipToSelectedCustomer);
 document.querySelector('#saleForm input[name="customerSearch"]').addEventListener("focus", () => { if (posCustomerSearchResults.length && document.querySelector('#saleForm input[name="customerSearch"]').value.trim().length >= 2) renderPosCustomerResults(posCustomerSearchResults); });
 document.querySelector(".pos-customer-picker").addEventListener("keydown", (event) => {
   const input = document.querySelector('#saleForm input[name="customerSearch"]');
@@ -38707,6 +38861,7 @@ setReceiveProductsDate();
 loadPublicBranches().then(restoreOfflinePos);
 setInitialRosterWeek();
 setInitialReportRange();
+setInitialTimesheetRange();
 applyAccessUi();
 if (appMode === "admin") loadData();
 if (appMode === "staff") {
@@ -38762,13 +38917,14 @@ async function loadPublicBranches() {
 }
 function unlockPosWorkspace() {
   const branch = state.branches[0];
+  loadLastBranchReceipt();
   document.querySelector("#appTitle").textContent = posBranchTitle(branch);
   document.querySelector('#saleForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#bookingForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
   document.querySelector('#receiveProductsForm input[name="branchId"]').value = selectedPosBranchId;
   setReceiveProductsDate();
-  document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
+  document.querySelector('#closingForm input[name="closingDate"]').value ||= diaryClock().date;
   renderClosingPreview();
   document.querySelector("#posLogin").classList.add("hidden");
   document.querySelector("#posWorkspace").classList.remove("hidden");
@@ -38841,6 +38997,8 @@ async function openPos() {
 async function switchBranch() {
   try {
   await api("/api/pos-logout",{method:"POST"});
+  lastReceipt = null;
+  syncLastReceiptButton();
   try { sessionStorage.removeItem(OFFLINE_BRANCH_KEY); } catch {}
   document.body.classList.add("pos-locked");
   location.assign("/pos");
@@ -38860,7 +39018,7 @@ async function refreshPosData() {
     document.querySelector('#closingForm input[name="branchId"]').value = selectedPosBranchId;
     document.querySelector('#receiveProductsForm input[name="branchId"]').value = selectedPosBranchId;
     setReceiveProductsDate();
-    document.querySelector('#closingForm input[name="closingDate"]').value ||= new Date().toISOString().slice(0, 10);
+    document.querySelector('#closingForm input[name="closingDate"]').value ||= diaryClock().date;
     renderClosingPreview();
     message.textContent = "";
     if (appMode === "staff") await updateOfflineStatus();
@@ -38875,12 +39033,50 @@ async function refreshPosData() {
     message.textContent = error.message; return false;
   }
 }
+function clearTimeClockIdentity() {
+  timeClockIdentity = null;
+  renderTimeClockStatus();
+}
+function scheduleTimeClockIdentification() {
+  clearTimeout(timeClockIdentifyTimer);
+  timeClockLookupVersion++;
+  clearTimeClockIdentity();
+  const pin = document.querySelector("#timeClockPin").value.trim();
+  if (/^[A-Za-z0-9]{4,12}$/.test(pin) && selectedPosBranchId) {
+    timeClockIdentifyTimer = setTimeout(identifyTimeClockStaff, 800);
+  }
+}
 function renderTimeClockStatus() {
-  const select = document.querySelector("#timeClockStaff");
   const status = document.querySelector("#timeClockStatus");
-  if (!select || !status) return;
-  const open = (state.timeEntries || []).find((entry) => entry.staff_id === select.value && !entry.clock_out);
-  status.textContent = open?.break_started_at ? "On break since " + new Date(open.break_started_at).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : open ? "Clocked in since " + new Date(open.clock_in).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : "Actual hours feed the payroll report.";
+  if (!status) return;
+  const person = timeClockIdentity?.branchId === selectedPosBranchId ? timeClockIdentity : null;
+  const open = person && (state.timeEntries || []).find(entry => entry.staff_id === person.staffId && !entry.clock_out);
+  const clockedIn = Boolean(open || person?.clockIn);
+  const onBreak = Boolean(open?.break_started_at || (!open && person?.breakStartedAt));
+  const allowed = userCan("time_clock", true) && Boolean(person) && !person.otherBranch;
+  document.querySelector("#clockInButton").disabled = !allowed || clockedIn;
+  document.querySelector("#breakStartButton").disabled = !allowed || !clockedIn || onBreak;
+  document.querySelector("#breakEndButton").disabled = !allowed || !onBreak;
+  document.querySelector("#clockOutButton").disabled = !allowed || !clockedIn;
+  if (!person) { status.textContent = "Enter your PIN to identify yourself."; return; }
+  const since = onBreak ? (open?.break_started_at || person.breakStartedAt) : (open?.clock_in || person.clockIn);
+  const stateLabel = person.otherBranch ? "Clocked in at another branch" : onBreak ? "On break" : clockedIn ? "Clocked in" : "Ready to clock in";
+  status.textContent = person.name + " · " + stateLabel + (since ? " since " + new Date(since).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : "");
+}
+async function identifyTimeClockStaff() {
+  clearTimeout(timeClockIdentifyTimer);
+  const lookupVersion = timeClockLookupVersion;
+  const pin = document.querySelector("#timeClockPin").value.trim();
+  const branchId = selectedPosBranchId;
+  if (!/^[A-Za-z0-9]{4,12}$/.test(pin)) { document.querySelector("#timeClockStatus").textContent = "Enter your individual staff PIN."; return; }
+  document.querySelector("#timeClockStatus").textContent = "Finding staff member...";
+  try {
+    const person = await api("/api/time-clock/identify", { method:"POST", body:JSON.stringify({ actorPin:pin }) });
+    if (lookupVersion !== timeClockLookupVersion || document.querySelector("#timeClockPin").value.trim() !== pin || selectedPosBranchId !== branchId) return;
+    timeClockIdentity = { ...person, branchId };
+    renderTimeClockStatus();
+    message.textContent = person.name + " identified.";
+  } catch (error) { if (lookupVersion === timeClockLookupVersion) { clearTimeClockIdentity(); document.querySelector("#timeClockStatus").textContent = error.message; } }
 }
 function renderClockedInStaff() {
   const table = document.querySelector("#clockedInStaffTable");
@@ -38894,16 +39090,15 @@ function renderClockedInStaff() {
   }).join("") : '<tr><td colspan="4" class="empty-cell">No staff are clocked in at this branch.</td></tr>';
 }
 async function submitTimeClock(action) {
-  const staffId = document.querySelector("#timeClockStaff").value;
-  if (!staffId) { message.textContent = "Choose a staff member first."; return; }
+  const person = timeClockIdentity;
+  if (!person || person.branchId !== selectedPosBranchId) { document.querySelector("#timeClockStatus").textContent = "Enter your PIN to identify yourself first."; return; }
   try {
-    message.textContent = action === "clock-in" ? "Clocking in..." : "Clocking out...";
-    const actor=await askActor(selectedPosBranchId,false,"Confirm time clock with your PIN",false,false,false,true);if(!actor)return;
-    const result = await api("/api/time-clock", { method:"POST", body:JSON.stringify({ ...actor, staffId, action }) });
+    message.textContent = "Saving time clock action...";
+    const result = await api("/api/time-clock", { method:"POST", body:JSON.stringify({ actorPin:document.querySelector("#timeClockPin").value.trim(), staffId:person.staffId, action }) });
     await refreshPosData();
-    document.querySelector("#timeClockStaff").value = staffId;
-    renderTimeClockStatus();
-    message.textContent = result.status + ".";
+    document.querySelector("#timeClockPin").value = "";
+    clearTimeClockIdentity();
+    message.textContent = person.name + " · " + result.status + ".";
   } catch (error) { message.textContent = error.message; }
 }
 function normalizeState(data = {}) {
@@ -38919,7 +39114,7 @@ function renderAll() {
   const productForm = document.querySelector("#productForm");
   refreshProductEditor(productForm.elements.productId.value ? productForm.elements.category.value : "", productForm.elements.productId.value ? productForm.elements.subCategory.value : "");
   if (currentUser.managerBranchId) document.querySelector("#appTitle").textContent = (state.branches[0]?.name || "Branch") + " \xB7 Manager Dashboard";
-  renderMetrics(); renderBranches(); renderStaff(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderReceivedProducts(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); renderClockedInStaff(); applyAccessUi();
+  renderMetrics(); renderBranches(); renderStaff(); renderTimesheet(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderReceivedProducts(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); renderClockedInStaff(); applyAccessUi();
 }
 function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
@@ -39194,6 +39389,85 @@ function staffEntryHours(entry) {
   return Math.max(0, (end.getTime() - new Date(entry.clock_in).getTime()) / 3600000 - breakMinutes / 60);
 }
 function staffClockTime(value) { return value ? new Date(value).toLocaleTimeString("en-AU", { hour:"numeric", minute:"2-digit" }) : "\u2014"; }
+function timesheetDateKey(value) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-AU", { timeZone:"Australia/Sydney", year:"numeric", month:"2-digit", day:"2-digit" }).formatToParts(value).map(part => [part.type, part.value]));
+  return parts.year + "-" + parts.month + "-" + parts.day;
+}
+function setInitialTimesheetRange() {
+  const today = timesheetDateKey(new Date());
+  const from = new Date(today + "T00:00:00Z");
+  from.setUTCDate(from.getUTCDate() - 13);
+  document.querySelector("#timesheetFrom").value = from.toISOString().slice(0, 10);
+  document.querySelector("#timesheetTo").value = today;
+}
+async function loadTimesheet() {
+  if (!userCan("payroll")) return;
+  const from = document.querySelector("#timesheetFrom").value;
+  const to = document.querySelector("#timesheetTo").value;
+  const summary = document.querySelector("#timesheetSummary");
+  const requestId = ++timesheetRequestId;
+  if (!from || !to || from > to) {
+    timesheetData = null;
+    summary.textContent = "Choose a From date on or before the To date.";
+    document.querySelector("#timesheetTable").innerHTML = "";
+    return;
+  }
+  summary.textContent = "Loading timesheet...";
+  timesheetData = null;
+  document.querySelector("#timesheetTable").innerHTML = "";
+  try {
+    const result = await api("/api/timesheet?from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to));
+    if (requestId !== timesheetRequestId) return;
+    timesheetData = result;
+    renderTimesheet();
+  } catch (error) {
+    if (requestId !== timesheetRequestId) return;
+    timesheetData = null;
+    summary.textContent = error.message;
+    document.querySelector("#timesheetTable").innerHTML = "";
+  }
+}
+function renderTimesheet() {
+  const table = document.querySelector("#timesheetTable");
+  const summary = document.querySelector("#timesheetSummary");
+  if (!timesheetData) { if (!summary.textContent) summary.textContent = "Select Timesheet to load staff hours."; return; }
+  const search = document.querySelector("#timesheetSearch").value.trim().toLowerCase();
+  const people = new Map(state.staff.map(person => [person.id, person]));
+  for (const entry of timesheetData.entries) if (!people.has(entry.staff_id)) people.set(entry.staff_id, { id:entry.staff_id, name:entry.staff_name || "Former staff", role:"" });
+  const rows = [...people.values()].filter(person => person.name.toLowerCase().includes(search)).sort((a, b) => a.name.localeCompare(b.name));
+  const entriesByStaff = new Map();
+  for (const entry of timesheetData.entries) {
+    if (!entriesByStaff.has(entry.staff_id)) entriesByStaff.set(entry.staff_id, []);
+    entriesByStaff.get(entry.staff_id).push(entry);
+  }
+  const totalHours = rows.reduce((sum, person) => sum + (entriesByStaff.get(person.id) || []).reduce((hours, entry) => hours + staffEntryHours(entry), 0), 0);
+  summary.textContent = rows.length + " staff · " + totalHours.toFixed(2) + " total hours · " + timesheetData.from + " to " + timesheetData.to;
+  table.innerHTML = rows.length ? rows.map(person => {
+    const entries = entriesByStaff.get(person.id) || [];
+    const hours = entries.reduce((sum, entry) => sum + staffEntryHours(entry), 0);
+    return '<tr><td><button class="timesheet-staff-link" type="button" data-timesheet-staff="' + esc(person.id) + '">' + esc(person.name) + '</button></td><td>' + esc(person.role || "\u2014") + '</td><td>' + entries.length + '</td><td><strong>' + hours.toFixed(2) + '</strong></td></tr>';
+  }).join("") : '<tr><td colspan="4" class="empty-cell">No staff match this search.</td></tr>';
+}
+function openTimesheetDetails(staffId) {
+  if (!timesheetData) return;
+  const entries = timesheetData.entries.filter(entry => entry.staff_id === staffId);
+  const person = state.staff.find(item => item.id === staffId);
+  const name = person?.name || entries[0]?.staff_name || "Staff";
+  const hours = entries.reduce((sum, entry) => sum + staffEntryHours(entry), 0);
+  document.querySelector("#timesheetDetailsTitle").textContent = name;
+  document.querySelector("#timesheetDetailsSummary").textContent = timesheetData.from + " to " + timesheetData.to + " · " + entries.length + " shifts · " + hours.toFixed(2) + " hours";
+  document.querySelector("#timesheetDetailsTable").innerHTML = entries.length ? entries.map(entry => {
+    const breakMinutes = Number(entry.break_minutes || 0) + (entry.break_started_at ? Math.max(0, Math.round((Date.now() - new Date(entry.break_started_at).getTime()) / 60000)) : 0);
+    const date = new Date(entry.clock_in).toLocaleDateString("en-AU", { timeZone:"Australia/Sydney", day:"numeric", month:"short", year:"numeric" });
+    const time = value => value ? new Date(value).toLocaleTimeString("en-AU", { timeZone:"Australia/Sydney", hour:"numeric", minute:"2-digit" }) : "\u2014";
+    const clockOutDate = entry.clock_out ? new Date(entry.clock_out).toLocaleDateString("en-AU", { timeZone:"Australia/Sydney", day:"numeric", month:"short", year:"numeric" }) : "";
+    const clockOut = clockOutDate && clockOutDate !== date ? clockOutDate + " " + time(entry.clock_out) : time(entry.clock_out);
+    const longShift = entry.clock_out && new Date(entry.clock_out).getTime() - new Date(entry.clock_in).getTime() > 24 * 60 * 60 * 1000;
+    const status = longShift ? "Over 24 hours — review" : entry.clock_out ? "Complete" : entry.break_started_at ? "On break" : "Clocked in";
+    return '<tr><td>' + esc(date) + '</td><td>' + esc(entry.branch_name || branchName(entry.branch_id)) + '</td><td>' + esc(time(entry.clock_in)) + '</td><td>' + breakMinutes + ' min</td><td>' + esc(clockOut) + '</td><td><strong>' + staffEntryHours(entry).toFixed(2) + '</strong></td><td>' + esc(status) + '</td></tr>';
+  }).join("") : '<tr><td colspan="7" class="empty-cell">No clock entries in this date range.</td></tr>';
+  document.querySelector("#timesheetDetails").showModal();
+}
 function renderStaffHours(staff) {
   const today = new Date();
   const entries = (state.timeEntries || []).filter((entry) => entry.staff_id === staff.id);
@@ -40140,7 +40414,7 @@ function renderCustomers() {
   const resultBox = document.querySelector("#customerSearchResults");
   if (!resultBox) return;
   resultBox.classList.toggle("hidden", customerSearchResults.length === 0);
-  document.querySelector("#customersTable").innerHTML = customerSearchResults.map((c) => '<tr class="customer-row" data-customer-id="' + esc(c.id) + '" tabindex="0"><td><strong>' + esc(c.first_name + " " + c.last_name) + '</strong></td><td>' + esc(c.email || "\u2014") + '</td><td>' + esc(c.phone || "\u2014") + '</td><td>' + esc(c.external_ref || "\u2014") + '</td><td>' + esc(c.branch_name || branchName(c.branch_id)) + '</td></tr>').join("");
+  document.querySelector("#customersTable").innerHTML = customerSearchResults.map((c) => '<tr class="customer-row" data-customer-id="' + esc(c.id) + '" tabindex="0"><td><strong>' + esc(c.first_name + " " + c.last_name) + '</strong></td><td>' + esc(c.email || "\u2014") + '</td><td>' + esc(c.phone || "\u2014") + '</td><td>' + esc(c.external_ref || "\u2014") + '</td><td>' + esc(c.branch_name || branchName(c.branch_id)) + '</td><td class="customer-points">' + Number(c.loyalty_points || 0).toLocaleString('en-AU') + '</td></tr>').join("");
   document.querySelectorAll(".customer-row").forEach((row) => {
     row.addEventListener("click", () => openCustomerProfile(row.dataset.customerId));
     row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openCustomerProfile(row.dataset.customerId); } });
@@ -40182,7 +40456,7 @@ function openCustomerProfile(customerId) {
 }
 function renderCustomerProfileHistory(sales, history) {
   const spent = sales.reduce((sum, sale) => sum + Number(sale.total_cents || 0), 0);
-  document.querySelector("#customerProfileSummary").textContent = sales.length + " sale" + (sales.length === 1 ? "" : "s") + " · " + money(spent) + " total spent";
+  document.querySelector("#customerProfileSummary").textContent = sales.length + " sale" + (sales.length === 1 ? "" : "s") + " · " + money(spent) + " total spent" + " · " + Number(state.customers.find(c => c.id === document.querySelector("#customerProfileForm").elements.customerId.value)?.loyalty_points || 0).toLocaleString("en-AU") + " loyalty points";
   const saleById = Object.fromEntries(sales.map((sale) => [sale.id, sale]));
   const notedSales = new Set();
   document.querySelector("#customerHistoryTable").innerHTML = history.length ? history.map((item) => {
@@ -40202,17 +40476,23 @@ function formatCustomerDate(value) { return value ? new Date(value).toLocaleStri
 function closeCustomerProfile() { const dialog = document.querySelector("#customerProfile"); if (dialog.open) dialog.close(); }
 function showTab(tabId) {
   if (!canViewTab(tabId)) return;
+  if (tabId !== "staff-clock" && timeClockIdentity) {
+    document.querySelector("#timeClockPin").value = "";
+    clearTimeClockIdentity();
+    if (message.textContent.endsWith(" identified.")) message.textContent = "";
+  }
   document.querySelectorAll(".nav,.tab").forEach((item) => item.classList.remove("active"));
-  document.querySelector('.nav[data-tab="' + cssEsc(tabId) + '"]')?.classList.add("active");
+  document.querySelector('.nav[data-tab="' + cssEsc(["staff","timesheet","roster","access"].includes(tabId) ? (userCan("staff") ? "staff" : "timesheet") : tabId) + '"]')?.classList.add("active");
   document.querySelector("#" + tabId)?.classList.add("active");
   document.querySelectorAll("[data-team-tab]").forEach((button) => button.classList.toggle("active", button.dataset.teamTab === tabId));
   if (tabId === 'recent-sales') loadRecentSales();
+  if (tabId === 'timesheet') loadTimesheet();
   document.querySelector(".branch-switcher")?.classList.toggle("hidden", tabId !== "overview");
-  const titles = { overview:"Dashboard", customers:"Customers", staff:"Teams \xB7 Members", roster:"Teams \xB7 Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Teams \xB7 Roles & access", pos:"POS", "receive-products":"Receive products", "staff-clock":"Staff", bookings:"Bookings", closing:"Daily closing", "recent-sales":"Recent sales" };
+  const titles = { overview:"Dashboard", customers:"Customers", staff:"Teams \xB7 Members", timesheet:"Teams \xB7 Timesheet", roster:"Teams \xB7 Roster", services:"Services", products:"Products", inventory:"Inventory", reports:"Reports", branches:"Branches", access:"Teams \xB7 Roles & access", pos:"POS", "receive-products":"Receive products", "staff-clock":"Staff", bookings:"Bookings", closing:"Daily closing", "recent-sales":"Recent sales" };
   if (document.querySelector("#appTitle")) document.querySelector("#appTitle").textContent = appMode === "staff" && selectedPosBranchId ? posBranchTitle(state.branch || state.branches[0]) : (currentUser.managerBranchId ? (state.branches[0]?.name || "Branch") + " \xB7 " : "") + (titles[tabId] || "Kunchas");
 }
 function posBranchTitle(branch) {
-  const name = String(branch?.name || "").trim().replace(/^kunchass+/i, "");
+  const name = String(branch?.name || "").trim().replace(/^kunchas[ \t]+/i, "");
   return name ? "Kunchas " + name : "Kunchas POS";
 }
 function canCheckoutBooking(booking) {
@@ -40289,7 +40569,9 @@ function selectBookingForCheckout(bookingId) {
   form.elements.customerSearch.value = customer ? customerLabel(customer) : "";
   updateCustomerMode();
   const customerCard = document.querySelector("#bookingCustomerCard");
-  customerCard.innerHTML = '<span>Booking customer</span><strong>' + esc(customer ? customer.first_name + " " + customer.last_name : booking.customer_name || "Customer") + '</strong><em>' + esc(customer?.phone || "No phone") + ' \xB7 ' + esc(customer?.email || "No email") + '</em>';
+  const canAddMembership = customer && customerMembershipStatus(customer) === "Membership not set";
+  customerCard.innerHTML = '<span>Booking customer</span><strong>' + esc(customer ? customer.first_name + " " + customer.last_name : booking.customer_name || "Customer") + '</strong><em>' + esc(customer?.phone || "No phone") + ' \xB7 ' + esc(customer?.email || "No email") + '</em>' + (canAddMembership ? '<button type="button" class="pos-customer-membership unknown" id="bookingCustomerMembership">Membership not set · Add membership</button>' : '<small class="pos-customer-membership '+customerMembershipKind(customer)+'">'+esc(customerMembershipDisplay(customer))+'</small>') + '<p id="bookingCustomerMembershipMessage" role="status"></p>';
+  customerCard.querySelector("#bookingCustomerMembership")?.addEventListener("click", addMembershipToSelectedCustomer);
   customerCard.classList.remove("hidden");
   document.querySelector("#saleItems").innerHTML = "";
   parseClientIdList(booking.service_ids).forEach((serviceId) => {
@@ -40331,13 +40613,15 @@ function renderBookings() {
   const dayRows=state.bookings.filter(b=>b.booking_date===dateInput.value&&(!selectedPosBranchId||b.branch_id===selectedPosBranchId));
   const rows=dayRows.filter(b=>!['Cancelled','No show'].includes(b.status)).sort((a,b)=>String(a.booking_time).localeCompare(String(b.booking_time))||String(a.id).localeCompare(String(b.id)));
   const inactive=dayRows.filter(b=>['Cancelled','No show'].includes(b.status));
-  const markers=Array.from({length:37},(_,i)=>{const minutes=600+i*15;return '<time class="'+(minutes%60===0?'hour':'quarter')+'" style="top:'+(i*18)+'px">'+formatBookingTime(minutes)+'</time>';}).join('');
+  const markers=Array.from({length:36},(_,i)=>{const minutes=600+i*15;return '<time class="'+(minutes%60===0?'hour':'quarter')+'" style="top:'+(i*18+9)+'px">'+formatBookingTime(minutes)+'</time>';}).join('');
   const laneEnds=[0,0,0,0],laneRows=[[],[],[],[]],overflow=[];
   rows.forEach(b=>{const [h,m]=b.booking_time.split(':').map(Number),start=h*60+m,end=start+Math.max(15,Number(b.duration_minutes||15));const lane=laneEnds.findIndex(last=>last<=start);if(lane<0){overflow.push(b);return;}laneEnds[lane]=end;laneRows[lane].push(b);});
   const lanes=laneRows.map((items,index)=>'<div class="booking-staff-lane" aria-label="Booking '+(index+1)+'">'+items.map(b=>{
     const [h,m]=b.booking_time.split(':').map(Number),start=h*60+m,duration=Math.max(15,Number(b.duration_minutes||15)),source=b.source==='Online'?'Online':'Manual';
     const title=b.customer_name+' \xB7 '+b.service_names+' \xB7 '+formatBookingTime(start)+'\u2013'+formatBookingTime(start+duration)+' \xB7 '+b.status;
-    return '<button class="booking-card lane-'+index+' '+source.toLowerCase()+'" style="top:'+Math.max(0,(start-600)*1.2)+'px;height:'+Math.max(18,Math.min(duration,1140-start)*1.2)+'px" type="button" title="'+esc(title)+'" aria-label="'+esc(title)+'" data-booking-id="'+esc(b.id)+'"><strong>'+esc(b.customer_name)+'</strong><span class="booking-time">'+formatBookingTime(start)+'\u2013'+formatBookingTime(start+duration)+'</span><span>'+esc(b.service_names)+'</span><span class="booking-meta"><b class="source-badge '+source.toLowerCase()+'">'+source+'</b>'+esc(b.status)+'</span></button>';
+    const compact=duration<=30;
+    const content=compact?'<strong>'+esc(formatBookingTime(start)+' · '+b.customer_name)+'</strong>':'<strong>'+esc(b.customer_name)+'</strong><span class="booking-time">'+formatBookingTime(start)+'\u2013'+formatBookingTime(start+duration)+'</span><span>'+esc(b.service_names)+'</span><span class="booking-meta"><b class="source-badge '+source.toLowerCase()+'">'+source+'</b>'+esc(b.status)+'</span>';
+    return '<button class="booking-card lane-'+index+' '+source.toLowerCase()+(compact?' compact':'')+'" style="top:'+Math.max(0,(start-600)*1.2)+'px;height:'+Math.max(18,Math.min(duration,1140-start)*1.2)+'px" type="button" title="'+esc(title)+'" aria-label="'+esc(title)+'" data-booking-id="'+esc(b.id)+'">'+content+'</button>';
   }).join('')+'</div>').join('');
   const history=inactive.length?'<div class="booking-status-history"><h3>Cancelled / no-show bookings</h3>'+inactive.map(b=>'<button type="button" class="secondary booking-history-row" data-booking-id="'+esc(b.id)+'"><span>'+esc(b.booking_time)+' \xB7 '+esc(b.customer_name)+' \xB7 '+esc(b.service_names)+'</span><strong class="'+(b.status==='No show'?'booking-no-show':'booking-cancelled')+'">'+esc(b.status)+'</strong></button>').join('')+'</div>':'';
   const warning=overflow.length?'<div class="booking-overflow" role="alert">Existing over-capacity bookings need rescheduling: '+overflow.map(b=>'<button class="secondary" data-booking-id="'+esc(b.id)+'">'+esc(b.booking_time+' '+b.customer_name)+'</button>').join('')+'</div>':'';
@@ -40365,15 +40649,14 @@ function openBookingDetail(bookingId) {
   detail.querySelector('.no-show-booking-detail')?.addEventListener('click',()=>changeBookingStatus('No show'));
   detail.querySelector(".checkout-booking-detail")?.addEventListener("click", () => { loadCheckoutBooking(booking.id); showTab("pos"); });
 }
-function localSalesDate() { const now=new Date();return now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0'); }
+function localSalesDate() { return diaryClock().date; }
 async function loadRecentSales() {
   const dateInput=document.querySelector('#recentSalesDate');dateInput.value ||= localSalesDate();
   const requestId=++recentSalesRequest;
   recentSales=[];recentSalesLoading=true;renderSales();
   if(!selectedPosBranchId){recentSalesLoading=false;renderSales();return;}
   try {
-    const from=new Date(dateInput.value+'T00:00:00');const to=new Date(from);to.setDate(to.getDate()+1);
-    const result=await api('/api/recent-sales?from='+encodeURIComponent(from.toISOString())+'&to='+encodeURIComponent(to.toISOString()),{headers:{'x-branch-id':selectedPosBranchId}});
+    const result=await api('/api/recent-sales?date='+encodeURIComponent(dateInput.value),{headers:{'x-branch-id':selectedPosBranchId}});
     if(requestId!==recentSalesRequest)return;
     recentSales=result.sales;
     const ids=new Set(recentSales.map(sale=>sale.id));state.sales=state.sales.filter(sale=>!ids.has(sale.id)).concat(recentSales);
@@ -40900,7 +41183,7 @@ async function resumeHeldSale(id) {
   form.elements.newPhone.value = draft.newCustomer?.phone || "";
   form.elements.newEmail.value = draft.newCustomer?.email || "";
   if (draft.bookingId) { selectBookingForCheckout(draft.bookingId); form.elements.bookingId.value = draft.bookingId; }
-  else { updateCustomerMode(); form.elements.customerId.value = draft.customerId || ""; const customer = state.customers.find((item) => item.id === draft.customerId); form.elements.customerSearch.value = customer ? customerLabel(customer) : ""; }
+  else { updateCustomerMode(); form.elements.customerId.value = draft.customerId || ""; const customer = state.customers.find((item) => item.id === draft.customerId); form.elements.customerSearch.value = customer ? customerLabel(customer) : ""; renderSelectedCustomerMembership(); }
   document.querySelector("#saleItems").innerHTML = "";
   for (const saved of draft.items || []) {
     const catalogItem = saleCatalog().find((item) => item.id === saved.itemId && item.type === saved.itemType);
@@ -40977,6 +41260,7 @@ async function submitSale(event) {
     setSaleMessage("Only cash can exceed the sale total and produce change.", true);
     return;
   }
+  if (!navigator.onLine && salePayments.some(payment => payment.method === "Loyalty Points")) { setSaleMessage("Reconnect to complete a points payment.", true); return; }
   let actor;try{actor=await askActor(data.get("branchId"),false,"Complete payment \u2014 enter staff PIN",false,false,true);}catch(error){setSaleMessage(error.message,true);return;}if(!actor)return;
   submitButton.disabled = true;
   submitButton.textContent = "Processing payment...";
@@ -41010,7 +41294,7 @@ async function submitJson(path, payload, form) {
     const result = await api(path, { method:"POST", body:JSON.stringify(payload) });
     if (result.receipt) {
       lastReceipt = result.receipt;
-      try { sessionStorage.setItem("kunchasLastReceipt", JSON.stringify(lastReceipt)); } catch {}
+      try { sessionStorage.setItem("kunchasLastReceipt:" + lastReceipt.branchId, JSON.stringify(lastReceipt)); } catch {}
       syncLastReceiptButton();
     }
     await removeLocalHeldSale(form.dataset.localHeldSaleId || form.dataset.heldSaleId).catch(() => {});
@@ -41042,6 +41326,7 @@ async function submitJson(path, payload, form) {
   }
 }
 function updateCheckoutMode() {
+  resetPaymentUi();
   const form = document.querySelector("#saleForm");
   const mode = form.elements.checkoutMode.value || "walkin";
   const bookingMode = mode === "booking";
@@ -41070,6 +41355,8 @@ function schedulePosCustomerSearch() {
   const form = document.querySelector("#saleForm");
   const input = form.elements.customerSearch;
   form.elements.customerId.value = "";
+  renderSelectedCustomerMembership();
+  resetPaymentUi();
   const query = input.value.trim();
   const status = document.querySelector("#posCustomerSearchStatus");
   status.classList.add("visually-hidden");
@@ -41120,13 +41407,15 @@ function renderPosCustomerResults(customers) {
   const box = document.querySelector("#posCustomerResults");
   box.classList.toggle("hidden", !customers.length);
   document.querySelector('#saleForm input[name="customerSearch"]').setAttribute("aria-expanded", String(Boolean(customers.length)));
-  box.innerHTML = customers.map((customer) => '<button type="button" role="option" data-pos-customer-id="' + esc(customer.id) + '"><strong>' + esc((customer.first_name + " " + customer.last_name).trim() || "Unnamed customer") + '</strong><span>' + esc(customer.phone || "No phone") + ' \xB7 ' + esc(customer.email || "No email") + (customer.external_ref ? ' \xB7 #' + esc(customer.external_ref) : '') + '</span></button>').join("");
+  box.innerHTML = customers.map((customer) => '<button type="button" role="option" data-pos-customer-id="' + esc(customer.id) + '"><strong>' + esc((customer.first_name + " " + customer.last_name).trim() || "Unnamed customer") + '</strong><span>' + esc(customer.phone || "No phone") + ' \xB7 ' + esc(customer.email || "No email") + (customer.external_ref ? ' \xB7 #' + esc(customer.external_ref) : '') + '</span><small class="pos-customer-membership '+customerMembershipKind(customer)+'">'+esc(customerMembershipStatus(customer))+'</small></button>').join("");
   box.querySelectorAll("[data-pos-customer-id]").forEach((button) => button.addEventListener("click", () => {
     const customer = state.customers.find((item) => item.id === button.dataset.posCustomerId);
     if (!customer) return;
     const form = document.querySelector("#saleForm");
     form.elements.customerId.value = customer.id;
+    resetPaymentUi();
     form.elements.customerSearch.value = customerLabel(customer);
+    renderSelectedCustomerMembership();
     clearTimeout(posCustomerSearchTimer);
     posCustomerSearchRequest++;
     posCustomerSearchResults = [];
@@ -41135,6 +41424,7 @@ function renderPosCustomerResults(customers) {
   }));
 }
 function updateCustomerMode() {
+  resetPaymentUi();
   const form = document.querySelector("#saleForm");
   const mode = form.elements.customerMode.value;
   document.querySelector(".customer-existing").classList.toggle("hidden", mode !== "existing");
@@ -41144,6 +41434,7 @@ function updateCustomerMode() {
     renderPosCustomerResults([]);
     if (form.elements.checkoutMode.value === "walkin") { form.elements.customerId.value = ""; form.elements.customerSearch.value = ""; }
   }
+  renderSelectedCustomerMembership();
 }
 async function saveBookingRow(event) {
   const row = event.target.closest("tr");
@@ -41173,11 +41464,11 @@ function renderClosingPreview() {
     const requestId = ++closingSalesRequest;
     api('/api/closing-sales?date=' + encodeURIComponent(closingDate),{headers:{'x-branch-id':selectedPosBranchId}}).then((result)=>{
       if (requestId !== closingSalesRequest) return;
-      state.sales = state.sales.filter((sale)=>!(sale.branch_id===selectedPosBranchId && String(sale.created_at||'').slice(0,10)===closingDate)).concat(result.sales);
-      state.cashDrawerOpens = state.cashDrawerOpens.filter((entry)=>!(entry.branch_id===selectedPosBranchId && String(entry.opened_at||'').slice(0,10)===closingDate)).concat(result.drawerOpens || []);
+      state.sales = state.sales.filter((sale)=>!(sale.branch_id===selectedPosBranchId && diaryClock(new Date(sale.created_at)).date===closingDate)).concat(result.sales);
+      state.cashDrawerOpens = state.cashDrawerOpens.filter((entry)=>!(entry.branch_id===selectedPosBranchId && diaryClock(new Date(entry.opened_at)).date===closingDate)).concat(result.drawerOpens || []);
       closingSalesLoading = false;
       renderClosingPreview();
-    }).catch((error)=>{ if(requestId===closingSalesRequest){ message.textContent=error.message; document.querySelector('#closingSalesTable').innerHTML='<tr><td colspan="6">Could not load sales. Reopen the branch to retry.</td></tr>'; } });
+    }).catch((error)=>{ if(requestId===closingSalesRequest){ closingSalesLoading=false; closingSalesKey=''; message.textContent=error.message; document.querySelector('#closingSalesTable').innerHTML='<tr><td colspan="6">Could not load sales. Reopen the branch to retry.</td></tr>'; } });
   }
   form.querySelector('[type="submit"]').disabled = closingSalesLoading;
   const totals = expectedClosingPreview(closingDate);
@@ -41189,12 +41480,14 @@ function renderClosingPreview() {
   const actualCard = Math.round(Number(form.querySelector('input[name="actualCard"]').value || 0) * 100);
   form.querySelector('input[name="previousCash"]').value = dollars(previousCash);
   form.querySelector('input[name="remainingCash"]').value = dollars(remainingCash);
-  const expectedDrawerCash = previousCash + totals.cashCents;
-  const daySales = state.sales.filter((sale) => sale.branch_id === selectedPosBranchId && String(sale.created_at || '').slice(0,10) === closingDate);
+  const openingFloat = Math.round(Number(form.querySelector('input[name="openingFloat"]').value || 0) * 100);
+  const expectedDrawerCash = previousCash + openingFloat + totals.cashCents;
+  const daySales = state.sales.filter((sale) => sale.branch_id === selectedPosBranchId && diaryClock(new Date(sale.created_at)).date === closingDate);
   const extraMethods = [
     { method:'Bank Transfer', paymentMethods:['Bank Transfer'] },
     { method:'Credit', paymentMethods:['Store Credit','On Account'] },
     { method:'Gift Voucher', paymentMethods:['Gift Voucher'] },
+    { method:'Loyalty Points', paymentMethods:['Loyalty Points'] },
     { method:'Refund', paymentMethods:['Refund'] }
   ].map((entry) => {
     const matchingSales = daySales.filter((sale) => entry.paymentMethods.some((method) => salePaymentAmount(sale, method) !== 0));
@@ -41231,7 +41524,7 @@ function renderCashDrawerHistory() {
   const body = document.querySelector("#cashDrawerHistoryTable");
   if (!body) return;
   const closingDate = document.querySelector('#closingForm input[name="closingDate"]').value;
-  const entries = (state.cashDrawerOpens || []).filter((entry) => entry.branch_id === selectedPosBranchId && (!closingDate || String(entry.opened_at || "").slice(0,10) === closingDate));
+  const entries = (state.cashDrawerOpens || []).filter((entry) => entry.branch_id === selectedPosBranchId && (!closingDate || diaryClock(new Date(entry.opened_at)).date === closingDate));
   body.innerHTML = entries.length ? entries.map((entry) => '<tr><td>' + esc(new Date(entry.opened_at).toLocaleString("en-AU")) + '</td><td>' + esc(entry.actor_name || "Not recorded") + '</td><td>' + esc(entry.source === "daily_closing" ? "Daily closing" : "Checkout") + '</td><td>' + esc(entry.reason || (entry.source === "daily_closing" ? "Not required" : "")) + '</td></tr>').join("") : '<tr><td colspan="4" class="empty-cell">No cash drawer openings recorded for this date.</td></tr>';
 }
 function previousClosingCashPreview(date) {
@@ -41242,12 +41535,12 @@ function previousClosingCashPreview(date) {
   return Number(previous?.remaining_cash_cents ?? previous?.actual_cash_cents ?? 0);
 }
 function expectedClosingPreview(date) {
-  return state.sales.filter((sale) => sale.status === 'Paid' && (!selectedPosBranchId || sale.branch_id === selectedPosBranchId) && (!date || String(sale.created_at || "").slice(0, 10) === date)).reduce((totals, sale) => {
+  return state.sales.filter((sale) => sale.status === 'Paid' && (!selectedPosBranchId || sale.branch_id === selectedPosBranchId) && (!date || diaryClock(new Date(sale.created_at)).date === date)).reduce((totals, sale) => {
     if (sale.cash_cents != null && sale.card_cents != null) { totals.cashCents += Number(sale.cash_cents) - Number(sale.change_cents || 0); totals.cardCents += Number(sale.card_cents); totals.count += 1; return totals; }
     const method = String(sale.payment_method || "");
-    const cash = method.match(/cash $([0-9.]+)/i);
-    const card = method.match(/card $([0-9.]+)/i);
-    const change = method.match(/change $([0-9.]+)/i);
+    const cash = method.match(/cash \$([0-9.]+)/i);
+    const card = method.match(/card \$([0-9.]+)/i);
+    const change = method.match(/change \$([0-9.]+)/i);
     if (cash) totals.cashCents += Math.max(0, Math.round(Number(cash[1]) * 100) - (change ? Math.round(Number(change[1]) * 100) : 0));
     if (card) totals.cardCents += Math.round(Number(card[1]) * 100);
     if (!cash && !card && method.toLowerCase().includes("cash")) totals.cashCents += Number(sale.total_cents || 0);
@@ -41298,6 +41591,8 @@ function resetPaymentUi() {
   document.querySelector("#paymentAllocations").innerHTML = "";
   document.querySelector("#paymentBalance").innerHTML = "";
   document.querySelector("#cartPaymentSummary").innerHTML = "";
+  document.querySelector("#loyaltyPointsInput").value = "";
+  renderLoyaltyState();
 }
 function showPaymentMethods() {
   const total = saleTotalCents();
@@ -41319,6 +41614,7 @@ function paymentTotals() {
   return { total, paid, cash, remaining:Math.max(0, total - paid), change:Math.max(0, paid - total) };
 }
 function renderPaymentState(syncInput = true) {
+  renderLoyaltyState();
   const totals = paymentTotals();
   const allocationHtml = salePayments.map((payment, index) => '<div class="payment-allocation"><span><strong>' + esc(payment.method) + '</strong><small>Payment ' + (index + 1) + '</small></span><b>' + money(payment.amountCents) + '</b><button type="button" data-remove-payment="' + index + '" aria-label="Remove ' + esc(payment.method) + ' payment">Remove</button></div>').join("");
   document.querySelector("#paymentAllocations").innerHTML = allocationHtml || '<p class="hint">No payment amounts added yet.</p>';
@@ -41464,6 +41760,64 @@ function addStaffToSaleItem(row) {
   renderCartSummary();
 }
 function findCustomerId(value) { return state.customers.find((c) => customerLabel(c) === value)?.id || ""; }
+function customerMembershipStatus(customer) {
+  if (customer?.membership_status === "Member" || customer?.membership_status === "Non-member") return customer.membership_status;
+  const categories = String(customer?.tags || "").toLowerCase().split(/[;,|]/).map((tag) => tag.trim());
+  const member = categories.includes("member");
+  const nonMember = categories.includes("non-member") || categories.includes("non member");
+  if (member && !nonMember) return "Member";
+  if (nonMember && !member) return "Non-member";
+  return "Membership not set";
+}
+function customerMembershipKind(customer) {
+  const status = customerMembershipStatus(customer);
+  return status === "Member" ? "member" : status === "Non-member" ? "non-member" : "unknown";
+}
+function customerMembershipDisplay(customer) {
+  const status = customerMembershipStatus(customer);
+  if (status !== "Member" || !customer?.membership_added_at) return status;
+  const date = new Intl.DateTimeFormat("en-AU", { day:"numeric", month:"short", year:"numeric", timeZone:"Australia/Sydney" }).format(new Date(customer.membership_added_at));
+  return "Member · joined " + date;
+}
+function renderSelectedCustomerMembership() {
+  const form = document.querySelector("#saleForm");
+  const label = document.querySelector("#posCustomerMembership");
+  const customer = state.customers.find((item) => item.id === form.elements.customerId.value);
+  const show = form.elements.checkoutMode.value === "walkin" && form.elements.customerMode.value === "existing" && !!customer;
+  const status = show ? customerMembershipStatus(customer) : "";
+  label.className = "pos-customer-membership " + (show ? customerMembershipKind(customer) : "hidden");
+  label.disabled = status !== "Membership not set";
+  label.textContent = status === "Membership not set" ? "Membership not set · Add membership" : show ? customerMembershipDisplay(customer) : "";
+}
+async function addMembershipToSelectedCustomer(event) {
+  const form = document.querySelector("#saleForm");
+  const customerId = form.elements.customerId.value;
+  const button = event.currentTarget;
+  const bookingButton = button.id === "bookingCustomerMembership";
+  const message = document.querySelector(bookingButton ? "#bookingCustomerMembershipMessage" : "#posCustomerMembershipMessage");
+  if (!customerId || button.disabled) return;
+  if (!navigator.onLine) { message.textContent = "Connect to the internet to add membership."; return; }
+  button.disabled = true;
+  message.textContent = "";
+  try {
+    const actor = await askActor(selectedPosBranchId, false, "Add customer membership with your PIN");
+    if (!actor) return;
+    const result = await api("/api/pos-customers/" + encodeURIComponent(customerId) + "/membership", { method:"POST", body:JSON.stringify({ branchId:selectedPosBranchId, ...actor }) });
+    for (const customer of [...state.customers, ...posCustomerSearchResults]) if (customer.id === customerId) {
+      customer.membership_status = result.membershipStatus;
+      customer.membership_added_at = result.membershipAddedAt;
+      customer.membership_added_by_name = result.membershipAddedBy;
+    }
+    message.textContent = "Membership added to this customer account.";
+    renderSelectedCustomerMembership();
+    if (bookingButton) {
+      button.className = "pos-customer-membership member";
+      button.textContent = customerMembershipDisplay(state.customers.find((item) => item.id === customerId));
+    }
+    if (appMode === "staff") offlineSave("snapshot:" + selectedPosBranchId, state).catch(() => {});
+  } catch (error) { message.textContent = error.message; }
+  finally { if (customerMembershipStatus(state.customers.find((item) => item.id === customerId)) === "Membership not set") button.disabled = false; }
+}
 function findSaleItem(value) { return saleCatalog().find((item) => item.label === value); }
 function findStaff(value) { return state.staff.find((s) => staffLabel(s) === value); }
 function customerLabel(c) { return (c.first_name + " " + c.last_name + " | " + c.phone + " | " + c.email).trim(); }
@@ -41488,7 +41842,23 @@ function cssEsc(value) { return String(value).replace(/"/g, '\\"'); }
 function selected(value, expected) { return value === expected ? " selected" : ""; }
 function syncLastReceiptButton() {
   const button = document.querySelector("#printLastReceiptButton");
-  if (button) button.disabled = !lastReceipt;
+  if (button) button.disabled = !lastReceipt || lastReceipt.branchId !== selectedPosBranchId;
+}
+function loadLastBranchReceipt() {
+  lastReceipt = null;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("kunchasLastReceipt:" + selectedPosBranchId) || "null");
+    if (saved?.branchId === selectedPosBranchId) lastReceipt = saved;
+    else {
+      const legacy = JSON.parse(sessionStorage.getItem("kunchasLastReceipt") || "null");
+      if (legacy?.branchId === selectedPosBranchId) {
+        lastReceipt = legacy;
+        sessionStorage.setItem("kunchasLastReceipt:" + selectedPosBranchId, JSON.stringify(legacy));
+        sessionStorage.removeItem("kunchasLastReceipt");
+      }
+    }
+  } catch {}
+  syncLastReceiptButton();
 }
 function receiptHasCash(receipt) {
   if (!receipt) return false;
@@ -41516,6 +41886,7 @@ async function openCashDrawer(source) {
   const button = document.querySelector(fromClosing ? "#closingOpenCashDrawer" : "#openCashDrawer");
   const status = document.querySelector(fromClosing ? "#closingCashDrawerStatus" : "#cashDrawerStatus");
   const branchId = fromClosing ? selectedPosBranchId : (lastReceipt?.branchId || selectedPosBranchId);
+  if (!fromClosing && lastReceipt?.branchId !== selectedPosBranchId) { status.textContent = "Complete a cash sale at this branch first."; return; }
   if (!fromClosing && !receiptHasCash(lastReceipt)) { status.textContent = "The cash drawer is available only for a cash payment."; return; }
   if (!branchId) { status.textContent = "Open a branch workspace first."; return; }
   const drawerJob = window.open("", "kunchasDrawer", "width=260,height=220");
@@ -41548,12 +41919,12 @@ function printCashDrawerSlip(drawerJob) {
   setTimeout(() => { drawerJob.focus(); drawerJob.print(); }, 150);
 }
 function printLastReceipt() {
-  if (!lastReceipt) { message.textContent = "Complete a sale first."; return; }
+  if (!lastReceipt || lastReceipt.branchId !== selectedPosBranchId) { message.textContent = "Complete a sale at this branch first."; return; }
   const receipt = window.open("", "kunchasReceipt", "width=380,height=640");
   if (!receipt) { message.textContent = "Allow pop-ups to print the receipt."; return; }
   const detailedPayments = Array.isArray(lastReceipt.payments) ? lastReceipt.payments.filter((payment) => Number(payment.amountCents || 0) > 0) : [];
   const paymentRows = (detailedPayments.length ? detailedPayments.map((payment) => '<div class="row"><span>' + esc(payment.method) + ' paid</span><strong>' + money(payment.amountCents) + '</strong></div>').join("") : (lastReceipt.cashCents ? '<div class="row"><span>Cash paid</span><strong>' + money(lastReceipt.cashCents) + '</strong></div>' : '') + (lastReceipt.cardCents ? '<div class="row"><span>Card paid</span><strong>' + money(lastReceipt.cardCents) + '</strong></div>' : '') + (!lastReceipt.cashCents && !lastReceipt.cardCents ? '<div class="row"><span>Payment</span><strong>' + esc(lastReceipt.paymentMethod || "Paid") + '</strong></div>' : '')) + (lastReceipt.changeCents ? '<div class="row total"><span>Change to return</span><span>' + money(lastReceipt.changeCents) + '</span></div>' : '');
-  receipt.document.write('<!doctype html><html><head><title>Kunchas receipt</title><style>body{font-family:Arial,sans-serif;margin:18px;color:#111}.center{text-align:center}h1{font-size:20px;margin:0}.line{border-top:1px dashed #999;margin:12px 0}.row{display:flex;justify-content:space-between;gap:12px;margin:6px 0}.total{font-weight:800;font-size:18px}</style></head><body><div class="center"><img alt="Kuncha\u2019s Hair &amp; Beauty Art" style="width:200px;max-width:100%;height:auto" src="' + esc(document.querySelector('.brand img').src) + '"><div>' + esc(lastReceipt.branch?.name || "") + '</div><div>' + esc(lastReceipt.branch?.phone || "") + '</div></div><div class="line"></div><div>Receipt: ' + esc(lastReceipt.saleId) + '</div><div>' + esc(new Date(lastReceipt.createdAt).toLocaleString("en-AU")) + '</div><div class="line"></div>' + lastReceipt.items.map((item) => '<div class="row"><span>' + esc(item.name) + '</span><strong>' + money(item.priceCents) + '</strong></div>').join("") + '<div class="line"></div><div class="row total"><span>Total</span><span>' + money(lastReceipt.totalCents) + '</span></div>' + paymentRows + '<p class="center">Thank you</p></body></html>');
+  receipt.document.write('<!doctype html><html><head><title>Kunchas receipt</title><style>body{font-family:Arial,sans-serif;margin:18px;color:#111}.center{text-align:center}h1{font-size:20px;margin:0}.line{border-top:1px dashed #999;margin:12px 0}.row{display:flex;justify-content:space-between;gap:12px;margin:6px 0}.total{font-weight:800;font-size:18px}</style></head><body><div class="center"><img alt="Kuncha\u2019s Hair &amp; Beauty Art" style="width:200px;max-width:100%;height:auto" src="' + esc(document.querySelector('.brand img').src) + '"><div>' + esc(lastReceipt.branch?.name || "") + '</div><div>' + esc(lastReceipt.branch?.phone || "") + '</div></div><div class="line"></div><div>Receipt: ' + esc(lastReceipt.saleId) + '</div><div>' + esc(new Date(lastReceipt.createdAt).toLocaleString("en-AU")) + '</div><div class="line"></div>' + lastReceipt.items.map((item) => '<div class="row"><span>' + esc(item.name) + '</span><strong>' + money(item.priceCents) + '</strong></div>').join("") + '<div class="line"></div><div class="row total"><span>Total</span><span>' + money(lastReceipt.totalCents) + '</span></div>' + paymentRows + (lastReceipt.loyalty ? '<div class="line"></div><div class="row"><span>Points earned</span><strong>' + esc(lastReceipt.loyalty.earned) + '</strong></div><div class="row"><span>Points used</span><strong>' + esc(lastReceipt.loyalty.redeemed) + '</strong></div><div class="row"><span>Points balance</span><strong>' + esc(lastReceipt.loyalty.balance) + '</strong></div>' : '') + '<p class="center">Thank you</p></body></html>');
   receipt.document.close();
   receipt.focus();
   receipt.print();
@@ -41568,7 +41939,7 @@ function styles() {
   return `
 :root { --ink:#1c1724; --muted:#716b79; --line:#e7e1ea; --soft:#f8f6f9; --brand:#5b1b6f; --brand-dark:#3b1048; --brand-soft:#f3eaf6; --gold:#d59b48; --surface:#fff; --success:#087f5b; }
 * { box-sizing:border-box; }
-body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Poppins,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; transition:grid-template-columns .2s ease; }
+body { margin:0; display:grid; grid-template-columns:228px minmax(0,1fr); min-height:100vh; color:var(--ink); background:var(--soft); font-family:Roboto,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; transition:grid-template-columns .2s ease; }
 .sidebar { position:sticky; top:0; align-self:start; height:100vh; height:100dvh; min-height:0; display:flex; flex-direction:column; overflow-y:auto; overscroll-behavior:contain; padding:24px 14px; background:linear-gradient(180deg,#471456,#35103f); color:#fff; }
 .sidebar-toggle { position:absolute; z-index:2; top:8px; right:8px; display:grid; place-items:center; width:30px; min-height:30px; padding:0; border:1px solid #ffffff66; border-radius:50%; color:#fff; background:#542064; box-shadow:0 3px 10px #230b2c55; font-size:24px; line-height:1; }
 .mobile-menu-button,.mobile-menu-close,.mobile-nav-backdrop{display:none}
@@ -41584,7 +41955,7 @@ body.sidebar-collapsed { grid-template-columns:72px minmax(0,1fr); }
 .sidebar-footer .nav { width:100%; border-radius:0; }
 .sidebar-footer .nav:first-child { border-top:1px solid #ffffff30; }
 .sidebar-user { display:flex; align-items:center; gap:10px; padding:14px 10px 0; border-top:1px solid #ffffff30; color:#fff; }
-.sidebar-user-avatar { display:grid; place-items:center; width:36px; height:36px; flex:0 0 auto; border-radius:50%; background:#ffffff20; font-size:12px; font-weight:900; }
+.sidebar-user-avatar { display:grid; place-items:center; width:36px; height:36px; flex:0 0 auto; border-radius:50%; background:#ffffff20; font-size:12px; font-weight:700; }
 .sidebar-user strong,.sidebar-user small { display:block; line-height:1.25; }
 .sidebar-user small { margin-top:2px; color:#d9c9de; font-size:11px; }
 body.pos-locked { grid-template-columns:1fr; }
@@ -41602,13 +41973,13 @@ nav { display:grid; gap:8px; }
 .ui-icon { width:20px; height:20px; flex:0 0 auto; }
 .app { min-width:0; padding:24px clamp(18px,3vw,40px) 46px; }
 .topbar { display:flex; justify-content:space-between; gap:22px; align-items:center; margin:-24px clamp(-40px,-3vw,-18px) 20px; padding:20px clamp(18px,3vw,40px); background:#fff; border-bottom:1px solid var(--line); }
-.eyebrow { margin:0 0 5px; color:var(--brand); font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+.eyebrow { margin:0 0 5px; color:var(--brand); font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
 h1 { margin:0; font-size:clamp(24px,3vw,34px); line-height:1.15; }
 h2 { margin:0 0 16px; font-size:24px; }
 input,select,textarea { width:100%; min-height:44px; margin:6px 0 14px; padding:0 12px; border:1px solid #ccd7dd; border-radius:8px; font:inherit; background:#fff; }
 select[multiple] { min-height:92px; padding:8px 12px; }
 textarea { min-height:90px; padding-top:12px; resize:vertical; }
-button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-radius:8px; font:inherit; font-weight:800; cursor:pointer; }
+button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-radius:8px; font:inherit; font-weight:600; cursor:pointer; }
 .primary { color:#fff; background:var(--brand); }
 .secondary { color:var(--brand); background:var(--brand-soft); border:1px solid #dfcce5; }
 .danger { width:100%; margin-top:12px; color:#9b3444; background:#fff; border:1px solid #d8aeb4; }
@@ -41619,11 +41990,12 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 .admin-mode .staff-only,.staff-mode .admin-only { display:none !important; }
 [hidden] { display:none!important; }
 .account-tools { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; padding:12px 40px; background:#fff; border-bottom:1px solid var(--line); font-size:13px; }
+.account-tools:not(:has(> button:not([hidden]))) { display:none; }
 .print-last-receipt { margin-left:auto; flex:0 0 auto; white-space:nowrap; }
 #access .panel { margin-top:20px; }
 #accessPolicyRows select { min-width:170px; max-width:260px; }
 .hint { margin:8px 0 0; color:var(--muted); font-size:13px; }
-.sale-message { min-height:22px; margin:10px 0 0; color:#087f5b; font-size:13px; font-weight:800; }
+.sale-message { min-height:22px; margin:10px 0 0; color:#087f5b; font-size:13px; font-weight:600; }
 .sale-message:empty { display:none; }
 .sale-message.error { color:#b42318; }
 .checkout-complete-actions { display:flex; gap:12px; }
@@ -41631,7 +42003,7 @@ button,.primary,.secondary { min-height:44px; padding:0 18px; border:0; border-r
 button:disabled { cursor:wait; opacity:.65; }
 .load-row { display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
 .admin-mode .load-row { display:none; }
-.message { min-height:28px; color:var(--brand); font-weight:800; }
+.message { min-height:28px; color:var(--brand); font-weight:600; }
 .message:empty { display:none; }
 .tab { display:none; margin-top:22px; }
 .tab.active { display:block; }
@@ -41639,7 +42011,7 @@ button:disabled { cursor:wait; opacity:.65; }
 .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-bottom:18px; }
 .metrics article,.panel,.cards article,.branch-grid article { background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 28px rgba(56,24,66,.05); }
 .metrics article { padding:18px; }
-.metrics span { display:block; color:var(--muted); font-weight:800; }
+.metrics span { display:block; color:var(--muted); font-weight:600; }
 .metrics strong { display:block; margin-top:8px; font-size:28px; }
 .metric-card { display:flex; align-items:center; gap:14px; min-height:88px; }
 .metric-icon { display:grid; place-items:center; width:44px; height:44px; flex:0 0 auto; border-radius:50%; }
@@ -41667,7 +42039,7 @@ button:disabled { cursor:wait; opacity:.65; }
 .role-summary-card strong { font-size:12px; color:var(--muted); }
 .role-summary-icon { display:grid; place-items:center; width:56px; height:56px; border-radius:12px; color:var(--brand); background:var(--brand-soft); }
 .role-summary-icon .ui-icon { width:28px; height:28px; }
-.role-system { display:inline-block; padding:3px 8px; border-radius:999px; color:var(--brand); background:var(--brand-soft); font-size:10px; font-weight:800; }
+.role-system { display:inline-block; padding:3px 8px; border-radius:999px; color:var(--brand); background:var(--brand-soft); font-size:10px; font-weight:600; }
 .role-access-dialog { width:min(980px,calc(100vw - 32px)); }
 .role-access-dialog .branch-dialog-body { max-height:calc(90dvh - 178px); overflow:auto; }
 .role-detail-tabs { display:flex; gap:28px; margin:-8px -4px 22px; border-bottom:1px solid var(--line); color:var(--muted); font-size:12px; text-transform:uppercase; }
@@ -41675,9 +42047,9 @@ button:disabled { cursor:wait; opacity:.65; }
 .role-detail-tabs strong { color:var(--brand); border-bottom:3px solid var(--brand); }
 .role-permission-heading { display:flex; justify-content:space-between; align-items:center; gap:18px; margin-bottom:16px; }
 .role-permission-heading h3 { display:inline; margin-left:8px; }
-.role-permission-heading p { color:var(--muted); font-size:12px; font-weight:800; }
+.role-permission-heading p { color:var(--muted); font-size:12px; font-weight:600; }
 .role-permission-table select { max-width:260px; margin:0; }
-.full-access-label { display:inline-flex; align-items:center; min-height:34px; padding:0 12px; border-radius:999px; color:#087f5b; background:#e4f5ee; font-size:12px; font-weight:800; }
+.full-access-label { display:inline-flex; align-items:center; min-height:34px; padding:0 12px; border-radius:999px; color:#087f5b; background:#e4f5ee; font-size:12px; font-weight:600; }
 .staff-list-filters { display:flex; align-items:end; gap:14px; flex-wrap:wrap; }
 .staff-list-filters label { margin:0; }
 .staff-list-filters input { min-width:240px; }
@@ -41704,7 +42076,7 @@ button:disabled { cursor:wait; opacity:.65; }
   .staff-directory .staff-row td:nth-child(3){grid-column:1;grid-row:3}
   .staff-directory .staff-row td:nth-child(4){grid-column:2;grid-row:1;justify-self:end}
   .staff-directory .staff-row td:nth-child(5){grid-column:2;grid-row:3;justify-self:end;text-align:right;white-space:nowrap}
-  .staff-directory .staff-row td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+  .staff-directory .staff-row td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
   .staff-directory .staff-row .hint{margin-top:2px;font-size:12px}
   .staff-directory .staff-row .pill{font-size:11px;padding:3px 7px}
   .staff-directory tbody>tr:not(.staff-row){display:block}
@@ -41714,7 +42086,7 @@ button:disabled { cursor:wait; opacity:.65; }
 .branch-switcher { min-width:250px; margin:0; }
 .branch-switcher span { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; }
 .branch-switcher select { margin:2px 0 0; min-height:42px; }
-.admin-avatar span { display:grid; place-items:center; width:40px; height:40px; border-radius:50%; color:var(--brand); background:#eadcf0; font-weight:800; }
+.admin-avatar span { display:grid; place-items:center; width:40px; height:40px; border-radius:50%; color:var(--brand); background:#eadcf0; font-weight:600; }
 .dashboard-toolbar,.section-heading { display:flex; justify-content:space-between; align-items:center; gap:18px; }
 .dashboard-toolbar { justify-content:flex-end; margin-bottom:14px; }
 .dashboard-toolbar h2,.section-heading h2 { margin:0; }
@@ -41723,24 +42095,24 @@ button:disabled { cursor:wait; opacity:.65; }
 .period-tab:last-child { border-right:0; }
 .period-tab.active { color:#fff; background:var(--brand); }
 .bookings-chart-panel { margin-bottom:16px; }
-.chart-legend { display:flex; align-items:center; gap:7px; color:var(--brand); font-size:12px; font-weight:800; }
+.chart-legend { display:flex; align-items:center; gap:7px; color:var(--brand); font-size:12px; font-weight:600; }
 .chart-legend span { width:8px; height:8px; border-radius:50%; background:var(--brand); }
 .bookings-chart { display:grid; grid-template-columns:repeat(14,minmax(34px,1fr)); align-items:end; min-height:190px; margin-top:18px; padding:12px 8px 0; background:repeating-linear-gradient(to bottom,transparent 0,transparent 44px,#eee8f0 45px); border-bottom:1px solid var(--line); overflow-x:auto; }
 .chart-hour { display:grid; grid-template-rows:150px auto; align-items:end; min-width:42px; color:var(--muted); font-size:11px; text-align:center; }
 .chart-bar-wrap { position:relative; display:flex; align-items:end; justify-content:center; height:144px; }
 .chart-bar-wrap i { display:block; width:10px; min-height:5px; background:linear-gradient(180deg,#7b3294,var(--brand)); border-radius:6px 6px 2px 2px; box-shadow:0 0 0 4px rgba(91,27,111,.08); }
-.chart-value { position:absolute; top:4px; color:var(--brand); font-weight:800; }
+.chart-value { position:absolute; top:4px; color:var(--brand); font-weight:600; }
 .chart-hour>span { padding:8px 0; }
 .dashboard-lower-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.05fr) minmax(0,1.1fr); gap:14px; }
 .dashboard-list-panel { min-width:0; }
 .dashboard-list-panel h2 { font-size:20px; }
-.text-link { color:var(--brand); font-size:12px; font-weight:800; }
+.text-link { color:var(--brand); font-size:12px; font-weight:600; }
 .dashboard-roster,.dashboard-upcoming,.dashboard-activity { display:grid; grid-template-columns:minmax(0,1fr); min-width:0; margin-top:12px; }
 .dashboard-roster article,.dashboard-upcoming article,.dashboard-activity article { display:flex; align-items:center; gap:11px; min-width:0; max-width:100%; min-height:58px; padding:9px 0; border-bottom:1px solid var(--line); }
 .dashboard-roster article:last-child,.dashboard-upcoming article:last-child,.dashboard-activity article:last-child { border-bottom:0; }
 .dashboard-roster strong,.dashboard-roster span { display:block; }
 .dashboard-roster span { color:var(--muted); font-size:12px; }
-.dashboard-upcoming time { flex:0 0 auto; padding:5px 9px; color:var(--brand); background:var(--brand-soft); border-radius:7px; font-weight:800; }
+.dashboard-upcoming time { flex:0 0 auto; padding:5px 9px; color:var(--brand); background:var(--brand-soft); border-radius:7px; font-weight:600; }
 .dashboard-upcoming div,.dashboard-activity div:nth-child(2) { min-width:0; flex:1; }
 .dashboard-upcoming strong,.dashboard-upcoming span,.dashboard-activity strong,.dashboard-activity span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dashboard-upcoming span,.dashboard-activity span { color:var(--muted); font-size:11px; }
@@ -41748,7 +42120,7 @@ button:disabled { cursor:wait; opacity:.65; }
 .activity-icon { display:grid; place-items:center; width:34px; height:34px; flex:0 0 auto; color:#fff; background:var(--brand); border-radius:50%; }
 .activity-icon .ui-icon { width:17px; height:17px; }
 .dashboard-activity time { color:var(--muted); font-size:10px; }
-.person-avatar { display:grid; place-items:center; width:36px; height:36px; flex:0 0 auto; color:var(--brand); background:var(--brand-soft); border-radius:50%; font-size:12px; font-weight:800; }
+.person-avatar { display:grid; place-items:center; width:36px; height:36px; flex:0 0 auto; color:var(--brand); background:var(--brand-soft); border-radius:50%; font-size:12px; font-weight:600; }
 .empty-state { margin:14px 0; color:var(--muted); }
 .roster-day-panel { margin-top:20px; }
 .customer-directory-search { display:block; margin-top:18px; }
@@ -41762,13 +42134,16 @@ button:disabled { cursor:wait; opacity:.65; }
 .dialog-history h3 { margin-bottom:14px; }
 .profile-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
 .profile-heading h2 { margin-bottom:4px; }
+.customer-phone-error { display:block; color:#b42318; font-size:13px; margin:-8px 0 12px; }
+.customer-phone-error:empty { display:none; }
+.customer-points { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .customer-row,.staff-row { cursor:pointer; }
 .customer-row:hover,.customer-row:focus-visible,.staff-row:hover,.staff-row:focus-visible { background:var(--brand-soft); outline:2px solid #d9bee2; outline-offset:-2px; }
 .empty-cell { padding:24px; color:var(--muted); text-align:center; }
 .split { display:grid; grid-template-columns:minmax(320px,.8fr) minmax(0,1.2fr); gap:20px; align-items:start; }
 .pos-workspace>.split { grid-template-columns:minmax(0,1.35fr) minmax(290px,.65fr); }
 .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-label,legend { display:block; font-weight:800; }
+label,legend { display:block; font-weight:600; }
 fieldset { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:0 0 14px; padding:0; border:0; }
 legend { grid-column:1/-1; }
 .check { display:flex; align-items:center; gap:8px; padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:8px; }
@@ -41777,7 +42152,7 @@ legend { grid-column:1/-1; }
 .cards article,.branch-grid article { padding:18px; }
 .cards strong,.branch-grid strong { display:block; }
 .cards span,.branch-grid span { display:block; color:var(--muted); }
-.cards em,.branch-grid em { display:block; margin-top:8px; color:var(--brand); font-style:normal; font-weight:800; }
+.cards em,.branch-grid em { display:block; margin-top:8px; color:var(--brand); font-style:normal; font-weight:600; }
 .product-top-grid { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(300px,.65fr); gap:20px; align-items:stretch; }
 .product-editor { margin:0; }
 .product-editor .section-heading { align-items:flex-start; margin-bottom:14px; }
@@ -41789,10 +42164,10 @@ legend { grid-column:1/-1; }
 .service-excel-panel>.section-heading>div:first-child{min-width:0;flex:1}
 .service-excel-panel .excel-actions{flex:0 0 auto;margin-top:0}
 .service-template-help{margin-top:12px;color:var(--muted);font-size:12px}
-.service-template-help summary{width:max-content;max-width:100%;cursor:pointer;color:var(--brand);font-weight:800}
+.service-template-help summary{width:max-content;max-width:100%;cursor:pointer;color:var(--brand);font-weight:600}
 .service-template-help p{margin:8px 0 0}
 .button-link { display:inline-flex; align-items:center; justify-content:center; text-decoration:none; }
-.import-result { position:relative; z-index:1; margin:14px 0 0; color:var(--brand); font-size:12px; font-weight:800; }
+.import-result { position:relative; z-index:1; margin:14px 0 0; color:var(--brand); font-size:12px; font-weight:600; }
 .product-table-panel { margin-top:20px; padding:0; overflow:hidden; }
 .product-table-heading { flex-wrap:wrap; gap:16px; padding:20px 22px; background:#fff; border-bottom:1px solid var(--line); }
 .product-table-heading h2 { margin-top:2px; }
@@ -41808,7 +42183,7 @@ legend { grid-column:1/-1; }
 .product-table .catalogue-subgroup th { padding:10px 22px 10px 34px; text-align:left; background:#f7f8fa; color:var(--ink); font-size:12px; text-transform:none; }
 .service-hierarchy { display:grid; gap:10px; padding:18px 22px 22px; background:#faf8fb; }
 .service-category-menu,.service-subcategory-menu { overflow:hidden; background:#fff; border:1px solid var(--line); border-radius:12px; }
-.service-category-menu>summary,.service-subcategory-menu>summary { display:flex; min-height:54px; align-items:center; gap:10px; padding:0 18px; color:var(--brand); font-weight:800; list-style:none; cursor:pointer; }
+.service-category-menu>summary,.service-subcategory-menu>summary { display:flex; min-height:54px; align-items:center; gap:10px; padding:0 18px; color:var(--brand); font-weight:600; list-style:none; cursor:pointer; }
 .service-category-menu>summary::-webkit-details-marker,.service-subcategory-menu>summary::-webkit-details-marker { display:none; }
 .service-category-menu>summary::before,.service-subcategory-menu>summary::before { content:"\u203A"; font-size:24px; line-height:1; transition:transform .16s ease; }
 .service-category-menu[open]>summary::before,.service-subcategory-menu[open]>summary::before { transform:rotate(90deg); }
@@ -41839,7 +42214,7 @@ legend { grid-column:1/-1; }
 .service-hierarchy-empty { margin:0; padding:24px; text-align:center; }
 .product-hierarchy { display:grid; gap:10px; padding:18px 22px 22px; background:#faf8fb; }
 .product-category-menu,.product-subcategory-menu { overflow:hidden; background:#fff; border:1px solid var(--line); border-radius:12px; }
-.product-category-menu>summary,.product-subcategory-menu>summary { display:flex; min-height:54px; align-items:center; gap:10px; padding:0 18px; color:var(--brand); font-weight:800; list-style:none; cursor:pointer; }
+.product-category-menu>summary,.product-subcategory-menu>summary { display:flex; min-height:54px; align-items:center; gap:10px; padding:0 18px; color:var(--brand); font-weight:600; list-style:none; cursor:pointer; }
 .product-category-menu>summary::-webkit-details-marker,.product-subcategory-menu>summary::-webkit-details-marker { display:none; }
 .product-category-menu>summary::before,.product-subcategory-menu>summary::before { content:"\u203A"; font-size:24px; line-height:1; transition:transform .16s ease; }
 .product-category-menu[open]>summary::before,.product-subcategory-menu[open]>summary::before { transform:rotate(90deg); }
@@ -41871,28 +42246,38 @@ legend { grid-column:1/-1; }
 .catalogue-group-count { display:inline-block; margin-left:12px; color:var(--muted); font-size:11px; font-weight:500; }
 #newServiceCategoryLabel.hidden,#newServiceSubCategoryLabel.hidden { display:none; }
 .table-subtext { display:block; max-width:230px; margin-top:3px; overflow:hidden; color:var(--muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
-.status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; color:#087f5b; background:#e9f8f2; border-radius:999px; font-size:11px; font-weight:800; }
+.status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; color:#087f5b; background:#e9f8f2; border-radius:999px; font-size:11px; font-weight:600; }
 .status-pill::before { width:6px; height:6px; content:""; background:currentColor; border-radius:50%; }
 .status-pill.inactive { color:#8a5260; background:#f8eaee; }
 .stock-quantity { display:inline-flex; min-width:34px; min-height:30px; align-items:center; justify-content:center; color:var(--brand); background:var(--brand-soft); border-radius:8px; }
 .receive-products-layout { margin-bottom:20px; }
 #receiveProductsMessage { min-height:20px; margin-bottom:0; }
 .compact-button { min-height:34px; padding:0 12px; font-size:12px; }
-.time-clock-panel { display:grid; grid-template-columns:minmax(260px,1fr) minmax(220px,320px) auto; align-items:end; gap:18px; margin-bottom:20px; background:linear-gradient(135deg,#fff 30%,#faf3fc); }
+.time-clock-panel { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; margin-bottom:20px; background:linear-gradient(135deg,#fff 30%,#faf3fc); }
 .time-clock-panel h2 { margin-bottom:2px; }
 .time-clock-panel label,.time-clock-panel select { margin-bottom:0; }
-.time-clock-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; padding-bottom:0; }
-.time-clock-actions button { min-height:40px; padding:0 13px; white-space:nowrap; }
+.time-clock-pin { display:grid; gap:8px; width:100%; max-width:360px; }
+.time-clock-pin input { width:100%; }
+.time-clock-identification { margin:0; min-height:20px; overflow-wrap:anywhere; }
+.time-clock-actions { display:flex; flex-wrap:wrap; justify-content:flex-start; gap:8px; }
+.time-clock-actions button { min-height:44px; min-width:120px; padding:0 13px; white-space:nowrap; }
 .staff-hours-section { margin:26px -22px -22px; border-top:1px solid var(--line); }
 .staff-hours-section>.section-heading { padding:18px 22px; background:#faf8fb; border-bottom:1px solid var(--line); }
 .staff-hours-section h3 { margin:0; font-size:20px; }
 .staff-hours-section>.section-heading>strong { color:var(--brand); }
+.timesheet-filters { display:grid; grid-template-columns:minmax(150px,190px) minmax(150px,190px) minmax(220px,1fr); gap:14px; align-items:end; margin-bottom:16px; }
+.timesheet-filters label { margin:0; }
+.timesheet-filters input { width:100%; }
+.timesheet-staff-link { padding:0; border:0; background:none; color:var(--brand); font:inherit; font-weight:700; text-align:left; text-decoration:underline; text-underline-offset:3px; cursor:pointer; }
+.timesheet-dialog { width:min(1100px,calc(100vw - 32px)); }
+.timesheet-dialog .branch-dialog-body { max-height:calc(90dvh - 112px); overflow:auto; }
+@media(max-width:700px){.timesheet-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.timesheet-search{grid-column:1/-1}}
 .staff-hours-table { min-width:900px; }
 .staff-hours-table th:first-child,.staff-hours-table td:first-child { padding-left:22px; }
 .staff-hours-table th:last-child,.staff-hours-table td:last-child { padding-right:22px; }
 .no-hours-row { color:var(--muted); background:#fdfcfd; }
 .xero-fields { margin:4px 0 16px; padding:12px 14px; background:#faf8fb; border:1px solid var(--line); border-radius:9px; }
-.xero-fields summary { color:var(--brand); font-weight:800; cursor:pointer; }
+.xero-fields summary { color:var(--brand); font-weight:600; cursor:pointer; }
 .xero-fields .grid { margin-top:12px; }
 .report-filter-panel { display:flex; align-items:end; justify-content:space-between; gap:24px; background:linear-gradient(135deg,#fff 40%,#f7edf9); }
 .report-filter-panel h2 { margin-bottom:2px; }
@@ -41913,14 +42298,14 @@ legend { grid-column:1/-1; }
 .report-two-column .report-section table { min-width:480px; }
 .report-export { white-space:nowrap; }
 .report-export-actions { display:flex; flex-wrap:wrap; gap:8px; }
-.source-pill { display:inline-flex; padding:5px 9px; color:var(--brand); background:var(--brand-soft); border-radius:999px; font-size:11px; font-weight:800; }
+.source-pill { display:inline-flex; padding:5px 9px; color:var(--brand); background:var(--brand-soft); border-radius:999px; font-size:11px; font-weight:600; }
 .payroll-report table { min-width:1120px; }
 .service-editor { max-width:760px; margin-bottom:20px; }
 .service-category { margin-top:22px; }
 .service-category:first-child { margin-top:12px; }
 .category-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--line); }
 .category-heading h3 { margin:0; font-size:20px; }
-.category-heading span { color:var(--muted); font-size:13px; font-weight:800; }
+.category-heading span { color:var(--muted); font-size:13px; font-weight:600; }
 .service-category { padding:10px; margin-left:-10px; margin-right:-10px; border:2px solid transparent; border-radius:10px; transition:.15s ease; }
 .service-category.drag-over { background:#fff3ef; border-color:#9b3444; }
 .service-card { position:relative; padding-right:54px !important; cursor:grab; user-select:none; }
@@ -41947,7 +42332,7 @@ legend { grid-column:1/-1; }
 .roster-toolbar-controls select,.roster-toolbar-controls input { margin-bottom:0; background:#fff; }
 .roster-calendar-panel { margin-top:20px; }
 .month-calendar { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:1px; margin-top:14px; overflow:hidden; background:var(--line); border:1px solid var(--line); border-radius:12px; }
-.month-weekday { padding:7px; color:var(--muted); font-size:12px; font-weight:800; text-align:center; text-transform:uppercase; }
+.month-weekday { padding:7px; color:var(--muted); font-size:12px; font-weight:600; text-align:center; text-transform:uppercase; }
 .month-blank { min-height:100px; background:#faf9fa; }
 .month-day { min-height:108px; padding:11px; color:var(--ink); background:#fff; border:0; border-radius:0; text-align:left; }
 .month-day strong,.month-day span { display:block; }
@@ -41957,14 +42342,14 @@ legend { grid-column:1/-1; }
 .roster-branch-board { display:grid; grid-template-columns:1fr; margin:0; }
 .roster-branch-card { padding:0; border:0; border-radius:0; background:#fff; }
 .roster-branch-card h3 { margin:0; }
-.roster-table-head { display:grid; grid-template-columns:minmax(200px,1fr) 135px 135px 128px; gap:12px; padding:9px 24px; color:var(--muted); background:#fff; border-bottom:1px solid var(--line); font-size:11px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; }
+.roster-table-head { display:grid; grid-template-columns:minmax(200px,1fr) 135px 135px 128px; gap:12px; padding:9px 24px; color:var(--muted); background:#fff; border-bottom:1px solid var(--line); font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
 .roster-assigned { display:grid; gap:0; min-height:0; margin:0; }
 .roster-person { display:grid; grid-template-columns:minmax(200px,1fr) 135px 135px 128px; align-items:center; gap:12px; width:100%; padding:12px 24px; color:var(--ink); background:#fff; border:0; border-bottom:1px solid var(--line); border-radius:0; }
 .roster-person:hover { background:#fdfbfd; }
 .roster-person strong,.roster-person span { display:block; }
 .roster-person span { color:var(--muted); font-size:11px; }
 .roster-person-name { display:flex; align-items:center; gap:10px; min-width:0; }
-.roster-person-name .person-avatar { display:grid; place-items:center; width:38px; height:38px; flex:0 0 auto; color:var(--brand); background:var(--brand-soft); border-radius:10px; font-size:12px; font-weight:900; }
+.roster-person-name .person-avatar { display:grid; place-items:center; width:38px; height:38px; flex:0 0 auto; color:var(--brand); background:var(--brand-soft); border-radius:10px; font-size:12px; font-weight:700; }
 .roster-person-name div { min-width:0; }
 .roster-person label,.branch-assign-row label { font-size:11px; color:var(--muted); }
 .roster-person input,.branch-assign-row input,.branch-assign-row select { min-height:38px; margin:2px 0 0; }
@@ -41991,23 +42376,23 @@ legend { grid-column:1/-1; }
 .roster-day-stats span,.roster-day-stats strong { padding:5px 9px; border-radius:999px; }
 .roster-day-stats span { background:#eee8f0; }
 .roster-day-stats strong { background:var(--brand-soft); }
-.branch-pos { display:inline-flex; margin-top:12px; color:var(--brand); font-weight:800; }
+.branch-pos { display:inline-flex; margin-top:12px; color:var(--brand); font-weight:600; }
 .branch-detail-heading { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:12px; margin:16px 0 22px; padding:16px; background:var(--brand-soft); border:1px solid #e3d3e8; border-radius:12px; }
 .branch-detail-heading strong { font-size:20px; }
 .branch-detail-heading span { color:var(--muted); }
-.branch-icon { display:grid; place-items:center; width:42px; height:42px; flex:0 0 auto; color:#fff; background:var(--brand); border-radius:11px; font-weight:800; }
+.branch-icon { display:grid; place-items:center; width:42px; height:42px; flex:0 0 auto; color:#fff; background:var(--brand); border-radius:11px; font-weight:600; }
 .branch-card-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
 .timetable-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-bottom:20px; }
 .timetable-list div { display:flex; justify-content:space-between; gap:12px; padding:10px 12px; background:#faf8fb; border:1px solid var(--line); border-radius:9px; }
 .timetable-list span { color:var(--muted); }
 .closure-list { display:flex; flex-wrap:wrap; gap:8px; }
-.closure-chip,.pin-code { display:inline-flex; padding:7px 10px; color:var(--brand); background:var(--brand-soft); border:1px solid #e3d3e8; border-radius:8px; font-weight:800; }
+.closure-chip,.pin-code { display:inline-flex; padding:7px 10px; color:var(--brand); background:var(--brand-soft); border:1px solid #e3d3e8; border-radius:8px; font-weight:600; }
 .page-heading { margin-bottom:14px; }
 .pos-sale-heading,.pos-step-heading { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
 .pos-step-heading { margin-top:24px; padding-top:22px; border-top:1px solid var(--line); }
 .pos-sale-heading h2,.pos-step-heading h2 { margin:0; font-size:21px; }
 .pos-sale-heading .eyebrow,.pos-step-heading .eyebrow { margin-bottom:2px; }
-.pos-step-number { display:grid; place-items:center; width:34px; height:34px; flex:0 0 auto; color:#fff; background:var(--brand); border-radius:50%; font-weight:900; }
+.pos-step-number { display:grid; place-items:center; width:34px; height:34px; flex:0 0 auto; color:#fff; background:var(--brand); border-radius:50%; font-weight:700; }
 .pos-mode-switch { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
 .pos-mode-switch label { margin:0; cursor:pointer; }
 .pos-mode-switch input { position:absolute; opacity:0; pointer-events:none; }
@@ -42026,11 +42411,17 @@ legend { grid-column:1/-1; }
 .pos-customer-results button:hover,.pos-customer-results button:focus-visible { background:var(--brand-soft); outline:2px solid #c798d6; outline-offset:-2px; }
 .pos-customer-results strong,.pos-customer-results span { display:block; }
 .pos-customer-results span { margin-top:2px; color:var(--muted); font-size:12px; font-weight:600; }
+.pos-customer-membership { display:inline-flex; width:max-content; max-width:100%; margin:8px 0 0; padding:4px 9px; border:1px solid #d5dbe5; border-radius:999px; color:#344256; background:#f2f5f9; font-size:12px; font-weight:700; line-height:1.4; }
+.pos-customer-membership.member { color:#126346; background:#e9f8f0; border-color:#b7e7ce; }
+.pos-customer-membership.unknown { color:#805d19; background:#fff8e8; border-color:#f0d99d; }
+#posCustomerMembership.unknown,#bookingCustomerMembership.unknown { cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
+#posCustomerMembership:focus-visible,#bookingCustomerMembership:focus-visible { outline:3px solid #245caa; outline-offset:2px; }
+.pos-customer-results .pos-customer-membership { margin-top:6px; }
 .pos-add-item { width:100%; margin:4px 0 14px; border-style:dashed; }
 .sale-item { position:relative; padding:14px; margin-bottom:12px; background:#fbfafc; border:1px solid var(--line); border-radius:10px; }
 .sale-item-heading { display:flex; align-items:center; gap:8px; min-width:0; margin-bottom:9px; }
 .sale-item-heading>.field-label { flex:1 1 auto; min-width:0; margin:0; font-size:13px; }
-.sale-item-kind { display:inline-flex; padding:4px 9px; color:var(--brand); background:var(--brand-soft); border-radius:999px; font-size:11px; font-weight:900; text-transform:uppercase; }
+.sale-item-kind { display:inline-flex; padding:4px 9px; color:var(--brand); background:var(--brand-soft); border-radius:999px; font-size:11px; font-weight:700; text-transform:uppercase; }
 .sale-item-kind.hidden { display:none; }
 .sale-item-remove { display:grid; place-items:center; width:32px; min-height:32px; padding:0; color:#9b3444; background:#fff; border:1px solid #eadbd6; border-radius:8px; font-size:20px; }
 .sale-item-picker { padding-top:1px; }
@@ -42080,14 +42471,14 @@ legend { grid-column:1/-1; }
 .cart-line>span { min-width:0; overflow-wrap:anywhere; }
 .cart-staff { display:block; margin-top:3px; color:var(--muted); font-size:12px; }
 .cart-total { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
-.cart-total span { color:var(--muted); font-weight:800; }
+.cart-total span { color:var(--muted); font-weight:600; }
 .cart-total strong { font-size:30px; }
 .booking-customer-card { display:grid; gap:2px; margin:0 0 16px; padding:14px 16px; color:#0b3558; background:#eef7ff; border:1px solid #cfe4f5; border-radius:10px; }
 .booking-customer-card.hidden { display:none; }
-.booking-customer-card span { color:#54738d; font-size:11px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; }
+.booking-customer-card span { color:#54738d; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
 .booking-customer-card strong { font-size:17px; }.booking-customer-card em { color:#54738d; font-size:13px; font-style:normal; }
 .checkout-total { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:20px 0 12px; padding:18px; color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand-dark)); border-radius:12px; }
-.checkout-total span { font-weight:800; }.checkout-total strong { font-size:30px; }
+.checkout-total span { font-weight:600; }.checkout-total strong { font-size:30px; }
 .pay-button { min-height:54px; font-size:17px; }
 .payment-panel { margin-top:16px; padding:20px; background:#fff; border:2px solid #d7c6df; border-radius:14px; }
 .payment-heading { display:flex; align-items:end; justify-content:space-between; gap:18px; margin-bottom:14px; }
@@ -42102,7 +42493,10 @@ legend { grid-column:1/-1; }
 .payment-allocation button { min-height:34px; padding:6px 10px; color:#9b3444; background:#fff3ef; }
 .payment-balance { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:14px 0; }
 .payment-balance article { padding:12px; background:#f8fbfc; border:1px solid var(--line); border-radius:9px; }
-.payment-balance span { display:block; color:var(--muted); font-size:12px; font-weight:800; }.payment-balance strong { display:block; margin-top:3px; font-size:20px; }
+.loyalty-payment { padding:16px; margin-bottom:18px; border:1px solid var(--line); border-radius:10px; background:var(--brand-soft); }
+.loyalty-payment .load-row { align-items:center; margin-top:12px; }
+.loyalty-payment input { max-width:200px; }
+.payment-balance span { display:block; color:var(--muted); font-size:12px; font-weight:600; }.payment-balance strong { display:block; margin-top:3px; font-size:20px; }
 .payment-balance .change-due { color:#7a3e00; background:#fff8e6; border-color:#edcf83; }
 .cart-payment-summary { display:grid; gap:7px; margin-top:14px; }
 .cart-payment-line { display:flex; justify-content:space-between; gap:12px; padding:8px 10px; color:#365166; background:#f8fbfc; border-radius:7px; }
@@ -42122,7 +42516,7 @@ legend { grid-column:1/-1; }
 .cash-counter-table tfoot td { font-size:18px; }
 .closing-reconciliation { margin:0 0 18px; }
 .closing-reconciliation .closing-group-row th { color:var(--brand); background:var(--brand-soft); font-size:13px; letter-spacing:.05em; text-transform:uppercase; }
-.closing-reconciliation .closing-difference-row th,.closing-reconciliation .closing-difference-row td { font-weight:900; background:#f5f7fa; }
+.closing-reconciliation .closing-difference-row th,.closing-reconciliation .closing-difference-row td { font-weight:700; background:#f5f7fa; }
 .table-input-label { display:block; margin:0; }
 .closing-status-table th,.closing-status-table td { padding:16px; font-size:18px; border:0; }
 .closing-status-table .closing-balanced th,.closing-status-table .closing-balanced td { color:#166534; background:#dcfce7; }
@@ -42130,7 +42524,7 @@ legend { grid-column:1/-1; }
 .closing-status-table td { text-align:right; }
 .sr-only { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
 @media(max-width:700px){.drawer-closing-control{grid-template-columns:1fr}.drawer-closing-control button{width:100%}.cash-counter-table input,.closing-reconciliation input{width:100%;min-width:90px}}
-.field-label { display:block; margin-bottom:8px; font-weight:800; }
+.field-label { display:block; margin-bottom:8px; font-weight:600; }
 .staff-checks { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .mini-check { display:flex; align-items:center; gap:8px; min-height:44px; padding:10px; margin:0; background:#fff; border:1px solid var(--line); border-radius:8px; font-weight:700; }
 .mini-check input { width:auto; min-height:auto; margin:0; }
@@ -42154,7 +42548,7 @@ legend { grid-column:1/-1; }
 .booking-form-message { margin:8px 0 0; color:#b42318; font-size:13px; font-weight:700; }
 .booking-form-message:empty { display:none; }
 .booking-success-body { padding:28px; text-align:center; }
-.booking-success-mark { display:grid; place-items:center; width:48px; height:48px; margin:0 auto 12px; color:#087f5b; background:#e6f7f0; border-radius:50%; font-size:24px; font-weight:800; }
+.booking-success-mark { display:grid; place-items:center; width:48px; height:48px; margin:0 auto 12px; color:#087f5b; background:#e6f7f0; border-radius:50%; font-size:24px; font-weight:600; }
 .booking-success-summary { display:grid; gap:0; margin:18px 0; text-align:left; }
 .booking-success-summary>div { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid var(--line); }
 .booking-success-summary span { color:var(--muted); }
@@ -42162,7 +42556,7 @@ legend { grid-column:1/-1; }
 .booking-success-actions { display:flex; justify-content:flex-end; gap:9px; }
 .booking-service-menu { margin-top:8px; padding:12px; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 30px rgba(28,20,34,.12); }
 .booking-service-categories { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
-.booking-picker-title { grid-column:1/-1; margin:0 0 4px; color:var(--muted); font-size:12px; font-weight:800; }
+.booking-picker-title { grid-column:1/-1; margin:0 0 4px; color:var(--muted); font-size:12px; font-weight:600; }
 .booking-category-option,.booking-service-option { width:100%; color:var(--ink); background:#faf8fb; border:1px solid var(--line); text-align:left; }
 .booking-picker-heading,.booking-service-option { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .booking-category-services { margin-top:10px; }
@@ -42174,20 +42568,20 @@ legend { grid-column:1/-1; }
 .booking-service-row strong,.booking-service-row em { display:block; }
 .booking-service-row em { color:var(--muted); font-size:12px; font-style:normal; }
 .booking-service-row button { width:32px; min-height:32px; padding:0; color:#9b3444; background:#fff3ef; }
-.booking-service-total { display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-top:1px solid var(--line); font-weight:800; }
+.booking-service-total { display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-top:1px solid var(--line); font-weight:600; }
 .booking-service-total strong { font-size:22px; }
 .selected-staff { display:flex; flex-wrap:wrap; gap:8px; margin-top:4px; }
-.staff-chip { display:inline-flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:40px; padding:8px 8px 8px 10px; margin:0; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
+.staff-chip { display:inline-flex; align-items:center; flex-wrap:wrap; gap:8px; min-height:40px; padding:8px 8px 8px 10px; margin:0; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:600; }
 .staff-chip input { position:absolute; opacity:0; pointer-events:none; width:1px; min-height:1px; margin:0; }
 .staff-chip label { display:inline-flex; align-items:center; gap:4px; font-size:12px; }
 .staff-chip label input { position:static; opacity:1; pointer-events:auto; width:72px; min-height:30px; margin:0; padding:0 8px; }
 .staff-chip button { min-height:26px; width:26px; padding:0; color:#9b3444; background:#fff; border:1px solid #eadbd6; border-radius:6px; }
-.allocation-error { color:#b42318 !important; font-weight:800; }
+.allocation-error { color:#b42318 !important; font-weight:600; }
 .table-wrap { overflow-x:auto; }
 table { width:100%; min-width:760px; border-collapse:collapse; }
 th,td { padding:12px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
 th { color:var(--muted); font-size:12px; text-transform:uppercase; }
-.pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:800; }
+.pill { display:inline-flex; padding:4px 9px; color:#9b3444; background:#fff3ef; border:1px solid #eadbd6; border-radius:8px; font-weight:600; }
 .checkout-booking { display:block; margin-top:8px; white-space:nowrap; }
 .booking-date-heading { display:flex; align-items:start; justify-content:space-between; gap:18px; }
 .booking-date-heading h2 { margin:0; }
@@ -42204,7 +42598,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .booking-dialog input,.booking-dialog select { margin-bottom:10px; }
 .diary-date-controls { display:flex; align-items:end; gap:8px; }
 .diary-date-controls button { min-height:44px; padding:0 12px; margin-bottom:14px; }
-.booking-legend { display:flex; justify-content:flex-end; gap:16px; margin-top:12px; color:var(--muted); font-size:12px; font-weight:800; }
+.booking-legend { display:flex; justify-content:flex-end; gap:16px; margin-top:12px; color:var(--muted); font-size:12px; font-weight:600; }
 .booking-legend span { display:flex; align-items:center; gap:6px; }
 .booking-legend i { width:10px; height:10px; border-radius:3px; }
 .booking-legend i.online { background:#287f68; }.booking-legend i.manual { background:#b84e5c; }
@@ -42212,12 +42606,12 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .booking-calendar { display:grid; grid-template-columns:76px minmax(calc(var(--staff-count) * 210px),1fr); grid-template-rows:54px 648px; min-width:940px; }
 .booking-staff-spacer { grid-column:1; grid-row:1; border-right:1px solid #dbe3f1; border-bottom:1px solid #dbe3f1; }
 .booking-staff-headers { display:grid; grid-column:2; grid-row:1; grid-template-columns:repeat(var(--staff-count),minmax(210px,1fr)); }
-.booking-staff-headers div { display:grid; place-items:center; border-right:1px solid #dbe3f1; border-bottom:1px solid #dbe3f1; font-weight:900; }
+.booking-staff-headers div { display:grid; place-items:center; border-right:1px solid #dbe3f1; border-bottom:1px solid #dbe3f1; font-weight:700; }
 .booking-time-rail { position:relative; grid-column:1; grid-row:2; border-right:1px solid #dbe3f1; background:#fbfcff; }
-.booking-time-rail time { position:absolute; right:8px; color:#718096; font-size:9px; transform:translateY(-50%); }.booking-time-rail time.hour { color:#26385f; font-size:11px; font-weight:900; }
+.booking-time-rail time { position:absolute; right:8px; line-height:16px; color:#596a82; font-size:10px; white-space:nowrap; transform:translateY(-50%); }.booking-time-rail time.hour { color:#26385f; font-size:11px; font-weight:700; }
 .booking-lanes { display:grid; grid-column:2; grid-row:2; grid-template-columns:repeat(var(--staff-count),minmax(210px,1fr)); }
 .booking-now { grid-area:2/1/3/-1; align-self:start; position:relative; height:0; border-top:2px solid #dc2626; z-index:5; pointer-events:none; }
-.booking-now span { position:absolute; left:0; top:-11px; background:#dc2626; color:white; padding:2px 4px; border-radius:4px; font-size:10px; font-weight:800; }
+.booking-now span { position:absolute; left:80px; top:-11px; background:#dc2626; color:white; padding:2px 4px; border-radius:4px; font-size:10px; font-weight:600; white-space:nowrap; }
 .booking-status-history { padding:16px 0; }
 .closing-sale-edit { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; min-height:32px; padding:0; border:1px solid #e8dce4; border-radius:7px; background:#fff; color:#846576; vertical-align:middle; }
 .closing-sale-edit:hover { color:#9c3468; background:#fff0f6; border-color:#d9a6bf; }
@@ -42227,12 +42621,14 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .booking-no-show { color:#b42318; white-space:nowrap; }.booking-cancelled { color:#67566e; white-space:nowrap; }
 .booking-overflow { color:#b42318; padding:12px; border:1px solid #f6b5ad; }
 .booking-staff-lane .booking-card { min-height:0; padding:2px 8px; }
+.booking-staff-lane .booking-card.compact { display:flex; align-items:center; padding:0 6px; border-radius:5px; }
+.booking-card.compact strong { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:11px; line-height:16px; }
 .booking-staff-lane { position:relative; height:648px; border-right:1px solid #dbe3f1; background:repeating-linear-gradient(to bottom,#fff 0,#fff 17px,#edf1f7 18px); }
 .booking-card { position:absolute; left:8px; right:8px; z-index:1; min-height:52px; padding:9px 12px; overflow:hidden; color:#081632; border:1px solid; border-radius:8px; text-align:left; box-shadow:none; }
 .booking-card.lane-0{background:#fde4ef;border-color:#ff9dc7}.booking-card.lane-1{background:#dcf7fb;border-color:#72d4df}.booking-card.lane-2{background:#e7e2ff;border-color:#b7a8fa}.booking-card.lane-3{background:#e0f8f2;border-color:#74d9c4}
 .booking-card.manual,.booking-card.online { border-left-width:4px; }.booking-card.online{border-left-color:#287f68}
 .booking-card strong,.booking-time,.booking-note { display:block; }.booking-time{margin-top:3px;font-size:12px}.booking-meta{display:flex;align-items:center;gap:6px;margin-top:5px;color:#4d5c79;font-size:11px}.booking-note{margin-top:4px;color:#6d3440;font-size:11px;font-style:italic}
-.source-badge { display:inline-flex; width:max-content; padding:3px 7px; border-radius:999px; font-size:10px; font-weight:900; text-transform:uppercase; }.source-badge.online{color:#17634f;background:#d8f1e9}.source-badge.manual{color:#913847;background:#f7dfe1}
+.source-badge { display:inline-flex; width:max-content; padding:3px 7px; border-radius:999px; font-size:10px; font-weight:700; text-transform:uppercase; }.source-badge.online{color:#17634f;background:#d8f1e9}.source-badge.manual{color:#913847;background:#f7dfe1}
 .booking-empty{position:sticky;left:100px;margin:28px}
 .booking-detail{margin-top:18px;padding:20px;background:#fff8f5;border:1px solid #eadbd6;border-radius:10px}
 .offline-pos-status{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;padding:12px 14px;color:#66440b;background:#fff4d8;border:1px solid #e8c77b;border-radius:10px;font-size:13px;font-weight:700}
@@ -42258,7 +42654,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 .booking-edit-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:8px}
 .booking-edit-actions button,.booking-edit-actions .danger{width:100%;min-height:46px;margin:0;padding:8px 12px;line-height:1.3}
 @media (max-width:1100px){ .dashboard-lower-grid{grid-template-columns:1fr}.roster-table-head{display:none}.roster-person,.branch-assign-row{grid-template-columns:minmax(180px,1fr) 120px 120px}.roster-row-actions,.branch-assign-row button{grid-column:1/-1}.roster-row-actions{justify-content:flex-end}.branch-assign-row button{justify-self:end;width:auto} }
-@media (max-width:1000px){ body,body.sidebar-collapsed{grid-template-columns:1fr}.sidebar{position:static;height:auto}.sidebar-toggle{display:none}.sidebar-collapsed .nav{justify-content:flex-start;gap:12px;padding:0 14px}.sidebar-collapsed .nav span,.sidebar-collapsed .sidebar-user > span:last-child{display:block}.sidebar-collapsed .sidebar-user{justify-content:flex-start;padding-inline:10px}.sidebar-collapsed .brand{margin-top:0;padding:8px}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr 1fr}.time-clock-actions{grid-column:1/-1}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (max-width:1000px){ body,body.sidebar-collapsed{grid-template-columns:1fr}.sidebar{position:static;height:auto}.sidebar-toggle{display:none}.sidebar-collapsed .nav{justify-content:flex-start;gap:12px;padding:0 14px}.sidebar-collapsed .nav span,.sidebar-collapsed .sidebar-user > span:last-child{display:block}.sidebar-collapsed .sidebar-user{justify-content:flex-start;padding-inline:10px}.sidebar-collapsed .brand{margin-top:0;padding:8px}.topbar,.split{grid-template-columns:1fr;display:grid}.product-top-grid,.report-two-column{grid-template-columns:1fr}.time-clock-panel{grid-template-columns:1fr}.time-clock-actions{grid-column:auto}.report-filter-panel{align-items:stretch;flex-direction:column}.report-filters{width:100%;grid-template-columns:repeat(3,1fr) auto}.metrics,.cards,.branch-grid{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .topbar,.dashboard-toolbar,.admin-controls,.roster-toolbar,.product-table-heading,.report-section>.section-heading,.payment-heading{align-items:stretch;flex-direction:column}.product-table-controls{align-items:stretch;flex-direction:column}.product-table-controls label,.product-table-controls .product-search,.payment-heading label{width:100%}.time-clock-panel,.report-filters,.payment-methods,.payment-balance{grid-template-columns:1fr}.payment-methods button:last-child{grid-column:auto}.payment-allocation{grid-template-columns:minmax(0,1fr) auto}.payment-allocation button{grid-column:1/-1}.time-clock-actions{grid-column:auto}.report-filters button{width:100%}.roster-toolbar-controls{grid-template-columns:1fr}.period-tabs{display:grid;grid-template-columns:repeat(2,1fr)}.branch-switcher{min-width:0}.metrics,.cards,.branch-grid,.grid,fieldset,.staff-checks,.closing-summary,.roster-person,.branch-assign-row,.timetable-list{grid-template-columns:1fr}.branch-roster-heading{align-items:flex-start;flex-direction:column}.roster-day-stats{justify-content:flex-start}.roster-person,.branch-assign-row{padding-left:18px;padding-right:18px}.roster-row-actions{justify-content:flex-start}.branch-assign-row button{justify-self:stretch;width:100%}.month-day{min-height:76px}.month-day span{display:none} }
 @media (max-width:700px){.booking-date-heading{align-items:stretch;flex-direction:column}.booking-header-actions{align-items:stretch}.booking-header-actions>#newBookingButton{align-self:flex-end}.diary-date-controls{width:100%;flex-wrap:wrap}.diary-date-controls label{flex:1 1 150px}.booking-dialog form{padding:18px}.sale-picker-filters{grid-template-columns:1fr}.sale-picker-menu{max-height:50dvh}.pos-sale-heading{flex-wrap:wrap}.print-last-receipt{margin-left:46px}.booking-success-actions button{flex:1}}
 @media (max-width:560px){.booking-detail{padding:14px}.booking-detail-grid,.booking-edit-actions{grid-template-columns:1fr}}
@@ -42267,7 +42663,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
 
 .customer-export-dialog { width:min(760px,calc(100vw - 32px)); }
 .customer-export-dialog fieldset { margin:18px 0 0; padding:16px; border:1px solid var(--line); border-radius:10px; background:#fff; }
-.customer-export-dialog legend { padding:0 7px; font-weight:800; }
+.customer-export-dialog legend { padding:0 7px; font-weight:600; }
 .customer-export-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px 18px; }
 .customer-export-fields .check { display:flex; align-items:center; gap:8px; margin:0; font-weight:600; }
 .customer-export-fields input { width:18px; height:18px; margin:0; accent-color:var(--primary); }
@@ -42301,8 +42697,8 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
   .branch-hours-table tbody{display:grid;gap:10px}
   .branch-hours-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px;border:1px solid var(--line);border-radius:9px}
   .branch-hours-table td{display:block;min-width:0;padding:0}
-  .branch-hours-table td:first-child{grid-column:1/-1;font-weight:800}
-  .branch-hours-table td:nth-child(2)::before,.branch-hours-table td:nth-child(3)::before{display:block;margin-bottom:4px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}
+  .branch-hours-table td:first-child{grid-column:1/-1;font-weight:600}
+  .branch-hours-table td:nth-child(2)::before,.branch-hours-table td:nth-child(3)::before{display:block;margin-bottom:4px;color:var(--muted);font-size:10px;font-weight:600;text-transform:uppercase}
   .branch-hours-table td:nth-child(2)::before{content:"Open"}
   .branch-hours-table td:nth-child(3)::before{content:"Close"}
   .branch-hours-table td:last-child{grid-column:1/-1;display:flex;align-items:center;gap:8px}
@@ -42345,7 +42741,7 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
   #branches .mobile-card-table tbody tr,#inventory .mobile-card-table tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;min-width:0;padding:14px;border:1px solid var(--line);border-radius:11px;background:#fff}
   #branches .mobile-card-table tbody td,#inventory .mobile-card-table tbody td{display:block;min-width:0;padding:0;border:0;font-size:13px;overflow-wrap:anywhere}
   #branches .mobile-card-table tbody td:first-child,#inventory .mobile-card-table tbody td:first-child{grid-column:1/-1;font-size:15px;font-weight:700}
-  #branches .mobile-card-table tbody td[data-label]::before,#inventory .mobile-card-table tbody td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em}
+  #branches .mobile-card-table tbody td[data-label]::before,#inventory .mobile-card-table tbody td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
   #branches .mobile-card-table tbody td:nth-child(2),#inventory .mobile-card-table tbody td:nth-child(2){grid-column:1/-1}
   #branches .mobile-card-table tbody td:last-child,#inventory .mobile-card-table tbody td:last-child{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--line)}
   #branches .mobile-card-table tbody td:last-child::before{display:none}
@@ -42425,11 +42821,11 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
   .mobile-card-table tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;min-width:0;padding:13px;border:1px solid var(--line);border-radius:11px;background:#fff}
   .mobile-card-table tbody td{display:block;min-width:0;padding:0!important;border:0;font-size:13px;overflow-wrap:anywhere}
   .mobile-card-table tbody td:first-child{grid-column:1/-1;font-size:15px;font-weight:700}
-  .mobile-card-table tbody td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:800;line-height:1.3;text-transform:uppercase;letter-spacing:.04em}
+  .mobile-card-table tbody td[data-label]::before{content:attr(data-label);display:block;margin-bottom:2px;color:var(--muted);font-size:10px;font-weight:600;line-height:1.3;text-transform:uppercase;letter-spacing:.04em}
   .mobile-card-table tbody td .hint,.mobile-card-table tbody td .table-subtext{display:block;margin-top:2px;font-size:11px}
   .mobile-card-table tbody tr:has(.empty-cell){display:block}
   #inventory .mobile-card-table td:nth-child(2){grid-column:1/-1}
-  #inventory .mobile-card-table td:last-child{grid-column:1/-1;display:flex;justify-content:space-between;align-items:baseline;padding-top:8px!important;border-top:1px solid var(--line);font-weight:800}
+  #inventory .mobile-card-table td:last-child{grid-column:1/-1;display:flex;justify-content:space-between;align-items:baseline;padding-top:8px!important;border-top:1px solid var(--line);font-weight:600}
   #inventory .mobile-card-table td:last-child::before{display:inline;margin:0}
   #reports .report-section .table-wrap{padding:12px}
   #reports .report-section .mobile-card-table{min-width:0}
@@ -42474,15 +42870,21 @@ var index_default = {
       headers3.set("referrer-policy", "same-origin");
       return new Response(protectedResponse.body, { status: protectedResponse.status, headers: headers3 });
     } catch (error) {
+      if (error instanceof DuplicatePhoneError || error.name === "CustomerContactError") return Response.json({ error: error.message }, {status:409,headers:{"cache-control":"no-store"}});
+      if (String(error).includes("CUSTOMER_DUPLICATE_PHONE")) return Response.json({ error:"Duplicate number. Refresh the customer search before saving." },{status:409});
       console.error("Access request failed", error.message);
       return Response.json({ error: "Unable to complete the request. Please sign in again or contact an administrator." }, { status: 500, headers: { "cache-control": "no-store" } });
     }
+  },
+  async scheduled(_controller, env) {
+    await closeStaleTimeEntries(env);
   }
 };
 export {
   index_default as default,
   searchCustomers
 };
+export { getTimesheet };
 /*! Bundled license information:
 
 xlsx/xlsx.mjs:
