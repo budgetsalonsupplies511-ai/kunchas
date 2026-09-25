@@ -42395,7 +42395,7 @@ legend { grid-column:1/-1; }
 .pos-step-number { display:grid; place-items:center; width:34px; height:34px; flex:0 0 auto; color:#fff; background:var(--brand); border-radius:50%; font-weight:700; }
 .pos-mode-switch { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
 .pos-mode-switch label { margin:0; cursor:pointer; }
-.pos-mode-switch input { position:absolute; opacity:0; pointer-events:none; }
+.pos-mode-switch input { position:absolute; width:1px; height:1px; min-height:0; margin:0; padding:0; opacity:0; pointer-events:none; }
 .pos-mode-switch span { display:block; min-height:72px; padding:13px 15px; border:2px solid var(--line); border-radius:12px; background:#fff; transition:.15s ease; }
 .pos-mode-switch strong,.pos-mode-switch small { display:block; }
 .pos-mode-switch small { margin-top:3px; color:var(--muted); font-weight:600; }
@@ -42732,7 +42732,20 @@ th { color:var(--muted); font-size:12px; text-transform:uppercase; }
   input,select,textarea{font-size:16px}
   .table-wrap{max-width:100%;overflow-x:auto}
 }
-@media(min-width:701px) and (max-width:1200px){.split,.pos-workspace>.split{display:grid;grid-template-columns:minmax(0,1fr)}}
+@media(min-width:701px) and (max-width:1200px){
+  .split,.pos-workspace>.split{display:grid;grid-template-columns:minmax(0,1fr)}
+  .report-filter-panel{align-items:stretch;flex-direction:column;gap:14px}
+  .report-filters{width:100%;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .report-filters>*{min-width:0}
+  .report-filters button{min-height:44px}
+  .report-summary{grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible}
+  .report-summary article{min-width:0;overflow-wrap:anywhere}
+  .report-two-column{grid-template-columns:minmax(0,1fr)}
+  .staff-directory table,.timesheet-panel table{min-width:0}
+  .staff-directory td:first-child,.timesheet-staff-link{overflow-wrap:anywhere}
+  .cash-counter,.cash-counter .table-wrap{min-width:0;max-width:100%}
+  .cash-counter-table,.closing-reconciliation,.closing-status-table{min-width:0}
+}
 @media(min-width:701px) and (max-width:1100px){
   #branches .table-wrap,#inventory .table-wrap{overflow:visible}
   #branches .mobile-card-table,#inventory .mobile-card-table,#branches .mobile-card-table tbody,#inventory .mobile-card-table tbody{display:block;width:100%;min-width:0}
