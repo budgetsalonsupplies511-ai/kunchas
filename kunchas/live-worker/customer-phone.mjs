@@ -19,11 +19,29 @@ export async function findPhoneOwner(env, phone, excludeId = '') {
 }
 
 export async function assertUniqueCustomerPhone(env, phone, excludeId = '') {
+  assertValidCustomerPhone(phone);
   const owner = await findPhoneOwner(env, phone, excludeId);
   if (owner) throw new DuplicatePhoneError(owner);
 }
 
 export async function phoneCheckResponse(url, env) {
+  const message = customerPhoneError(url.searchParams.get('checkPhone'));
+  if (message) return Response.json({duplicate:false,invalid:true,message},{headers:{'cache-control':'no-store'}});
   const owner = await findPhoneOwner(env, url.searchParams.get('checkPhone'), url.searchParams.get('excludeCustomerId') || '');
   return Response.json({ duplicate: Boolean(owner), message: owner ? new DuplicatePhoneError(owner).message : '' }, { headers: { 'cache-control': 'no-store' } });
+}
+
+export function customerPhoneError(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return 'Phone number is required.';
+  if (!/^\+?[0-9 () .\-]+$/.test(raw)) return 'Enter a valid phone number using digits and an optional country code.';
+  const compact = raw.replace(/[ () .\-]/g, '');
+  const australian = /^(?:0|61|\+61|0061)/.test(compact);
+  const key = normalizeCustomerPhone(raw);
+  if (australian ? /^0[23478]\d{8}$/.test(key) : /^\+[1-9]\d{7,14}$/.test(compact)) return '';
+  return 'Enter a 10-digit Australian phone number, or an international number starting with + and its country code.';
+}
+export function assertValidCustomerPhone(phone) {
+  const message = customerPhoneError(phone);
+  if (message) throw Object.assign(new Error(message), {name:'CustomerPhoneError'});
 }

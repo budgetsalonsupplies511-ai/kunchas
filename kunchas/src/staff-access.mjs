@@ -90,7 +90,7 @@ async function accessSettings(request,env,user){
       rows(env,`SELECT s.id AS staffId,s.name,s.email,s.status,u.username,u.role,u.enabled,u.all_branches,u.branch_ids,CASE WHEN u.pin_hash IS NOT NULL AND u.pin_hash!='' THEN 1 ELSE 0 END AS hasPin FROM staff s LEFT JOIN access_users u ON u.staff_id=s.id ORDER BY s.name`),
       rows(env,"SELECT id,name FROM branches WHERE status!='Archived' ORDER BY name")
     ]);
-    return reply({sections:ACCESS_SECTIONS,roles:roles.map(r=>({...r,permissions:parse(r.permissions,{})})),users:users.map(u=>({...u,role:u.role||'none',branchIds:parse(u.branch_ids,[])})),branches});
+    return reply({sections:ACCESS_SECTIONS,roles:roles.map(r=>({...r,permissions:parse(r.permissions,{})})),users:users.map(u=>({...u,role:u.role||'none',branchIds:Array.isArray(parse(u.branch_ids,[]))?parse(u.branch_ids,[]):[]})),branches});
   }
   const body=await request.json();
   if(url.pathname==='/api/access/roles'){

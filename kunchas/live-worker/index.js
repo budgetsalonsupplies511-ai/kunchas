@@ -1,4 +1,7 @@
-import { assertUniqueCustomerPhone, findPhoneOwner, phoneCheckResponse, DuplicatePhoneError } from "./customer-phone.mjs";
+import {exportStaffExcel, importStaffExcel, exportStaffPins} from "./staff-excel.mjs";
+import {encryptStaffPin,revealStaffPin} from "./pin-vault.mjs";
+import {pinVaultClientScript} from "./pin-vault-ui.mjs";
+import { assertUniqueCustomerPhone, findPhoneOwner, phoneCheckResponse, DuplicatePhoneError, normalizeCustomerPhone, assertValidCustomerPhone } from "./customer-phone.mjs";
 import { customerPhoneClientScript } from "./customer-phone-ui.mjs";
 import { loyaltyForSale, loyaltyError } from "./loyalty.mjs";
 import { loyaltyPaymentHtml, loyaltyClientScript } from "./loyalty-ui.mjs";
@@ -158,13 +161,14 @@ __name(staffRoles, "staffRoles");
 async function accessSettings(request, env, user) {
   if (!managesAccess(user)) return denied();
   const url = new URL(request.url);
+  if (url.pathname === "/api/access/reveal-pin") return request.method === "POST" ? revealStaffPin(request,env,user,{hashPin,equal}) : reply({error:"Method not allowed"},405);
   if (request.method === "GET") {
     const [roles, users, branches] = await Promise.all([
       rows(env, "SELECT role,permissions FROM access_roles ORDER BY role"),
       rows(env, `SELECT s.id AS staffId,s.name,s.email,s.status,u.username,u.role,u.enabled,u.all_branches,u.branch_ids,CASE WHEN u.pin_hash IS NOT NULL AND u.pin_hash!='' THEN 1 ELSE 0 END AS hasPin FROM staff s LEFT JOIN access_users u ON u.staff_id=s.id WHERE s.status != 'Deleted' ORDER BY s.name`),
       rows(env, "SELECT id,name FROM branches WHERE status!='Archived' ORDER BY name")
     ]);
-    return reply({ sections: ACCESS_SECTIONS, roles: roles.map((r) => ({ ...r, permissions: parse(r.permissions, {}) })), users: users.map((u) => ({ ...u, role: u.role || "none", branchIds: parse(u.branch_ids, []) })), branches });
+    return reply({ sections: ACCESS_SECTIONS, roles: roles.map((r) => ({ ...r, permissions: parse(r.permissions, {}) })), users: users.map((u) => ({ ...u, role: u.role || "none", branchIds: Array.isArray(parse(u.branch_ids, [])) ? parse(u.branch_ids, []) : [] })), branches });
   }
   const body = await request.json();
   if (url.pathname === "/api/access/roles") {
@@ -198,7 +202,7 @@ async function accessSettings(request, env, user) {
     if (pin && !/^[A-Za-z0-9]{4,6}$/.test(pin) || enabled && !pin && !account.pin_hash) return reply({ error: "Set an individual PIN using 4\u20136 letters or digits." }, 400);
     const salt = pin ? random(16) : account.pin_salt, hash2 = pin ? await hashPin(pin, salt) : account.pin_hash;
     await env.DB.batch([
-      env.DB.prepare("UPDATE access_users SET username=?,enabled=?,all_branches=?,branch_ids=?,pin_salt=?,pin_hash=?,updated_at=? WHERE id=?").bind(username, enabled ? 1 : 0, allBranches ? 1 : 0, JSON.stringify(branchIds), salt, hash2, (/* @__PURE__ */ new Date()).toISOString(), account.id),
+      env.DB.prepare("UPDATE access_users SET username=?,enabled=?,all_branches=?,branch_ids=?,pin_salt=?,pin_hash=?,pin_ciphertext=?,updated_at=? WHERE id=?").bind(username, enabled ? 1 : 0, allBranches ? 1 : 0, JSON.stringify(branchIds), salt, hash2, pin ? await encryptStaffPin(env,account.id,pin) : account.pin_ciphertext || "", (/* @__PURE__ */ new Date()).toISOString(), account.id),
       env.DB.prepare("DELETE FROM access_sessions WHERE user_id=?").bind(account.id)
     ]);
     await audit(env, user, pin ? "save_access_and_pin" : "save_user_access", staffId);
@@ -231,7 +235,7 @@ async function accessGate(request, env) {
     if (!equal(await hashPin(text(body2.currentPin), account.pin_salt), account.pin_hash)) return { response: reply({ error: "The current PIN is incorrect." }, 403) };
     const salt = random(16), hash2 = await hashPin(pin, salt);
     await env.DB.batch([
-      env.DB.prepare("UPDATE access_users SET pin_salt=?,pin_hash=?,updated_at=? WHERE id=?").bind(salt, hash2, (/* @__PURE__ */ new Date()).toISOString(), user.id),
+      env.DB.prepare("UPDATE access_users SET pin_salt=?,pin_hash=?,pin_ciphertext=?,updated_at=? WHERE id=?").bind(salt, hash2, await encryptStaffPin(env,user.id,pin), (/* @__PURE__ */ new Date()).toISOString(), user.id),
       env.DB.prepare("DELETE FROM access_sessions WHERE user_id=?").bind(user.id),
       env.DB.prepare("DELETE FROM access_login_limits WHERE key=?").bind(key2)
     ]);
@@ -1145,6 +1149,7 @@ async function submit(request, env, url) {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(id)) throw new BookingError("Please refresh the page and try again.");
   const customer = body.customer || {}, firstName = text4(customer.firstName), lastName = text4(customer.lastName), email = text4(customer.email).toLowerCase(), phone2 = text4(customer.phone), notes = text4(body.notes);
   if (!firstName || !lastName || firstName.length > 80 || lastName.length > 80 || email.length > 254 || !/^\S+@\S+\.\S+$/.test(email) || !/^\+?[\d\s()-]{8,25}$/.test(phone2) || notes.length > 1e3) throw new BookingError("Enter your first and last name, valid email address and phone number. Notes must be under 1,000 characters.");
+  assertValidCustomerPhone(phone2);
   const fingerprint = await hash(JSON.stringify({ branchId: body.branchId, date: body.date, time: body.time, serviceIds: body.serviceIds, firstName, lastName, email, phone: phone2, notes }));
   const previous = await env.DB.prepare("SELECT fingerprint FROM public_booking_requests WHERE booking_id=?").bind(id).first();
   if (previous) {
@@ -1198,6 +1203,7 @@ async function publicBookingRoute(request, env) {
     return json2({ error: "Method not allowed." }, 405);
   } catch (error) {
     if (String(error).includes("CUSTOMER_DUPLICATE_PHONE") || error instanceof DuplicatePhoneError) return json2({ error: "Please check your contact details or call the salon to complete your booking." }, 409);
+    if (error.name === "CustomerPhoneError") return json2({error:error.message},400);
     if (error instanceof BookingError) return json2({ error: error.message }, error.status);
     console.error(JSON.stringify({ event: "public_booking_failed", message: error.message }));
     return json2({ error: "Unable to complete your request. Please try again or call the branch." }, 500);
@@ -36060,6 +36066,7 @@ async function importCustomers(request, env) {
   const lastIndex = column("LastName", "Last name");
   const emailIndex = column("Email");
   const phoneIndex = column("Phone1", "Phone", "Primary phone");
+  if (phoneIndex < 0) return json4({error:"Missing Phone column. Every customer needs a valid phone number."},400);
   if (clientIndex < 0 || firstIndex < 0 || lastIndex < 0) return json4({ error: "Missing ClientNum, FirstName, or LastName columns." }, 400);
   const branch = matches[0];
   const current = (await env.DB.prepare("SELECT id,external_ref,email FROM customers WHERE branch_id=? AND external_ref IS NOT NULL").bind(branch.id).all()).results || [];
@@ -36105,6 +36112,21 @@ async function importCustomers(request, env) {
     });
   }
   if (!customers.length) return json4({ error: "No valid customer rows were found.", skipped, errors: errors.slice(0, 20) }, 400);
+  const phoneRows = new Map();
+  const phoneOwners = (await env.DB.prepare("SELECT id,phone_key,first_name,last_name FROM customers WHERE phone_key!=''").all()).results || [];
+  const ownersByPhone = new Map();
+  for(const owner of phoneOwners){const group=ownersByPhone.get(owner.phone_key)||[];group.push(owner);ownersByPhone.set(owner.phone_key,group);}
+  for (const customer of customers) {
+    try {
+      assertValidCustomerPhone(customer.phone);
+      const key = normalizeCustomerPhone(customer.phone);
+      const owner=(ownersByPhone.get(key)||[]).find(owner=>owner.id!==customer.id);
+      if(owner) throw new DuplicatePhoneError(owner);
+      if (phoneRows.has(key)) throw new Error('Duplicate number (' + phoneRows.get(key) + ') in this file.');
+      phoneRows.set(key,customer.firstName+' '+customer.lastName);
+    } catch(error) { errors.push('Customer '+customer.externalRef+': '+error.message); }
+  }
+  if(errors.length) return json4({error:'Import cancelled. Correct the customer details and retry.',errors:errors.slice(0,20)},400);
   const emailCounts = /* @__PURE__ */ new Map();
   for (const customer of customers) if (customer.email) emailCounts.set(customer.email, (emailCounts.get(customer.email) || 0) + 1);
   for (const customer of customers) {
@@ -36149,8 +36171,9 @@ function canManageAccess() { return ["owner","admin"].includes(currentUser?.role
 function canViewTab(tab) { return tab === "access" ? canManageAccess() : tab === "reports" ? userCan("reports") || userCan("payroll") : userCan(tabPermissions[tab]); }
 function roleName(role) { return ({owner:"SuperAdmin (Owner)",admin:"Admin",manager:"Manager",staff:"Staff",none:"No access"})[role] || "No access"; }
 function applyAccessUi() {
-  document.querySelectorAll('#customerForm [name="phone"],#customerProfileForm [name="phone"]').forEach((input) => { input.required = appMode === "staff"; });
+  document.querySelectorAll('#customerForm [name="phone"],#customerProfileForm [name="phone"]').forEach((input) => { input.required = true; });
   document.querySelectorAll("#customerForm p.hint,#customerProfileForm p.hint").forEach((hint) => { if (appMode === "staff") hint.textContent = "Phone number is required in POS."; });
+  document.querySelector("#importStaffButton").hidden=!userCan("staff",true)||!currentUser.allBranches;
   document.querySelector("#addStaffButton").hidden=!userCan("staff",true)||!currentUser.allBranches;
   document.querySelector("#deleteStaffButton").hidden=!userCan("staff",true)||!currentUser.allBranches;
   document.querySelector("#addCustomerButton").hidden=!userCan("customers",true);
@@ -36233,7 +36256,7 @@ function renderStaffLogin(form=document.querySelector("#staffProfileForm")) {
   const person=accessSettingsData?.users.find(item=>item.staffId===staffId);
   form.elements.username.value=person?.username||person?.email||"";form.elements.pin.value="";
   form.elements.enabled.checked=Boolean(person?.enabled);form.elements.allBranches.checked=Boolean(person?.all_branches);
-  form.querySelector('[data-branch-checks]').innerHTML=(accessSettingsData?.branches||[]).map(branch=>'<label class="day-chip"><input type="checkbox" name="branchIds" value="'+esc(branch.id)+'"'+(person?.branchIds.includes(branch.id)?' checked':'')+'><span>'+esc(branch.name)+'</span></label>').join('');
+  form.querySelector('[data-branch-checks]').innerHTML=(accessSettingsData?.branches||[]).map(branch=>'<label class="day-chip"><input type="checkbox" name="branchIds" value="'+esc(branch.id)+'"'+(Array.isArray(person?.branchIds)&&person.branchIds.includes(branch.id)?' checked':'')+'><span>'+esc(branch.name)+'</span></label>').join('');
   form.querySelector('[data-branch-choices]').disabled=form.elements.allBranches.checked;
 }
 function staffLoginValues(form){
@@ -36401,6 +36424,10 @@ var application = {
       if (request.method === "POST" && url.pathname === "/api/products/import") return importProducts(request, env);
       if (request.method === "DELETE" && url.pathname.startsWith("/api/products/")) return deleteProduct(env, clean(url.pathname.replace("/api/products/", "")));
       if (request.method === "PATCH" && url.pathname.startsWith("/api/products/")) return updateProduct(request, env, clean(url.pathname.replace("/api/products/", "")));
+      if (request.method === "GET" && url.pathname === "/api/staff/export") return exportStaffExcel(env, {utils,write:writeSync}, false, {allowed:managesAccess(ctx.identity)});
+      if (request.method === "GET" && url.pathname === "/api/staff/sample") return exportStaffExcel(env, {utils,write:writeSync}, true, {allowed:managesAccess(ctx.identity)});
+      if (request.method === "POST" && url.pathname === "/api/staff/import") return importStaffExcel(request, env, {utils,read:readSync}, {allowed:managesAccess(ctx.identity),actor:ctx.identity,hashPin,random});
+      if (request.method === "POST" && url.pathname === "/api/staff/export-pins") return exportStaffPins(request,env,ctx.identity,{utils,write:writeSync},{hashPin,equal});
       if (request.method === "POST" && url.pathname === "/api/staff") return createStaff(request, env, ctx.identity);
       if (request.method === "DELETE" && url.pathname.startsWith("/api/staff/")) return deleteStaff(env, clean(url.pathname.replace("/api/staff/", "")), ctx.identity);
       if (request.method === "PATCH" && url.pathname.startsWith("/api/staff/")) return updateStaff(request, env, clean(url.pathname.replace("/api/staff/", "")), ctx.identity);
@@ -36641,8 +36668,8 @@ async function createCustomer(request, env) {
   const email = clean(body.email).toLowerCase();
   const phone2 = clean(body.phone);
   const branchId = clean(body.branchId);
-  if (!firstName || !lastName || !branchId || !email && !phone2) {
-    return jsonResponse({ error: "Customer name, branch, and an email or phone number are required." }, 400);
+  if (!firstName || !lastName || !branchId || !phone2) {
+    return jsonResponse({ error: "Customer name, branch, and a phone number are required." }, 400);
   }
   const existing = email ? await env.DB.prepare("SELECT id FROM customers WHERE branch_id=? AND email=?").bind(branchId, email).first() : null;
   await assertUniqueCustomerPhone(env, phone2);
@@ -36690,6 +36717,11 @@ async function createBooking(request, env) {
   if (await exceedsBookingCapacity(env, branchId, bookingDate, startMinutes, startMinutes + totalMinutes)) {
     return jsonResponse({ error: "This branch already has four bookings at that time. Please select another time." }, 409);
   }
+  if(customerId){
+    const contact=await env.DB.prepare("SELECT phone FROM customers WHERE id=? AND branch_id=?").bind(customerId,branchId).first();
+    if(!contact) return jsonResponse({error:"Customer not found at this branch."},400);
+    await assertUniqueCustomerPhone(env,contact.phone,customerId);
+  }
   customerId ||= await ensureBookingCustomer(env, body.customer || {}, branchId, clean(body.source) === "Manual" ? "Manual booking" : "Online booking");
   if (!customerId) return jsonResponse({ error: "Customer details are required." }, 400);
   try { await env.DB.prepare(
@@ -36730,7 +36762,7 @@ async function ensureBookingCustomer(env, customer, branchId, tag) {
   const lastName = clean(customer.lastName);
   const email = clean(customer.email).toLowerCase();
   const phone2 = clean(customer.phone);
-  if (!firstName || !lastName || !branchId || !email && !phone2) return "";
+  if (!firstName || !lastName || !branchId || !phone2) return "";
   await assertUniqueCustomerPhone(env, phone2);
   const lookup = email ? await all(env, "SELECT id FROM customers WHERE branch_id = ? AND email = ?", [branchId, email]) : [];
   if (lookup.length) throw Object.assign(new Error("A customer already uses this email. Select their existing account."), { name: "CustomerContactError" });
@@ -36922,8 +36954,8 @@ async function updateCustomer(request, env, customerId) {
   const email = clean(body.email).toLowerCase();
   const phone2 = clean(body.phone);
   const branchId = clean(body.branchId);
-  if (!customerId || !firstName || !lastName || !branchId || !email && !phone2) {
-    return jsonResponse({ error: "Customer name, home branch, and an email or phone number are required." }, 400);
+  if (!customerId || !firstName || !lastName || !branchId || !phone2) {
+    return jsonResponse({ error: "Customer name, home branch, and a phone number are required." }, 400);
   }
   if (email) {
     const duplicate = await env.DB.prepare("SELECT id FROM customers WHERE branch_id=? AND email=? AND id!=?").bind(branchId, email, customerId).first();
@@ -37779,6 +37811,7 @@ async function createSale(request, env) {
   const saleCustomer = customerId ? await env.DB.prepare("SELECT first_name,last_name,phone,loyalty_points FROM customers WHERE id=? AND branch_id=?").bind(customerId, branchId).first() : null;
   const guestCheckout = !bookingId && clean(body.customerMode) === "guest" && !customerId;
   if (!guestCheckout && (!saleCustomer || !clean(saleCustomer.first_name) || !clean(saleCustomer.last_name) || !clean(saleCustomer.phone))) return jsonResponse({ error: "Customer name and phone number are required for checkout." }, 400);
+  if(saleCustomer) await assertUniqueCustomerPhone(env,saleCustomer.phone,customerId);
   const serviceIds = items.filter((item) => clean(item.itemType || "service") === "service").map((item) => clean(item.itemId || item.serviceId)).filter(Boolean);
   const productIds = items.filter((item) => clean(item.itemType) === "product").map((item) => clean(item.itemId)).filter(Boolean);
   if (!serviceIds.length && !productIds.length) {
@@ -38291,13 +38324,14 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       <div class="section-heading page-heading"><div><p class="eyebrow">Customer records</p><h2>Customers</h2><p class="hint">Find a customer or add a new record.</p></div><div class="excel-actions"><button class="primary" id="addCustomerButton" type="button">+ Add customer</button>${accessUser.role === "owner" ? `<button class="secondary" id="exportCustomersButton" type="button">Export customers</button><button class="secondary" id="importCustomersButton" type="button">Import customers</button><input class="hidden" id="customerImportFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">` : ""}</div></div>
       ${accessUser.role === "owner" ? `<p class="hint">Import files must be named for their branch, for example <strong>ashfield.XLS</strong>. Existing rows are updated by branch and customer number.</p><p id="customerImportResult" role="status"></p>` : ""}
       <div class="panel customer-directory"><h2>Find a customer</h2><p class="hint">The customer list stays closed. Search by name, email, phone number, or customer number.</p><label class="customer-directory-search"><span>Search customers</span><input id="customerDirectorySearch" type="search" placeholder="Name, email, phone or customer number" autocomplete="off"></label><p class="hint" id="customerSearchStatus" role="status">Enter at least 2 characters to search.</p><div class="table-wrap hidden" id="customerSearchResults"><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Customer no.</th><th>Branch</th><th class="customer-points">Points</th></tr></thead><tbody id="customersTable"></tbody></table></div></div>
-      <dialog id="customerEditorDialog" class="branch-dialog customer-dialog"><form id="customerForm"><div class="branch-dialog-header"><div><p class="eyebrow">Customer record</p><h2>Add customer</h2></div><button class="secondary branch-icon-button" id="cancelAddCustomer" type="button" aria-label="Close add customer">\u2715</button></div><div class="branch-dialog-body"><div class="grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><p class="hint">Enter at least one contact method: email or phone.</p><label>Home branch<select name="branchId" required></select></label><label>Tags<input name="tags" placeholder="VIP, colour client"></label><label>Notes<textarea name="notes" rows="3"></textarea></label></div><div class="branch-dialog-footer"><button class="secondary" id="cancelAddCustomerFooter" type="button">Cancel</button><button class="primary" type="submit">Save customer</button></div></form></dialog>
-      <dialog class="branch-dialog customer-profile-dialog" id="customerProfile"><div class="branch-dialog-header profile-heading"><div><p class="eyebrow">Customer record</p><h2 id="customerProfileTitle">Customer details</h2><p class="hint" id="customerProfileSummary"></p></div><button class="secondary branch-icon-button" id="closeCustomerProfile" type="button" aria-label="Close customer details">\u2715</button></div><div class="branch-dialog-body"><form id="customerProfileForm"><input name="customerId" type="hidden"><div class="grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone"></label></div><p class="hint">Enter at least one contact method: email or phone.</p><label>Home branch<select name="branchId" required></select></label><label>Tags<input name="tags"></label><label>Notes<textarea name="notes" rows="4" placeholder="Customer preferences, colour formulas, allergies, or other notes"></textarea></label><button class="primary" type="submit">Save customer details</button></form><div class="dialog-history"><h3>Service and sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Location</th><th>Service / item</th><th>Staff</th><th>Amount</th><th>Payment</th></tr></thead><tbody id="customerHistoryTable"></tbody></table></div></div></div></dialog>
+      <dialog id="customerEditorDialog" class="branch-dialog customer-dialog"><form id="customerForm"><div class="branch-dialog-header"><div><p class="eyebrow">Customer record</p><h2>Add customer</h2></div><button class="secondary branch-icon-button" id="cancelAddCustomer" type="button" aria-label="Close add customer">\u2715</button></div><div class="branch-dialog-body"><div class="grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone" type="tel" required></label></div><p class="hint">A valid phone number is required. Email is optional.</p><label>Home branch<select name="branchId" required></select></label><label>Tags<input name="tags" placeholder="VIP, colour client"></label><label>Notes<textarea name="notes" rows="3"></textarea></label></div><div class="branch-dialog-footer"><button class="secondary" id="cancelAddCustomerFooter" type="button">Cancel</button><button class="primary" type="submit">Save customer</button></div></form></dialog>
+      <dialog class="branch-dialog customer-profile-dialog" id="customerProfile"><div class="branch-dialog-header profile-heading"><div><p class="eyebrow">Customer record</p><h2 id="customerProfileTitle">Customer details</h2><p class="hint" id="customerProfileSummary"></p></div><button class="secondary branch-icon-button" id="closeCustomerProfile" type="button" aria-label="Close customer details">\u2715</button></div><div class="branch-dialog-body"><form id="customerProfileForm"><input name="customerId" type="hidden"><div class="grid"><label>First name<input name="firstName" required></label><label>Last name<input name="lastName" required></label></div><div class="grid"><label>Email<input name="email" type="email"></label><label>Phone<input name="phone" type="tel" required></label></div><p class="hint">A valid phone number is required. Email is optional.</p><label>Home branch<select name="branchId" required></select></label><label>Tags<input name="tags"></label><label>Notes<textarea name="notes" rows="4" placeholder="Customer preferences, colour formulas, allergies, or other notes"></textarea></label><button class="primary" type="submit">Save customer details</button></form><div class="dialog-history"><h3>Service and sales history</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Location</th><th>Service / item</th><th>Staff</th><th>Amount</th><th>Payment</th></tr></thead><tbody id="customerHistoryTable"></tbody></table></div></div></div></dialog>
     </section>
 
     <section class="tab admin-only" id="staff">
       ${teamNavigation}
       <div class="section-heading page-heading"><div><p class="eyebrow">Your team</p><h2>Team members</h2><p class="hint">Manage staff details, access and working hours.</p></div><button class="primary" id="addStaffButton" type="button" aria-controls="staffEditorDialog" aria-expanded="false">+ Add staff</button></div>
+      <div class="panel"><div class="section-heading"><div><h3>Team Excel tools</h3><p class="hint">Keep Staff ID to update a member. Leave it blank to add one. Download the sample for columns and instructions.</p></div><div class="excel-actions"><a class="secondary button-link" href="/api/staff/export">Export team</a><a class="secondary button-link" href="/api/staff/sample">Download sample Excel</a><button class="primary" id="importStaffButton" type="button">Import team</button><input class="hidden" id="staffImportFile" type="file" accept=".xlsx,.xls"></div></div><p id="staffImportResult" role="status"></p></div>
       <div class="staff-directory">
         <div class="panel"><div class="section-heading staff-list-heading"><div><h3>Team directory</h3><p class="hint" id="staffCount" aria-live="polite"></p></div><div class="staff-list-filters"><label>Search staff<input id="staffSearch" type="search" placeholder="Name, role, email or phone"></label><label>Status<select id="staffStatusFilter"><option value="">All statuses</option><option>Active</option><option>Inactive</option></select></label></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Day off</th><th>Status</th><th>Sales made</th></tr></thead><tbody id="staffTable"></tbody></table></div></div>
       </div>
@@ -38643,6 +38677,7 @@ const expandedProductSubCategories = new Set();
 const appMode = window.appMode || "admin";
 const message = document.querySelector("#message");
 ${accessClientScript()}
+${pinVaultClientScript()}
 ${posPinScript()}
 document.querySelectorAll(".nav[data-tab]").forEach((button) => button.addEventListener("click", () => {
   showTab(button.dataset.tab);
@@ -38839,6 +38874,22 @@ document.querySelector("#importServicesButton").addEventListener("click",()=>doc
 document.querySelector("#serviceImportFile").addEventListener("change",importServicesWorkbook);
 document.querySelector("#importProductsButton").addEventListener("click", () => document.querySelector("#productImportFile").click());
 document.querySelector("#productImportFile").addEventListener("change", importProductsWorkbook);
+document.querySelector("#importStaffButton").addEventListener("click",()=>document.querySelector("#staffImportFile").click());
+document.querySelector("#staffImportFile").addEventListener("change",async event=>{
+  const input=event.currentTarget,file=input.files?.[0],button=document.querySelector("#importStaffButton"),resultBox=document.querySelector("#staffImportResult");
+  if(!file)return;
+  button.disabled=true;
+  try {
+    if(file.size>5*1024*1024)throw Error("The workbook must be smaller than 5 MB.");
+    resultBox.textContent="Importing team members...";
+    const response=await fetch("/api/staff/import",{method:"POST",headers:{"content-type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},body:file});
+    const result=await response.json();
+    if(!response.ok)throw Error(result.error||"Team import failed.");
+    await loadData();
+    resultBox.textContent=result.created+" created, "+result.updated+" updated.";
+  }catch(error){resultBox.textContent=error.message;}
+  finally{input.value="";button.disabled=false;}
+});
 document.querySelector("#stockForm").addEventListener("submit", (event) => submitAdminForm(event, "/api/stock-movements"));
 document.querySelector("#receiveProductsForm").addEventListener("submit", submitReceivedProducts);
 document.querySelector("#receiveProductSearch").addEventListener("input", () => { document.querySelector('#receiveProductsForm input[name="productId"]').value = ""; renderReceiveProductPicker(true); });
@@ -40884,16 +40935,19 @@ function renderSaleItemPicker(row, browse = false) {
   categorySelect.innerHTML = '<option value="">All categories</option>' + categories.map((category) => '<option value="' + esc(category) + '">' + esc(category) + '</option>').join("");
   categorySelect.value = categories.includes(previousCategory) ? previousCategory : "";
   const subCategorySelect = row.querySelector('select[name="saleItemSubCategory"]');
-  const previousSubCategory = subCategorySelect.value;
-  const subCategories = [...new Set(catalog.filter((item) => item.type === type && (!categorySelect.value || item.category === categorySelect.value)).map((item) => item.subCategory))].sort((a, b) => a.localeCompare(b));
-  subCategorySelect.innerHTML = '<option value="">All sub-categories</option>' + subCategories.map((category) => '<option value="' + esc(category) + '">' + esc(category) + '</option>').join("");
+  const detailKey = type === "product" ? "brand" : "subCategory";
+  subCategorySelect.setAttribute("aria-label", type === "product" ? "Brand" : "Sub-category");
+  const previousSubCategory = subCategorySelect.dataset.filterType === type ? subCategorySelect.value : "";
+  subCategorySelect.dataset.filterType = type;
+  const subCategories = [...new Set(catalog.filter((item) => item.type === type && (!categorySelect.value || item.category === categorySelect.value)).map((item) => item[detailKey]))].sort((a, b) => a.localeCompare(b));
+  subCategorySelect.innerHTML = '<option value="">' + (type === "product" ? "All brands" : "All sub-categories") + '</option>' + subCategories.map((category) => '<option value="' + esc(category) + '">' + esc(category) + '</option>').join("");
   subCategorySelect.value = subCategories.includes(previousSubCategory) ? previousSubCategory : "";
-  const matches = catalog.filter((item) => item.type === type && (!categorySelect.value || item.category === categorySelect.value) && (!subCategorySelect.value || item.subCategory === subCategorySelect.value))
+  const matches = catalog.filter((item) => item.type === type && (!categorySelect.value || item.category === categorySelect.value) && (!subCategorySelect.value || item[detailKey] === subCategorySelect.value))
     .map((item) => ({ item, score:query ? saleQuickFindScore(item, query) : 0 }))
     .filter((entry) => Number.isFinite(entry.score))
     .sort((a, b) => a.score - b.score || a.item.name.localeCompare(b.item.name)).slice(0, 30);
   const options = row.querySelector(".sale-picker-options");
-  options.innerHTML = matches.length ? matches.map(({ item }) => '<button class="sale-picker-option" type="button" role="option" data-item-key="' + esc(item.type + ":" + item.id) + '"><span><strong>' + esc(item.name) + '</strong><small>' + esc([item.category, item.subCategory].filter(Boolean).join(" · ")) + '</small></span><b>' + money(item.priceCents) + '</b></button>').join("") : '<p class="sale-picker-empty">No matching items</p>';
+  options.innerHTML = matches.length ? matches.map(({ item }) => '<button class="sale-picker-option" type="button" role="option" data-item-key="' + esc(item.type + ":" + item.id) + '"><span><strong>' + esc(item.name) + '</strong><small>' + esc([item.category, item[detailKey]].filter(Boolean).join(" · ")) + '</small></span><b>' + money(item.priceCents) + '</b></button>').join("") : '<p class="sale-picker-empty">No matching items</p>';
   options.querySelectorAll("[data-item-key]").forEach((button) => button.addEventListener("click", () => { const item = catalog.find((entry) => entry.type + ":" + entry.id === button.dataset.itemKey); input.value = item.label; updateSaleItemRow(row); closeSaleItemPicker(row); }));
   row.querySelector(".sale-picker-menu").classList.remove("hidden");
   input.setAttribute("aria-expanded", "true");
@@ -41824,7 +41878,7 @@ function customerLabel(c) { return (c.first_name + " " + c.last_name + " | " + c
 function saleCatalog() {
   return [
     ...state.services.map((s) => ({ type:"service", typeLabel:"Service", id:s.id, name:s.name, category:s.category || "General", subCategory:s.sub_category || "General", priceCents:Number(s.price_cents || 0), label:"Service | " + s.name + " | " + (s.category || "General") + " | " + money(s.price_cents) })),
-    ...(state.products || []).map((p) => { const priceCents = Number(p.special_price_cents || 0) > 0 ? Number(p.special_price_cents) : Number(p.price_cents || 0); return { type:"product", typeLabel:"Product", id:p.id, name:p.name, category:p.category || "Retail", subCategory:p.sub_category || "General", priceCents, label:"Product | " + p.name + " | " + (p.brand || p.category || "Retail") + " | " + money(priceCents) }; })
+    ...(state.products || []).map((p) => { const priceCents = Number(p.special_price_cents || 0) > 0 ? Number(p.special_price_cents) : Number(p.price_cents || 0); return { type:"product", typeLabel:"Product", id:p.id, name:p.name, category:p.category || "Retail", subCategory:p.sub_category || "General", brand:(p.brand || "").trim() || "No brand", priceCents, label:"Product | " + p.name + " | " + (p.brand || p.category || "Retail") + " | " + money(priceCents) }; })
   ];
 }
 function saleQuickFindScore(item, query) {
@@ -42883,6 +42937,7 @@ var index_default = {
       headers3.set("referrer-policy", "same-origin");
       return new Response(protectedResponse.body, { status: protectedResponse.status, headers: headers3 });
     } catch (error) {
+      if (error.name === "CustomerPhoneError") return Response.json({error:error.message},{status:400,headers:{"cache-control":"no-store"}});
       if (error instanceof DuplicatePhoneError || error.name === "CustomerContactError") return Response.json({ error: error.message }, {status:409,headers:{"cache-control":"no-store"}});
       if (String(error).includes("CUSTOMER_DUPLICATE_PHONE")) return Response.json({ error:"Duplicate number. Refresh the customer search before saving." },{status:409});
       console.error("Access request failed", error.message);

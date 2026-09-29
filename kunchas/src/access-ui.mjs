@@ -62,7 +62,7 @@ function renderStaffLogin(form=document.querySelector("#staffProfileForm")) {
   const person=accessSettingsData?.users.find(item=>item.staffId===staffId);
   form.elements.username.value=person?.username||person?.email||"";form.elements.pin.value="";
   form.elements.enabled.checked=Boolean(person?.enabled);form.elements.allBranches.checked=Boolean(person?.all_branches);
-  form.querySelector('[data-branch-checks]').innerHTML=(accessSettingsData?.branches||[]).map(branch=>'<label class="day-chip"><input type="checkbox" name="branchIds" value="'+esc(branch.id)+'"'+(person?.branchIds.includes(branch.id)?' checked':'')+'><span>'+esc(branch.name)+'</span></label>').join('');
+  form.querySelector('[data-branch-checks]').innerHTML=(accessSettingsData?.branches||[]).map(branch=>'<label class="day-chip"><input type="checkbox" name="branchIds" value="'+esc(branch.id)+'"'+(Array.isArray(person?.branchIds)&&person.branchIds.includes(branch.id)?' checked':'')+'><span>'+esc(branch.name)+'</span></label>').join('');
   form.querySelector('[data-branch-choices]').disabled=form.elements.allBranches.checked;
 }
 function staffLoginValues(form){

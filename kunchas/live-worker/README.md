@@ -39,7 +39,11 @@ Verify with `node --test tests/*.test.mjs`. The loyalty tests exercise the deplo
 
 ## Customer phone uniqueness
 
-Apply `customer-phone-upgrade.sql` once to a fresh database before deploying the phone-validation source. It adds an indexed generated `phone_key` and insert/update guards. Australian local, +61, and 0061 formats are equivalent, as are spaces, parentheses, periods, and hyphens. Nonempty numbers must belong to only one customer across branches. Existing duplicates are preserved for manual review; the migration does not merge or delete customer records.
+Apply `customer-phone-upgrade.sql` once to a fresh database before deploying the phone-validation source. It adds an indexed generated `phone_key` and insert/update guards. Australian local, +61, and 0061 formats are equivalent, as are spaces, parentheses, periods, and hyphens. Customer saves require valid phone numbers. Nonempty numbers must belong to only one customer across branches. Existing duplicates are preserved for manual review; the migration does not merge or delete customer records.
+
+## Encrypted staff PINs
+
+Apply `staff-pin-vault.sql` once and configure the Worker secret `STAFF_PIN_ENCRYPTION_KEY` as a cryptographically random 32-byte key encoded in hexadecimal. Preserve this secret across deployments: replacing it prevents existing encrypted PINs from being read. Never commit the key. PIN authentication still uses the existing salted hash. Owner PIN reveal and Excel export require owner reauthentication; older hash-only PINs must be saved again to become readable.
 
 POS and dashboard forms check while typing and on save, using the authenticated customer-search endpoint. Duplicate messages include the existing customer's name. The public booking flow never exposes that name and instead asks the customer to check their details or contact the salon. A repeat online booking with matching name, email, phone, and branch reuses the account. A phone already registered at another branch requires staff assistance rather than creating a duplicate record.
 

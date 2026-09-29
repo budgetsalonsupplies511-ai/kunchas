@@ -1,6 +1,11 @@
+import {customerPhoneError,normalizeCustomerPhone} from './customer-phone.mjs';
 export function customerPhoneClientScript() {
   return `
+const normalizeCustomerPhone = ${normalizeCustomerPhone.toString()};
+const customerPhoneError = ${customerPhoneError.toString()};
 document.querySelectorAll('#customerForm [name="phone"],#customerProfileForm [name="phone"],#saleForm [name="newPhone"],#bookingForm [name="phone"]').forEach(input => {
+  input.required = true;
+  input.type = 'tel';
   const feedback = document.createElement('small');
   feedback.className = 'customer-phone-error';
   feedback.setAttribute('role','status');
@@ -8,10 +13,12 @@ document.querySelectorAll('#customerForm [name="phone"],#customerProfileForm [na
   let timer, version = 0;
   function clear() { clearTimeout(timer); version++; input.setCustomValidity(''); feedback.textContent = ''; }
   input.form.addEventListener('reset',clear);
+  input.closest('dialog')?.addEventListener('close',clear);
   input.addEventListener('input',() => {
     clear();
     const phone = input.value.trim(), attempt = version;
-    if (phone.replace(/\\D/g,'').length < 8) return;
+    const error = customerPhoneError(phone);
+    if(error){input.setCustomValidity(error);feedback.textContent=error;return;}
     timer = setTimeout(async () => {
       try {
         const params = new URLSearchParams({checkPhone:phone});
@@ -21,7 +28,7 @@ document.querySelectorAll('#customerForm [name="phone"],#customerProfileForm [na
         const result = await api((appMode === 'staff' ? '/api/pos-customers' : '/api/customers/search') + '?' + params);
         if (attempt !== version || input.value.trim() !== phone) return;
         feedback.textContent = result.message || '';
-        input.setCustomValidity(result.duplicate ? result.message : '');
+        input.setCustomValidity(result.duplicate || result.invalid ? result.message : '');
       } catch { if (attempt === version) feedback.textContent = 'Phone number will be checked when saved.'; }
     },300);
   });

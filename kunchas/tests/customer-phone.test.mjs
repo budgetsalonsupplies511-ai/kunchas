@@ -1,13 +1,29 @@
+import * as xlsx from 'xlsx';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
-import { assertUniqueCustomerPhone, phoneCheckResponse, normalizeCustomerPhone } from '../live-worker/customer-phone.mjs';
+import { assertUniqueCustomerPhone, phoneCheckResponse, normalizeCustomerPhone, customerPhoneError } from '../live-worker/customer-phone.mjs';
 
 const source = readFileSync(new URL('../live-worker/index.js', import.meta.url), 'utf8').replaceAll('\r\n','\n')
   .replace(/from "(\.\/[^\"]+)"/g, (_, path) => 'from ' + JSON.stringify(new URL('../live-worker/' + path, import.meta.url).href))
-  .replace('  searchCustomers\n};','  searchCustomers, createCustomer, updateCustomer, ensureBookingCustomer, publicBookingRoute, salonNow\n};');
+  .replace('  searchCustomers\n};','  searchCustomers, createCustomer, updateCustomer, ensureBookingCustomer, importCustomers, publicBookingRoute, salonNow\n};');
 const worker = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+
+test('phones are required and invalid formats are rejected consistently',async()=>{
+  for(const phone of ['', '123', '0000000000','04123456789','0412abc678','04+12345678','+610412345678']) assert.ok(customerPhoneError(phone),phone);
+  for(const phone of ['0412345678','02 9876 5432','+61 412 345 678','0061412345678','+44 7700 900123']) assert.equal(customerPhoneError(phone),'',phone);
+  const {env}=fixture();
+  for(const phone of ['','abc','12345']){
+    await assert.rejects(assertUniqueCustomerPhone(env,phone),{name:'CustomerPhoneError'});
+    const check=await phoneCheckResponse(new URL('https://test.local/api/customers/search?checkPhone='+phone),env);
+    assert.equal((await check.json()).invalid,true);
+    const body={firstName:'New',lastName:'Person',email:'new@example.test',phone,branchId:'test-branch'};
+    const req=()=>new Request('https://test.local/api/customers',{method:'POST',body:JSON.stringify(body)});
+    if(phone){await assert.rejects(worker.createCustomer(req(),env),{name:'CustomerPhoneError'});await assert.rejects(worker.updateCustomer(req(),env,'alice'),{name:'CustomerPhoneError'});}
+    else {assert.equal((await worker.createCustomer(req(),env)).status,400);assert.equal((await worker.updateCustomer(req(),env,'alice')).status,400);}
+  }
+});
 
 function fixture() {
   const db = new DatabaseSync(':memory:');
@@ -68,4 +84,16 @@ test('public booking duplicate response is generic, while the same contact can b
   const result=await reserve({firstName:'Alice',lastName:'Smith',email:'alice@example.test',phone:'+61412345678'});
   assert.equal(result.status,201,await result.clone().text());
   assert.equal(db.prepare("SELECT COUNT(*) n FROM customers WHERE phone_key='0412345678'").get().n,1);
+});
+
+
+test('customer Excel import rejects missing, malformed and duplicate phones before any writes',async()=>{
+ for(const phones of [[''],['123'],['0412345678'],['0498765432','+61498765432']]){
+  const {env,db}=fixture();
+  db.exec("ALTER TABLE customers ADD COLUMN external_ref TEXT; ALTER TABLE customers ADD COLUMN legacy_details TEXT;");
+  const before=db.prepare("SELECT COUNT(*) AS n FROM customers").get().n;
+  const book=xlsx.utils.book_new();xlsx.utils.book_append_sheet(book,xlsx.utils.aoa_to_sheet([['ClientNum','FirstName','LastName','Phone'],...phones.map((phone,i)=>[String(i+1),'New','Person',phone])]),'Customers');
+  const req=new Request('https://test.local/api/customers/import',{method:'POST',headers:{'x-file-name':'Test branch.xlsx'},body:xlsx.write(book,{type:'buffer',bookType:'xlsx'})});
+  const response=await worker.importCustomers(req,env);assert.equal(response.status,400);assert.equal(db.prepare('SELECT COUNT(*) AS n FROM customers').get().n,before);
+ }
 });
