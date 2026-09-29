@@ -1,3 +1,4 @@
+import { assertUniqueCustomerPhone } from '../live-worker/customer-phone.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -11,7 +12,7 @@ import worker from '../live-worker/index.js';
 const source = readFileSync(new URL('../live-worker/index.js', import.meta.url), 'utf8');
 function fixture(balance = 0) {
   const db = new DatabaseSync(':memory:');
-  for (const file of ['schema.sql', 'pos-accountability.sql', 'loyalty-upgrade.sql']) db.exec(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
+  for (const file of ['schema.sql', 'pos-accountability.sql', 'loyalty-upgrade.sql', 'customer-phone-upgrade.sql']) db.exec(readFileSync(new URL('../' + file, import.meta.url), 'utf8'));
   db.exec(`INSERT INTO branches(id,name,address,phone) VALUES ('branch','Test salon','Address','0400000000');
     INSERT INTO customers(id,created_at,updated_at,first_name,last_name,email,phone,branch_id) VALUES ('customer','now','now','Test','Customer','test@example.test','0400000000','branch');
     INSERT INTO services(id,name,category,duration_minutes,price_cents) VALUES ('cut','Cut','Hair',30,2000);`);
@@ -31,7 +32,7 @@ function fixture(balance = 0) {
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   } } };
   const context = {
-    crypto, Response, loyaltyForSale, loyaltyError, sydneyDateKey,
+    crypto, Response, assertUniqueCustomerPhone, loyaltyForSale, loyaltyError, sydneyDateKey,
     clean: value => String(value ?? '').trim(), text2: value => String(value ?? '').trim(),
     jsonResponse: (body, status = 200) => Response.json(body, { status }),
     json: (body, status = 200) => Response.json(body, { status }),
