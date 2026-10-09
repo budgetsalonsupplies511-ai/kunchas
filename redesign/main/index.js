@@ -2104,17 +2104,7 @@ function publicBookingPage() {
 @media(max-width:850px){#flow>nav{position:sticky;top:0;z-index:15;background:#fff8fb;padding:4px 0;border-bottom:1px solid #efdae4}#flow>nav .steps{margin:0}section[data-step],section[data-step] h2,#appointmentSummary,#search{scroll-margin-top:75px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 .add-more-services{width:100%;min-height:48px;margin:12px 0;text-align:center;border:1px dashed #b7447e}
-${typographyStyles}
-/* Kunchas public booking visual refresh preview v1 — presentation only */
-:root{--ink:#211a2b;--muted:#655d70;--line:#ded7e3;--soft:#f7f5f8;--brand:#5b1b6f;--brand-dark:#431451}
-body{background:var(--soft);color:var(--ink);font-family:Roboto,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px}
-header{border-color:var(--line)}main{padding-top:32px}h1{font-size:clamp(28px,3vw,36px);letter-spacing:-.035em}h2{font-size:22px}.eyebrow,.secure{color:var(--brand)}.muted,.notice,footer,.loading,.branch-card span,.summary li small{color:var(--muted);font-size:14px}
-.panel{border:1px solid var(--line);border-radius:12px;box-shadow:0 2px 5px #211a2b04}.steps li{color:var(--muted);border-color:var(--line)}.steps li.active{color:var(--brand);border-color:var(--brand)}.steps button{font-size:14px;min-height:44px}.branch-card,.service,.slot{border-color:var(--line)}.branch-card:hover,.branch-card.selected,.service:has(input:checked){border-color:var(--brand);background:#f3eaf6}.service input{accent-color:var(--brand)}
-input,select,textarea{border-color:#716478}.primary,.slot.selected{background:var(--brand);color:#fff;border-color:var(--brand)}.primary:hover,.slot.selected:hover{background:var(--brand-dark)}.secondary,.slot,.success a{color:var(--brand)}button{min-height:44px}.secondary{border:1px solid #b9a8c3;background:#fff}.summary-when,.review{background:#f3eaf6}.summary-line,.summary li{border-color:var(--line)}.summary-line strong{font-variant-numeric:tabular-nums}.alert{color:#b42335;background:#fff1f2}.success-mark{color:#087454}
-button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid var(--brand);outline-offset:3px}button{transition:background-color 140ms ease,border-color 140ms ease}
-@media(max-width:500px){.panel{padding:18px}.steps button{font-size:13px}.secure{font-size:12px}.actions{gap:10px;flex-wrap:wrap}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
-</style></head><body><header><div class="brand"><img src="${brandLogo}" alt="Kuncha\u2019s Hair & Beauty Art" width="2551" height="1189"></div><span class="secure">Your next feel-good moment</span></header><main><div id="intro"><span class="eyebrow">Make time for yourself</span><h1>Book your next visit.</h1><p class="muted">Your favourite services, your nearest salon, a time that works for you.</p></div><div id="error" class="alert" role="alert" hidden></div><p id="loading" class="loading">Loading branches and services\u2026</p><div id="flow" hidden><nav aria-label="Booking steps"><ol class="steps"><li><button type="button" data-go-step="0">1 \xB7 Salon</button></li><li><button type="button" data-go-step="1">2 \xB7 Services</button></li><li><button type="button" data-go-step="2">3 \xB7 Time</button></li><li><button type="button" data-go-step="3">4 \xB7 Details</button></li></ol></nav><div class="layout"><div class="panel">
+${typographyStyles}</style></head><body><header><div class="brand"><img src="${brandLogo}" alt="Kuncha\u2019s Hair & Beauty Art" width="2551" height="1189"></div><span class="secure">Your next feel-good moment</span></header><main><div id="intro"><span class="eyebrow">Make time for yourself</span><h1>Book your next visit.</h1><p class="muted">Your favourite services, your nearest salon, a time that works for you.</p></div><div id="error" class="alert" role="alert" hidden></div><p id="loading" class="loading">Loading branches and services\u2026</p><div id="flow" hidden><nav aria-label="Booking steps"><ol class="steps"><li><button type="button" data-go-step="0">1 \xB7 Salon</button></li><li><button type="button" data-go-step="1">2 \xB7 Services</button></li><li><button type="button" data-go-step="2">3 \xB7 Time</button></li><li><button type="button" data-go-step="3">4 \xB7 Details</button></li></ol></nav><div class="layout"><div class="panel">
 <section data-step="0"><h2>Choose your salon</h2><p class="muted">Select the branch you would like to visit.</p><div id="branches" class="branch-list"></div></section>
 <section data-step="1" hidden><h2>What would you like to book?</h2><p class="muted">Search all services or choose a category. You can add services from different categories.</p><label>Find a service<input id="search" type="search" placeholder="Search all services"></label><div id="categories" class="branch-list"></div><div id="categoryServices" hidden><button id="allCategories" class="secondary" type="button">\u2190 All categories</button><h3 id="categoryTitle"></h3><div id="services" class="services"></div></div></section>
 <section data-step="2" hidden><h2>Choose a date & time</h2><p class="muted">Start times are every 15 minutes. All times are Sydney local time (AEST/AEDT).</p><div class="date-navigation"><button id="previousDate" class="secondary" type="button" aria-label="Previous date">\u2039</button><label>Appointment date<input id="date" type="date" required></label><button id="nextDate" class="secondary" type="button" aria-label="Next date">\u203A</button></div><p id="slotStatus" class="muted" role="status"></p><div id="slots" class="slots" role="group" aria-label="Available appointment times"></div></section>
@@ -41814,25 +41804,33 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
   <title>${isAdmin ? dashboardTitle : "Branch POS"} \xB7 Kuncha\u2019s</title>
   ${fontLinks}
   <style>${styles()}${typographyStyles}
-/* Kunchas visual refresh preview v1 — presentation only */
-:root{--ink:#211a2b;--muted:#655d70;--line:#ded7e3;--soft:#f7f5f8;--brand:#5b1b6f;--brand-dark:#431451;--brand-soft:#f3eaf6;--surface:#fff;--success:#087454}
-body{color:var(--ink);background:var(--soft);font-family:Roboto,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;line-height:1.5}
-h1{font-size:clamp(24px,2.3vw,30px);letter-spacing:-.035em;line-height:1.2}h2{font-size:22px;letter-spacing:-.025em}h3{letter-spacing:-.015em}
-.sidebar{background:#fff;color:var(--ink);border-right:1px solid var(--line);padding-top:58px}
-.brand{padding:4px 8px;margin-bottom:24px}.nav{color:var(--muted);font-size:14px;min-height:46px;border-radius:8px;font-weight:600}.nav:hover{color:var(--brand);background:var(--soft)}.nav.active{color:var(--brand);background:var(--brand-soft);box-shadow:inset 3px 0 var(--brand)}.sidebar-toggle{width:44px;min-height:44px;right:10px;top:8px;background:#fff;color:var(--brand);border:1px solid var(--line);box-shadow:none;border-radius:8px}
-.sidebar-user{color:var(--ink);border-color:var(--line)}.sidebar-user small{color:var(--muted);font-size:13px}.sidebar-user-avatar{color:var(--brand);background:var(--brand-soft)}.sidebar-footer .nav:first-child{border-color:var(--line)}
-.topbar{padding-top:20px;padding-bottom:20px;gap:16px}.eyebrow{font-size:12px;letter-spacing:.08em}.hint,.muted{color:var(--muted);font-size:14px}
-.panel,.metrics article,.cards article,.branch-grid article{border:1px solid var(--line);border-radius:12px;box-shadow:0 2px 5px #211a2b04}.metrics article{padding:20px}.metrics strong{font-variant-numeric:tabular-nums}
-button,.primary,.secondary,input,select,textarea{min-height:44px;border-radius:8px}input:not([type=checkbox]):not([type=radio]):not([type=hidden]),select,textarea{border-color:#716478;color:var(--ink);background:#fff}input::placeholder,textarea::placeholder{color:#716478}
-button,a,input,select,textarea,summary{outline-offset:3px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid var(--brand)}
-.primary{background:var(--brand);color:#fff}.primary:hover{background:var(--brand-dark)}.secondary{background:#fff;color:var(--brand);border:1px solid #b9a8c3}.secondary:hover{background:var(--brand-soft)}button:disabled{cursor:not-allowed}
-button,.primary,.secondary,a{transition:background-color 140ms ease,color 140ms ease,border-color 140ms ease}
-.table-wrap{border:1px solid var(--line);border-radius:10px;overflow:auto}table{font-size:14px}th{color:var(--muted);background:#f7f5f8;font-size:13px;letter-spacing:.02em}td,th{padding:14px 16px;vertical-align:middle}td{font-variant-numeric:tabular-nums}tbody tr:hover{background:#fbf9fc}
-.catalogue-edit-button,.booking-dialog-close,.mobile-menu-close,.sale-picker-toggle{min-width:44px;min-height:44px}.mobile-menu-close{color:var(--brand)}
-.pos-flow-panel{background:#fff;border-color:var(--line)}.pos-step-number{border-radius:10px;background:var(--brand-soft);color:var(--brand)}.sale-item{background:var(--soft);border-radius:10px}.sale-message{color:var(--success)}.sale-message.error,.pos-customer-error{color:#b42335}
-dialog{border:1px solid var(--line);border-radius:16px;max-height:90dvh;overflow:auto}dialog::backdrop{background:#211a2b70}
-@media(max-width:700px){.app{padding-inline:16px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.panel{padding:16px}.sidebar{padding-top:64px}.topbar{gap:12px}.topbar h1{font-size:24px}.table-wrap{max-width:100%}td,th{padding:12px}.checkout-complete-actions{flex-wrap:wrap}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* POS appearance refinement: original palette, existing structure and behavior. */
+#pos .panel{border-color:var(--line);border-radius:14px;box-shadow:0 3px 14px rgba(28,23,36,.04)}
+#pos .pos-sale-heading h2,#pos .pos-step-heading h2,#pos .cart-panel>h2{font-size:22px;line-height:1.3;letter-spacing:-.025em;font-weight:700}
+#pos .eyebrow{font-size:12px;letter-spacing:.07em;font-weight:600}
+#pos .pos-step-number{border-radius:10px;font-variant-numeric:tabular-nums}
+#pos .pos-mode-switch span{border-radius:10px}
+#pos .pos-mode-switch strong{font-size:16px;line-height:1.4}
+#pos .pos-mode-switch small{font-size:13px;line-height:1.5}
+#pos .pos-flow-panel{border-radius:10px;padding:18px}
+#pos label,#pos .field-label{font-size:14px;line-height:1.5}
+#pos input:not([type=hidden]):not([type=radio]):not([type=checkbox]),#pos select,#pos textarea{border-radius:8px;font-size:16px;line-height:1.5}
+#pos .sale-item{padding:16px;border-radius:12px}
+#pos .sale-item-kind{font-size:12px;letter-spacing:.035em}
+#pos .pos-add-item{font-weight:600;border-radius:10px}
+#pos .sale-note{font-size:14px}
+#pos .checkout-total{padding:20px;border-radius:12px}
+#pos .checkout-total strong,#pos .cart-total strong{font-size:32px;line-height:1.2;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+#pos .cart-total{padding-top:20px;border-top-width:2px}
+#pos .cart-line{padding:14px;border-radius:10px}
+#pos .cart-line strong{font-weight:700}
+#pos .cart-line em,#pos .cart-staff,#pos .hint{font-size:13px;line-height:1.5}
+#pos .cart-line b,#pos .cart-payment-line,#pos .payment-balance strong{font-variant-numeric:tabular-nums}
+#pos .sale-action-row button,#pos .print-last-receipt{font-weight:600}
+#pos .payment-panel{border-radius:12px}
+#pos .payment-heading h3{font-size:20px;line-height:1.3}
+#pos button:focus-visible,#pos select:focus-visible,#pos textarea:focus-visible,#pos input:not([type=radio]):focus-visible{outline:3px solid var(--brand);outline-offset:3px}
+@media(max-width:700px){#pos .pos-flow-panel,#pos .sale-item{padding:14px}#pos .checkout-total{padding:16px}#pos .checkout-total strong,#pos .cart-total strong{font-size:28px}}
 </style>
 </head>
 <body class="${isAdmin ? "admin-mode" : "staff-mode pos-locked"}">
