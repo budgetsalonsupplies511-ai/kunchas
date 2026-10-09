@@ -44955,16 +44955,16 @@ async function fetchCloudHeldSales(branchId) {
     const headers = { "x-branch-id":branchId };
     if (appMode === "staff") headers["x-pos-workspace"] = "1";
     const response = await fetch("/api/held-sales?branchId=" + encodeURIComponent(branchId), { method:"GET", headers, cache:"no-store", signal:controller.signal });
-    if (response.redirected || (response.headers.get("content-type") || "").includes("text/html")) throw Error("Sign in to Budget in another tab, then return here and select Retry. Your current cart has not been changed.");
+    if (response.redirected || (response.headers.get("content-type") || "").includes("text/html")) throw Error("Sign in to this app in another tab, then return here and select Retry. Your current cart has not been changed.");
     let result;
     try { result = await response.json(); } catch { throw Error("The cloud returned an unreadable response. Select Retry; no held payment has been changed."); }
-    if (response.status === 401 || response.status === 403) throw Error("Your branch session needs attention. Keep this cart open, sign in to Budget Blacktown in another tab, then select Retry.");
+    if (response.status === 401 || response.status === 403) throw Error("Your branch session needs attention. Keep this cart open, sign in to your branch in another tab, then select Retry.");
     if (!response.ok) throw Error(result.error || "Cloud held payments could not be loaded. Select Retry.");
     if (!Array.isArray(result.heldSales) || result.heldSales.some(row => !row || !row.id || row.branch_id !== branchId || !row.payload || !Array.isArray(row.payload.items))) throw Error("The cloud held-payment list could not be verified. Select Retry.");
     return result.heldSales;
   } catch (error) {
     if (error.name === "AbortError") throw Error("Loading held payments timed out. Check the connection and select Retry.");
-    if (error instanceof TypeError) throw Error("Could not reach cloud held payments. Check your connection and Budget sign-in, then select Retry.");
+    if (error instanceof TypeError) throw Error("Could not reach cloud held payments. Check your connection and sign-in, then select Retry.");
     throw error;
   } finally { clearTimeout(timer); }
 }
