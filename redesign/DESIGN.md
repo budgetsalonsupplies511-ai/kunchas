@@ -1,17 +1,19 @@
-# Kunchas POS workspace redesign
+# Kunchas POS catalogue workspace
 
-User direction: retain original live colours; make the POS layout visibly new while retaining complete functional parity. Supersedes earlier border-only and white-heavy proposals.
+Use the installed web-design, ui-ux-pro-max and awesome-claude-design guidance for hierarchy, accessibility and responsive layout. The image is not required. General skill guidance is used; no unverified script/database recommendations or pixel match is claimed.
 
-## Presentation
+## Visual direction
 
-Original dark plum navigation remains unchanged. Three bounded work areas replace the long single form panel: Customer, Items, Payment. Each retains its original controls and sequence; in-page links help move between areas. Search results use a two-column card treatment on wide screens, retaining the original picker buttons and keyboard handlers. The sale summary occupies a distinct plum-tinted column and remains visible beside the work areas on sufficiently wide screens. At 900px and below it returns to normal document flow; narrow-screen search results use one column.
+Retain the original dark plum sidebar, Roboto/system typography and live palette: ink #1c1724, muted #716b79, line #e7e1ea, canvas #f8f6f9, brand #5b1b6f, dark brand #3b1048, brand soft #f3eaf6 and white surfaces. No external assets or dependencies.
 
-Retain original tokens: ink #1c1724, muted #716b79, line #e7e1ea, canvas #f8f6f9, brand #5b1b6f, dark brand #3b1048, brand soft #f3eaf6, surface white. Existing Roboto/system stack. No remote assets, new fonts or dependencies. Section headings 21–23px, monetary totals 28–32px, input text 16px, control labels 14px. Existing errors, selected states and payment colours remain. Focus outlines use original brand. Reduced motion respected.
+Customer, Items and Payment remain distinct work areas. Items now contains a permanent catalogue with labelled search, Services/Products toggles, category and sub-category/brand filters, result count and item cards. Show 24 results at a time with Show more. Keep the original selected-item editor below for staff, discounts and per-sale edits. A prominent plum-tinted sale summary stays alongside on desktop and returns to document flow at 900px. Catalogue cards use two columns, three on very wide displays and one at 560px. New controls have 44px minimum targets, visible keyboard focus and normal document order. Reduced motion respected.
 
-Use the already reviewed awesome-claude-design, web-design and ui-ux-pro-max principles: clear hierarchy, stable task order, contrast, keyboard access and responsive content. The comparison image could not be materialized as local pixels, so this does not claim a pixel match.
+## Functional integration
 
-## Implementation and verification
+Read catalogue data through saleCatalog(), rank searches with saleQuickFindScore() and format prices with money(). Selecting a card fills an empty item row with updateSaleItemRow(), or calls addSaleItem() if none is empty. Preserve original controls, business functions, payment rules, authorization and endpoints. New filters have no form names; Enter in catalogue search cannot submit the sale. A renderAll() presentation hook refreshes the catalogue after existing data loads, including offline restoration. The adapter makes no network requests or storage writes.
 
-Five reversible presentation-only POS markup substitutions plus one #pos-scoped CSS insertion. No JavaScript or business rules change. All original static control tags/attributes/order retained except form styling class. Booking original unchanged. See POS-FUNCTIONAL-PARITY.md for the complete mapping and pending runtime checks.
+## Review and release
 
-preview.html is a static visual fixture from original markup. It uses no customer data, invented catalogue/prices, network requests or transaction handlers. Existing blank item picker is expanded for illustration. Review is required before publication; no live changes authorized by this draft alone.
+Source reversal, Worker/generated-client syntax, original static controls and eight focused filter/selection checks pass. Full runtime, keyboard and small-screen review remain pending. preview.html uses actual POS markup but is a static fixture with scripts, connections and submissions blocked; it contains no customer or catalogue data and cannot prove a working checkout.
+
+Keep this in draft PR #1 targeting release/kuncha-visual-review. Never advance backup/live-original-2026-10-09 (c905c92d209124e42af9d66f19b3ba9c7b179cb7). Booking remains original. No live deployment before appearance review and essential runtime tests.

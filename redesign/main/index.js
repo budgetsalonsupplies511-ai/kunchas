@@ -41856,6 +41856,29 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
 @media(max-width:900px){#pos .pos-workspace>.pos-workflow-layout{grid-template-columns:minmax(0,1fr)}#pos .pos-sale-ticket{position:static}#pos .pos-workflow-nav{gap:8px;padding:8px}#pos .pos-workflow-nav a{padding:8px;gap:6px;font-size:14px}}
 @media(max-width:560px){#pos .sale-picker-options{grid-template-columns:minmax(0,1fr)}#pos .pos-stage,#pos .pos-sale-ticket{padding:16px}#pos .pos-flow-panel,#pos .sale-item{padding:14px}#pos .pos-workflow-nav a span{display:none}#pos .pos-sale-heading{flex-wrap:wrap}#pos .pos-stage h2{font-size:21px}#pos .checkout-total strong,#pos .cart-total strong{font-size:28px}}
 @media(prefers-reduced-motion:reduce){#pos *,#pos *::before,#pos *::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+/* Persistent catalogue workspace; original palette. */
+#pos .pos-catalogue{padding:20px;margin:0 0 28px;background:var(--brand-soft);border:1px solid var(--line);border-radius:12px}
+#pos .pos-catalogue-heading{display:flex;justify-content:space-between;align-items:start;gap:16px;margin-bottom:20px}
+#pos .pos-catalogue-heading h3{margin:0;font-size:22px;line-height:1.3}
+#pos .pos-catalogue-heading a{color:var(--brand);font-size:14px;min-height:44px;display:flex;align-items:center}
+#pos .pos-catalogue input,#pos .pos-catalogue select{min-height:48px;font-size:16px}
+#pos .pos-catalogue-types{display:flex;gap:8px;margin:16px 0}
+#pos .pos-catalogue-types button{flex:1;min-height:48px;background:var(--surface);color:var(--brand);border:1px solid var(--brand);border-radius:9px}
+#pos .pos-catalogue-types button[aria-pressed=true]{background:var(--brand);color:white}
+#pos .pos-catalogue-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#pos .pos-catalogue-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+#pos .pos-catalogue-card{display:flex;flex-direction:column;align-items:start;text-align:left;gap:8px;min-width:0;min-height:164px;padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);white-space:normal;overflow-wrap:anywhere}
+#pos .pos-catalogue-card:hover{border-color:var(--brand);background:var(--soft)}
+#pos .pos-catalogue-card strong{font-size:16px;line-height:1.4}
+#pos .pos-catalogue-card small{font-size:12px;color:var(--muted)}
+#pos .pos-catalogue-card b{font-size:20px;color:var(--brand);font-variant-numeric:tabular-nums}
+#pos .pos-catalogue-add{font-size:13px;color:var(--brand);margin-top:auto}
+#pos #posCatalogueMore{margin-top:16px;min-height:44px}
+#pos .pos-selected-heading{font-size:20px;margin:0 0 16px}
+#pos #saleItems{scroll-margin-top:24px}
+@media(min-width:1500px){#pos .pos-catalogue-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:560px){#pos .pos-catalogue{padding:14px}#pos .pos-catalogue-heading{display:block}#pos .pos-catalogue-heading h3{font-size:20px}#pos .pos-catalogue-filters,#pos .pos-catalogue-grid{grid-template-columns:minmax(0,1fr)}#pos .pos-catalogue-card{min-height:144px}}
 </style>
 </head>
 <body class="${isAdmin ? "admin-mode" : "staff-mode pos-locked"}">
@@ -41978,7 +42001,18 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           </section>
           <section class="panel pos-stage pos-items-stage" id="posItemsStage" aria-label="Items">
           <div class="pos-step-heading"><span class="pos-step-number">2</span><div><p class="eyebrow">Sale items</p><h2>Add services or products</h2></div></div>
-          <div id="saleItems"></div>
+          <div class="pos-catalogue" id="posCatalogue" aria-label="Catalogue">
+  <div class="pos-catalogue-heading"><div><p class="eyebrow">Browse and add</p><h3>Service &amp; product catalogue</h3></div><a href="#saleItems">Edit selected items</a></div>
+  <label>Find an item<input id="posCatalogueSearch" type="search" placeholder="Search by name" autocomplete="off"></label>
+  <div class="pos-catalogue-types" role="group" aria-label="Catalogue item type"><button type="button" data-catalogue-type="service" aria-pressed="true">Services</button><button type="button" data-catalogue-type="product" aria-pressed="false">Products</button></div>
+  <div class="pos-catalogue-filters"><label>Category<select id="posCatalogueCategory"><option value="">All categories</option></select></label><label><span id="posCatalogueDetailLabel">Sub-category</span><select id="posCatalogueDetail"><option value="">All sub-categories</option></select></label></div>
+  <p class="hint" id="posCatalogueCount" role="status"></p>
+  <div class="pos-catalogue-grid" id="posCatalogueGrid"></div>
+  <button type="button" class="secondary" id="posCatalogueMore" hidden>Show more items</button>
+  <p class="hint" id="posCatalogueNotice" role="status">Choose an item, then assign staff or adjust it below.</p>
+</div>
+<h3 class="pos-selected-heading">Selected items &amp; staff</h3>
+<div id="saleItems"></div>
           <button class="secondary pos-add-item" id="addSaleItem" type="button">+ Add item</button>
           <label class="sale-note">Sale note<textarea name="saleNote" rows="2" maxlength="2000" placeholder="Optional note about this sale"></textarea></label>
           </section>
@@ -42915,7 +42949,7 @@ function renderAll() {
   const productForm = document.querySelector("#productForm");
   refreshProductEditor(productForm.elements.productId.value ? productForm.elements.category.value : "", productForm.elements.productId.value ? productForm.elements.subCategory.value : "");
   if (currentUser.managerBranchId) document.querySelector("#appTitle").textContent = (state.branches[0]?.name || "Branch") + " \xB7 Manager Dashboard";
-  renderMetrics(); renderBranches(); renderStaff(); renderTimesheet(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderReceivedProducts(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); renderClockedInStaff(); applyAccessUi();
+  renderMetrics(); renderBranches(); renderStaff(); renderTimesheet(); renderServices(); renderProducts(); renderCustomers(); renderBookings(); renderSales(); renderInventory(); renderReceivedProducts(); renderClosings(); loadReports(); renderRosterMonthCalendar(); renderRosterBranchBoard(); renderAccess(); renderClosingPreview(); renderTimeClockStatus(); renderClockedInStaff(); applyAccessUi(); renderPosCatalogue();
 }
 function fillSelects() {
   const branchOptions = state.branches.map((b) => '<option value="' + b.id + '">' + esc(b.name) + '</option>').join("");
@@ -45662,6 +45696,94 @@ async function addMembershipToSelectedCustomer(event) {
 function findSaleItem(value) { return saleCatalog().find((item) => item.label === value); }
 function findStaff(value) { return state.staff.find((s) => staffLabel(s) === value); }
 function customerLabel(c) { return (c.first_name + " " + c.last_name + " | " + c.phone + " | " + c.email).trim(); }
+function posCatalogueMatches(catalog, type, category, detail, query) {
+  const key = type === "product" ? "brand" : "subCategory";
+  const normalized = query.trim().toLowerCase();
+  return catalog.filter(item => item.type === type && (!category || item.category === category) && (!detail || item[key] === detail))
+    .map(item => ({item, score:normalized ? saleQuickFindScore(item, normalized) : 0}))
+    .filter(entry => Number.isFinite(entry.score))
+    .sort((a,b) => a.score - b.score || a.item.name.localeCompare(b.item.name))
+    .map(entry => entry.item);
+}
+function addPosCatalogueItem(item) {
+  const form = document.querySelector("#saleForm");
+  if (!form || form.dataset.processing === "true") return false;
+  const empty = [...document.querySelectorAll("#saleItems .sale-item")].find(row => !row.dataset.itemKey && !row.querySelector('[name="saleItemSearch"]').value.trim());
+  if (empty) {
+    empty.querySelector('[name="saleItemSearch"]').value = item.label;
+    updateSaleItemRow(empty);
+    closeSaleItemPicker(empty);
+  } else addSaleItem(item);
+  return true;
+}
+function renderPosCatalogue() {
+  const root = document.querySelector("#posCatalogue");
+  if (!root) return;
+  const search = root.querySelector("#posCatalogueSearch");
+  const category = root.querySelector("#posCatalogueCategory");
+  const detail = root.querySelector("#posCatalogueDetail");
+  if (root.dataset.branch !== selectedPosBranchId) {
+    root.dataset.branch = selectedPosBranchId;
+    root.dataset.type = "service";
+    root.dataset.limit = "24";
+    search.value = ""; category.value = ""; detail.value = "";
+  }
+  if (!root.dataset.bound) {
+    root.dataset.bound = "true";
+    root.addEventListener("input", event => { if (event.target === search) { root.dataset.limit = "24"; renderPosCatalogue(); } });
+    root.addEventListener("change", event => { if (event.target === category || event.target === detail) { root.dataset.limit = "24"; renderPosCatalogue(); } });
+    search.addEventListener("keydown", event => { if (event.key === "Enter") event.preventDefault(); });
+    root.addEventListener("click", event => {
+      const typeButton = event.target.closest("[data-catalogue-type]");
+      if (typeButton) {
+        root.dataset.type = typeButton.dataset.catalogueType;
+        root.dataset.limit = "24"; category.value = ""; detail.value = "";
+        renderPosCatalogue(); return;
+      }
+      const itemButton = event.target.closest("[data-catalogue-key]");
+      if (itemButton) {
+        const item = saleCatalog().find(entry => entry.type + ":" + entry.id === itemButton.dataset.catalogueKey);
+        if (item && addPosCatalogueItem(item)) root.querySelector("#posCatalogueNotice").textContent = item.name + " added. Assign staff or edit details in Selected items below.";
+        return;
+      }
+      if (event.target.closest("#posCatalogueMore")) {
+        root.dataset.limit = String(Number(root.dataset.limit || 24) + 24);
+        renderPosCatalogue();
+      }
+    });
+  }
+  const type = root.dataset.type || "service";
+  const catalog = saleCatalog();
+  const key = type === "product" ? "brand" : "subCategory";
+  function fillOptions(select, values, label) {
+    const previous = select.value;
+    select.replaceChildren();
+    const all = document.createElement("option"); all.value = ""; all.textContent = label; select.append(all);
+    values.forEach(value => { const option = document.createElement("option"); option.value = value; option.textContent = value; select.append(option); });
+    select.value = values.includes(previous) ? previous : "";
+  }
+  const categories = [...new Set(catalog.filter(item => item.type === type).map(item => item.category))].sort((a,b) => a.localeCompare(b));
+  fillOptions(category, categories, "All categories");
+  const details = [...new Set(catalog.filter(item => item.type === type && (!category.value || item.category === category.value)).map(item => item[key]))].sort((a,b) => a.localeCompare(b));
+  fillOptions(detail, details, type === "product" ? "All brands" : "All sub-categories");
+  root.querySelector("#posCatalogueDetailLabel").textContent = type === "product" ? "Brand" : "Sub-category";
+  root.querySelectorAll("[data-catalogue-type]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.catalogueType === type)));
+  const matches = posCatalogueMatches(catalog, type, category.value, detail.value, search.value);
+  const visible = matches.slice(0, Number(root.dataset.limit || 24));
+  const grid = root.querySelector("#posCatalogueGrid");
+  grid.replaceChildren();
+  visible.forEach(item => {
+    const button = document.createElement("button"); button.type = "button"; button.className = "pos-catalogue-card"; button.dataset.catalogueKey = item.type + ":" + item.id;
+    const name = document.createElement("strong"); name.textContent = item.name;
+    const meta = document.createElement("small"); meta.textContent = [item.category,item[key]].filter(Boolean).join(" / ");
+    const price = document.createElement("b"); price.textContent = money(item.priceCents);
+    const action = document.createElement("span"); action.textContent = "+ Add to sale"; action.className = "pos-catalogue-add";
+    button.append(name,meta,price,action); grid.append(button);
+  });
+  if (!matches.length) { const empty = document.createElement("p"); empty.className = "hint"; empty.textContent = "No matching items. Try another search or filter."; grid.append(empty); }
+  root.querySelector("#posCatalogueCount").textContent = "Showing " + visible.length + " of " + matches.length + " items";
+  root.querySelector("#posCatalogueMore").hidden = visible.length >= matches.length;
+}
 function saleCatalog() {
   return [
     ...state.services.map((s) => ({ type:"service", typeLabel:"Service", id:s.id, name:s.name, category:s.category || "General", subCategory:s.sub_category || "General", priceCents:Number(s.price_cents || 0), label:"Service | " + s.name + " | " + (s.category || "General") + " | " + money(s.price_cents) })),
