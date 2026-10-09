@@ -1,4 +1,4 @@
-# Budget Held payments button
+# Budget and Kunchas Held payments button
 
 Status: prepared and tested; NOT deployed. Separate from broader durability PR #3.
 
@@ -24,3 +24,9 @@ Run with a modern Node version:
 
     node held-payments-button/test-held-payments.cjs
     node held-payments-button/test-exports.cjs
+
+## Separate application configurations
+
+The previously verified export-release source is identical in Budget (7d3701c2) and Kunchas (1b5363eb), so the same candidate is prepared for both. The request uses a relative /api/held-sales URL and same-origin browser credentials. Each deployed Worker retains its own existing D1 binding. No cross-app URL, database ID or credential is embedded by this change; no holds are copied between apps. Authentication messages are app-neutral. Kunchas Access settings are unchanged.
+
+Before approved deployment, recheck each active version and retain its existing bindings. Post-deployment staff-device visibility is not yet verified.
