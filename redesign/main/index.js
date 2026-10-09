@@ -41804,33 +41804,58 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
   <title>${isAdmin ? dashboardTitle : "Branch POS"} \xB7 Kuncha\u2019s</title>
   ${fontLinks}
   <style>${styles()}${typographyStyles}
-/* POS appearance refinement: original palette, existing structure and behavior. */
-#pos .panel{border-color:var(--line);border-radius:14px;box-shadow:0 3px 14px rgba(28,23,36,.04)}
-#pos .pos-sale-heading h2,#pos .pos-step-heading h2,#pos .cart-panel>h2{font-size:22px;line-height:1.3;letter-spacing:-.025em;font-weight:700}
-#pos .eyebrow{font-size:12px;letter-spacing:.07em;font-weight:600}
-#pos .pos-step-number{border-radius:10px;font-variant-numeric:tabular-nums}
-#pos .pos-mode-switch span{border-radius:10px}
-#pos .pos-mode-switch strong{font-size:16px;line-height:1.4}
-#pos .pos-mode-switch small{font-size:13px;line-height:1.5}
-#pos .pos-flow-panel{border-radius:10px;padding:18px}
-#pos label,#pos .field-label{font-size:14px;line-height:1.5}
-#pos input:not([type=hidden]):not([type=radio]):not([type=checkbox]),#pos select,#pos textarea{border-radius:8px;font-size:16px;line-height:1.5}
-#pos .sale-item{padding:16px;border-radius:12px}
-#pos .sale-item-kind{font-size:12px;letter-spacing:.035em}
-#pos .pos-add-item{font-weight:600;border-radius:10px}
-#pos .sale-note{font-size:14px}
-#pos .checkout-total{padding:20px;border-radius:12px}
+/* POS work areas: original palette, existing controls and business logic. */
+#pos .pos-workflow-nav{display:flex;gap:12px;margin:0 0 20px;padding:12px;background:var(--brand-soft);border:1px solid var(--line);border-radius:14px}
+#pos .pos-workflow-nav a{display:flex;align-items:center;gap:10px;flex:1;min-height:48px;padding:8px 14px;border-radius:9px;background:var(--surface);color:var(--brand);font-size:15px;font-weight:700;text-decoration:none;border:1px solid var(--line)}
+#pos .pos-workflow-nav a span{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+#pos .pos-workflow-nav a:hover{background:var(--brand-soft);border-color:var(--brand)}
+#pos .pos-workspace>.pos-workflow-layout{grid-template-columns:minmax(0,1fr) minmax(300px,360px);gap:24px;align-items:start}
+#pos .pos-sale-form{min-width:0;display:grid;gap:20px;margin:0}
+#pos .pos-stage{min-width:0;margin:0;padding:24px;border:1px solid var(--line);border-radius:16px;box-shadow:0 4px 16px rgba(28,23,36,.04);scroll-margin-top:20px}
+#pos .pos-stage .pos-step-heading{margin-top:0;padding-top:0;border-top:0}
+#pos .pos-sale-heading,#pos .pos-step-heading,#pos .pos-payment-stage-heading{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+#pos .pos-sale-heading h2,#pos .pos-step-heading h2,#pos .pos-payment-stage-heading h2{margin:0;font-size:23px;line-height:1.25;letter-spacing:-.03em}
+#pos .pos-payment-stage-heading .eyebrow{margin:0 0 3px}
+#pos .pos-step-number{width:38px;height:38px;border-radius:11px;font-size:16px}
+#pos .pos-customer-stage{background:var(--surface);border-top:4px solid var(--brand)}
+#pos .pos-mode-switch{gap:12px;margin-bottom:18px}
+#pos .pos-mode-switch span{min-height:66px;border-radius:10px;padding:12px 16px}
+#pos .pos-mode-switch strong{font-size:16px}#pos .pos-mode-switch small{font-size:13px}
+#pos .pos-flow-panel{padding:16px 18px;border-radius:10px;background:var(--soft)}
+#pos .pos-items-stage{background:var(--surface)}
+#pos .sale-item{padding:18px;margin-bottom:16px;border-radius:12px;background:var(--soft);border-color:var(--line)}
+#pos .sale-item-heading{margin-bottom:12px}#pos .field-label{font-size:14px}#pos .sale-item-kind{font-size:12px}
+#pos .pos-search-picker>input{min-height:50px;font-size:16px;border-radius:9px;border-color:var(--brand)}
+#pos .sale-picker-toggle{min-height:50px}
+#pos .sale-picker-menu{border-radius:12px;border-color:var(--brand);box-shadow:0 12px 28px rgba(28,23,36,.15)}
+#pos .sale-picker-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px}
+#pos .sale-picker-option{align-items:flex-start;min-height:78px;border:1px solid var(--line);border-radius:9px;padding:12px;background:var(--surface)}
+#pos .sale-picker-option strong{font-size:14px;line-height:1.4}#pos .sale-picker-option small{font-size:12px;line-height:1.5}
+#pos .sale-picker-option b{font-size:15px;font-variant-numeric:tabular-nums}
+#pos .sale-picker-empty{grid-column:1/-1}
+#pos .pos-add-item{min-height:48px;border-radius:10px;background:var(--brand-soft);font-weight:700}
+#pos .instance-edit{border-radius:9px}
+#pos .staff-area{padding-top:14px;margin-top:14px;border-top:1px solid var(--line)}
+#pos .sale-note{margin-top:16px}
+#pos .pos-payment-stage{background:var(--brand-soft);border-color:var(--line)}
+#pos .checkout-total{margin-top:0;padding:20px;border-radius:12px}
 #pos .checkout-total strong,#pos .cart-total strong{font-size:32px;line-height:1.2;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
-#pos .cart-total{padding-top:20px;border-top-width:2px}
-#pos .cart-line{padding:14px;border-radius:10px}
-#pos .cart-line strong{font-weight:700}
-#pos .cart-line em,#pos .cart-staff,#pos .hint{font-size:13px;line-height:1.5}
-#pos .cart-line b,#pos .cart-payment-line,#pos .payment-balance strong{font-variant-numeric:tabular-nums}
-#pos .sale-action-row button,#pos .print-last-receipt{font-weight:600}
+#pos .sale-action-row{gap:12px}
 #pos .payment-panel{border-radius:12px}
-#pos .payment-heading h3{font-size:20px;line-height:1.3}
-#pos button:focus-visible,#pos select:focus-visible,#pos textarea:focus-visible,#pos input:not([type=radio]):focus-visible{outline:3px solid var(--brand);outline-offset:3px}
-@media(max-width:700px){#pos .pos-flow-panel,#pos .sale-item{padding:14px}#pos .checkout-total{padding:16px}#pos .checkout-total strong,#pos .cart-total strong{font-size:28px}}
+#pos .payment-balance strong,#pos .cart-payment-line{font-variant-numeric:tabular-nums}
+#pos .pos-sale-ticket{position:sticky;top:24px;min-width:0;margin:0;padding:24px;border:1px solid var(--line);border-top:4px solid var(--brand);border-radius:16px;background:var(--brand-soft);box-shadow:0 4px 16px rgba(28,23,36,.05)}
+#pos .pos-sale-ticket>h2{font-size:24px;letter-spacing:-.03em;margin-bottom:22px}
+#pos .cart-line{padding:14px;background:var(--surface);border-radius:10px}
+#pos .cart-line strong{font-size:15px}#pos .cart-line em,#pos .cart-staff{font-size:13px}
+#pos .cart-line b{font-size:16px;font-variant-numeric:tabular-nums}
+#pos .cart-total{padding-top:20px;border-top:2px solid var(--brand)}
+#pos .cart-total span{color:var(--ink)}
+#pos .held-sales-panel{border-radius:14px;border-color:var(--line)}
+#pos a:focus-visible,#pos button:focus-visible,#pos select:focus-visible,#pos textarea:focus-visible,#pos input:not([type=radio]):focus-visible{outline:3px solid var(--brand);outline-offset:3px}
+@media(max-width:1100px){#pos .pos-workspace>.pos-workflow-layout{grid-template-columns:minmax(0,1fr) 300px;gap:18px}#pos .pos-stage,#pos .pos-sale-ticket{padding:18px}}
+@media(max-width:900px){#pos .pos-workspace>.pos-workflow-layout{grid-template-columns:minmax(0,1fr)}#pos .pos-sale-ticket{position:static}#pos .pos-workflow-nav{gap:8px;padding:8px}#pos .pos-workflow-nav a{padding:8px;gap:6px;font-size:14px}}
+@media(max-width:560px){#pos .sale-picker-options{grid-template-columns:minmax(0,1fr)}#pos .pos-stage,#pos .pos-sale-ticket{padding:16px}#pos .pos-flow-panel,#pos .sale-item{padding:14px}#pos .pos-workflow-nav a span{display:none}#pos .pos-sale-heading{flex-wrap:wrap}#pos .pos-stage h2{font-size:21px}#pos .checkout-total strong,#pos .cart-total strong{font-size:28px}}
+@media(prefers-reduced-motion:reduce){#pos *,#pos *::before,#pos *::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 </style>
 </head>
 <body class="${isAdmin ? "admin-mode" : "staff-mode pos-locked"}">
@@ -41916,8 +41941,10 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
       <div class="pos-workspace hidden" id="posWorkspace">
       <div class="offline-pos-status" id="offlinePosStatus" role="status" aria-live="polite" hidden><span id="offlinePosStatusText"></span><button class="secondary" id="retryOfflineSync" type="button" hidden>Sync now</button></div>
       <div class="panel held-sales-panel hidden" id="heldSalesPanel"><div class="held-sales-heading"><h2>Held payments</h2><label>Find held sale<input id="heldSalesSearch" type="search" placeholder="Customer name or phone" autocomplete="off"></label></div><div id="heldSalesList" class="held-sales-list"></div></div>
-      <div class="split">
-        <form class="panel" id="saleForm" novalidate>
+      <nav class="pos-workflow-nav" aria-label="Sale sections"><a href="#posCustomerStage"><span>01</span> Customer</a><a href="#posItemsStage"><span>02</span> Items</a><a href="#posPaymentStage"><span>03</span> Payment</a></nav>
+      <div class="split pos-workflow-layout">
+        <form class="pos-sale-form" id="saleForm" novalidate>
+          <section class="panel pos-stage pos-customer-stage" id="posCustomerStage" aria-label="Customer">
           <div class="pos-sale-heading"><span class="pos-step-number">1</span><div><p class="eyebrow">New sale</p><h2>Choose customer type</h2></div><button class="secondary print-last-receipt" id="printLastReceiptButton" type="button" disabled>Print last receipt</button></div>
           <input name="branchId" type="hidden">
           <input name="bookingId" type="hidden">
@@ -41948,10 +41975,15 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           </div>
           <input name="customerId" type="hidden"><input name="membershipCustomerId" type="hidden"><input name="membershipFee" type="hidden">
           <datalist id="staffList"></datalist>
+          </section>
+          <section class="panel pos-stage pos-items-stage" id="posItemsStage" aria-label="Items">
           <div class="pos-step-heading"><span class="pos-step-number">2</span><div><p class="eyebrow">Sale items</p><h2>Add services or products</h2></div></div>
           <div id="saleItems"></div>
           <button class="secondary pos-add-item" id="addSaleItem" type="button">+ Add item</button>
           <label class="sale-note">Sale note<textarea name="saleNote" rows="2" maxlength="2000" placeholder="Optional note about this sale"></textarea></label>
+          </section>
+          <section class="panel pos-stage pos-payment-stage" id="posPaymentStage" aria-label="Payment">
+          <div class="pos-payment-stage-heading"><span class="pos-step-number">3</span><div><p class="eyebrow">Review &amp; payment</p><h2>Finish this sale</h2></div></div>
           <div class="checkout-total"><span>Total amount</span><strong id="checkoutTotal">$0.00</strong></div>
           <div class="sale-action-row"><button class="secondary" id="holdSaleButton" type="button">Hold payment</button><button class="primary pay-button" id="showPaymentMethods" type="button">Click to pay</button></div>
           <div class="payment-panel hidden" id="paymentPanel">
@@ -41971,8 +42003,9 @@ function renderApp(initialBranchId, initialTab, mode = "admin", accessUser) {
           </div>
           <button class="primary full hidden" id="completeSale" type="submit" disabled>Complete payment</button>
           <p class="sale-message" id="saleMessage" aria-live="polite"></p>
+          </section>
         </form>
-        <div class="panel cart-panel"><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total</span><strong id="cartTotal">$0.00</strong></div><div class="cart-payment-summary" id="cartPaymentSummary"></div><button type="button" class="secondary full" id="cancelTransaction" style="margin-top:20px">Cancel transaction</button></div>
+        <div class="panel cart-panel pos-sale-ticket"><p class="eyebrow">Current transaction</p><h2>Sale summary</h2><div id="cartSummary" class="cart-summary"></div><div class="cart-total"><span>Total</span><strong id="cartTotal">$0.00</strong></div><div class="cart-payment-summary" id="cartPaymentSummary"></div><button type="button" class="secondary full" id="cancelTransaction" style="margin-top:20px">Cancel transaction</button></div>
       </div>
       </div>
     </section>
