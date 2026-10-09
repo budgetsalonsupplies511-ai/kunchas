@@ -46686,11 +46686,26 @@ var index_default = {
     await closeStaleTimeEntries(env);
   }
 };
-export {
-  index_default as default,
-  getTimesheet,
-  searchCustomers
+var booking_default = {
+  async fetch(request, env) {
+    const path = new URL(request.url).pathname;
+    if (request.method === "GET" && path === "/") {
+      return Response.redirect(new URL("/book", request.url), 302);
+    }
+    const publicGet = request.method === "GET" && [
+      "/book", "/book/", "/api/public-booking/catalog", "/api/public-booking/availability"
+    ].includes(path);
+    const publicPost = request.method === "POST" && path === "/api/public-booking/reserve";
+    if (!publicGet && !publicPost) {
+      return new Response("Not found", {
+        status: 404,
+        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }
+      });
+    }
+    return await publicBookingRoute(request, env);
+  }
 };
+export { booking_default as default };
 /*! Bundled license information:
 
 xlsx/xlsx.mjs:

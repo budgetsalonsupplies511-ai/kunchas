@@ -1,0 +1,36 @@
+{
+  "captureDate": "2026-10-09",
+  "purpose": "Original live production source before redesign; no customer database or credentials",
+  "main": {
+    "worker": "kunchas",
+    "activeVersion": "4340e5cd",
+    "rollbackVersion": "5c7997b2",
+    "sha256": "78128d9a02973628a314ed71bd9558fb808b857c070258c01e47d61555f0aad8",
+    "characters": 2133463
+  },
+  "booking": {
+    "worker": "kunchas-booking",
+    "activeVersion": "d5bc5886",
+    "rollbackVersion": "8e8dc02f",
+    "sha256": "d9eac35193a9b0ba0309a275c62be4ae91c5a51c6e41d22a19ca3fd4a023753b",
+    "characters": 2134195
+  },
+  "encoding": "UTF-8",
+  "lineEndings": "CRLF",
+  "configuration": {
+    "accountId": "f5576fa305b95e3e68bb1fdcce28a3e7",
+    "databaseId": "0648092c-236e-4e6e-874b-84da9fe059b5",
+    "compatibilityDate": "2026-08-14",
+    "compatibilityFlags": [
+      "nodejs_compat"
+    ],
+    "placement": "default",
+    "cache": "disabled",
+    "logsAndTraces": "disabled",
+    "mainScheduledTriggers": 1,
+    "staffPinSecret": "Present and encrypted; value intentionally excluded",
+    "access": "Existing main Worker Access policy unchanged"
+  },
+  "restore": "Restore code only after explicit approval. Do not restore a database snapshot over subsequent sales. Booking must retain the restricted public route wrapper. Match SHA-256 before deployment.",
+  "verification": "Main and booking source hashes match recorded live captures. Main live runtime smoke test was browser blocked. Booking /book loaded five branches. Local file reread unavailable due command service failure."
+}
